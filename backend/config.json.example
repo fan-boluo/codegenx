@@ -1,0 +1,100 @@
+{
+  "agents": [
+    {
+	  "id":"01",
+	  "token":"token_01",
+	  "name":"main",
+      "defaults": true,
+      "workspace": "~/.bot/workspace",
+      "model": "dashscope-qwen/qwen3.5-plus",
+      "provider": "dashscope",
+      "contextMaxTokens": 8192,
+      "context_max_history_turns": 5,
+      "contextSummaryMaxLength": 150,
+      "temperature": 0.1,
+      "maxToolIterations": 40,
+      "reasoningEffort": null
+    },
+	{
+	  "id":"02",
+      "token":"token_02",
+	  "name":"search",
+      "defaults": true,
+      "workspace": "~/.bot/workspace",
+      "model": "dashscope-qwen/qwen3.5-plus",
+      "provider": "dashscope",
+      "contextMaxTokens": 8192,
+      "context_max_history_turns": 5,
+      "contextSummaryMaxLength": 150,
+      "temperature": 0.1,
+      "maxToolIterations": 40,
+      "reasoningEffort": null
+    }
+  ],
+  "providers": {
+    "custom": {
+      "apiKey": "",
+      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "extraHeaders": null
+    },
+    "dashscope": {
+      "apiKey": "",
+      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "extraHeaders": null
+    },
+    "openai": {
+      "apiKey": "",
+      "apiBase": null,
+      "extraHeaders": null
+    },
+    "deepseek": {
+      "apiKey": "",
+      "apiBase": "https://api.deepseek.com/v1",
+      "extraHeaders": null
+    },
+    "zhipu": {
+      "apiKey": "",
+      "apiBase": null,
+      "extraHeaders": null
+    },
+    "vllm": {
+      "apiKey": "",
+      "apiBase": null,
+      "extraHeaders": null
+    }
+  },
+  "embedding": {
+    "apiKey": "",
+    "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "modelName": "text-embedding-v4"
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 8765,
+    "heartbeat": {
+      "enabled": true,
+      "intervalS": 1800
+    }
+  },
+  "tools": {
+    "websearch": {
+      "proxy": null,
+      "search": {
+        "provider": "brave",
+        "apiKey": "",
+        "baseUrl": "",
+        "maxResults": 5
+      }
+    },
+    "kbSearch": {
+      "kbName": "report"
+    },
+    "dbSearch": {
+      "dbName": ""
+    }
+  },
+  "memory": {
+    "search": {},
+    "store": {}
+  }
+}

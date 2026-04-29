@@ -1,0 +1,7 @@
+fastapi==0.113.0
+uvicorn[standard]==0.23.3
+pydantic==2.9.0
+Pillow==10.4.0
+selenium==4.33.0
+webdriver-manager==4.0.2
+cos-python-sdk-v5==1.9.37

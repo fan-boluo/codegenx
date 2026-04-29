@@ -1,0 +1,1 @@
+"""Contract tests for backend service boundaries."""
