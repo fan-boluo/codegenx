@@ -33,7 +33,7 @@ class CacheKeyUtils:
 
     @staticmethod
     def gen_app_chat_memory_key(app_id: int) -> str:
-        """Generate app chat memory cache key.
+        """Generate app chat memory_bak cache key.
 
         Args:
             app_id: App ID

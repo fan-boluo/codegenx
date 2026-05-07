@@ -19,6 +19,7 @@ class AppAiHttpContractTest(unittest.TestCase):
     def test_generate_request_alias_contract(self) -> None:
         request = AiServiceGenerateRequest(
             appId=123,
+            userId="u-123",
             message="继续完善页脚",
             codeGenType="vue_project",
             traceId="trace-2",
@@ -27,6 +28,7 @@ class AppAiHttpContractTest(unittest.TestCase):
         )
         dumped = request.model_dump(by_alias=True, exclude_none=True)
         self.assertEqual(dumped["appId"], 123)
+        self.assertEqual(dumped["userId"], "u-123")
         self.assertEqual(dumped["codeGenType"], "vue_project")
         self.assertEqual(dumped["traceId"], "trace-2")
         self.assertEqual(dumped["requestId"], "req-2")

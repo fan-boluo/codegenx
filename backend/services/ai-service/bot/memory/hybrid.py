@@ -27,7 +27,7 @@ def apply_mmr(
         然后每次选：
         相关分数高
         且和已经选出来的内容最不重复:Jaccard 分词重叠度越低，越不重复
-
+    没有改变原始的分数，只是改变了排序
     Maximal Marginal Relevance (MMR) re-ranking for diversity.
 
     After hybrid scoring, MMR iteratively selects the next result that best
@@ -203,45 +203,43 @@ def merge_hybrid_results(
 
     return results
 
-#
-# def apply_temporal_decay(
-#         results: List[SearchResult],
-#         half_life_days: float = 30.0,
-#         current_timestamp_ms: int | None = None,
-# ) -> List[SearchResult]:
-#     """
-#     Apply temporal decay to search result scores.
-#
-#     Matches TypeScript memory temporal decay logic:
-#     - Recent memories score higher
-#     - Half-life: scores halve every ``half_life_days`` days
-#
-#     Args:
-#         results: Search results (each may have an optional `timestamp` attribute).
-#         half_life_days: Days after which relevance halves.
-#         current_timestamp_ms: Current time in ms (default: now).
-#
-#     Returns:
-#         Results with decay-adjusted scores.
-#     """
-#     import math
-#     import time
-#
-#     if not results:
-#         return results
-#
-#     now_ms = current_timestamp_ms or int(time.time() * 1000)
-#     half_life_ms = half_life_days * 24 * 3600 * 1000
-#
-#     for result in results:
-#         ts_ms = getattr(result, "timestamp_ms", None)
-#         if ts_ms is None:
-#             continue  # No timestamp — skip decay
-#         age_ms = max(0, now_ms - ts_ms)
-#         decay = math.exp(-math.log(2) * age_ms / half_life_ms)
-#         result.score *= decay
-#
-#     return results
+
+def apply_temporal_decay(
+        results: List[MemorySearchResult],
+        half_life_days: float = 30.0,
+        current_timestamp_ms: int | None = None,
+) -> List[MemorySearchResult]:
+    """
+    Apply temporal decay to search result scores.
+    - Recent memories score higher
+    - Half-life: scores halve every ``half_life_days`` days
+
+    Args:
+        results: Search results (each may have an optional `timestamp` attribute).
+        half_life_days: Days after which relevance halves.
+        current_timestamp_ms: Current time in ms (default: now).
+
+    Returns:
+        Results with decay-adjusted scores.
+    """
+    import math
+    import time
+
+    if not results:
+        return results
+
+    now_ms = current_timestamp_ms or int(time.time() * 1000)
+    half_life_ms = half_life_days * 24 * 3600 * 1000
+
+    for result in results:
+        ts_ms = getattr(result, "created_at", None)
+        if ts_ms is None:
+            continue  # No timestamp — skip decay
+        age_ms = max(0, now_ms - ts_ms)
+        decay = math.exp(-math.log(2) * age_ms / half_life_ms)
+        result.score *= decay
+
+    return results
 #
 #
 # MemoryCitationsMode = str  # "none" | "inline" | "footnotes" | "full"

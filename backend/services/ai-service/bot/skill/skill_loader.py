@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from threading import Lock
 
 import yaml
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from pydantic import BaseModel
 from bot.utils.log_utils import log
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent
+_SKILL_CACHE_LOCK = Lock()
 
 
 class Skill(BaseModel):
@@ -17,8 +19,16 @@ class Skill(BaseModel):
 
 
 class SkillLoader:
+    _skills_cache: list[Skill] | None = None
 
     def load_all_skills(self, ) -> list[Skill] | None:
+        if self._skills_cache is not None:
+            return list(self._skills_cache)
+
+        with _SKILL_CACHE_LOCK:
+            if self._skills_cache is not None:
+                return list(self._skills_cache)
+
         count = 0
         skills = []
         for skill_file in sorted(BUILTIN_SKILLS_DIR.rglob("SKILL.md")):
@@ -41,6 +51,8 @@ class SkillLoader:
                 log.error(f"加载 skill 失败 {skill_file}: {e}", exc_info=True)
                 return None
 
+        with _SKILL_CACHE_LOCK:
+            self._skills_cache = list(skills)
         return skills
 
     def load_skill(self, name: str) -> Skill | None:

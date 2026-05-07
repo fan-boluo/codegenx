@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import importlib.util
 from pathlib import Path
@@ -15,16 +16,22 @@ LOCAL_SERVICES_ROOT = Path(__file__).resolve().parent / "services"
 if str(LOCAL_SERVICES_ROOT) not in sys.path:
 	sys.path.insert(0, str(LOCAL_SERVICES_ROOT))
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
+from monitor.health_checker import get_health_checker
+from monitor.maintenance_service import get_monitor_maintenance_service
+from monitor.monitor_query_service import get_monitor_query_service
 from shared.config.config import get_settings
 from shared.config.log_config import log
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
+from shared.schema.monitor import MonitorAlertQueryRequest, MonitorSessionQueryRequest
 from shared.schema.ai_service import (
     AiServiceErrorPayload,
     AiServiceGenerateRequest,
+	AiServiceStopRequest,
+	AiServiceStopResponse,
     AiServiceStreamChunk,
     AiServiceStreamDone,
     AiServiceStreamMeta,
@@ -43,9 +50,22 @@ def _load_local_module(module_name: str, file_name: str):
 
 AgentAdapterService = _load_local_module("agent_adapter_service", "agent_adapter_service.py").AgentAdapterService
 
-app = FastAPI(title="CodeGenX AI Service", version="1.0.0")
 agent_service = AgentAdapterService()
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+	startup_summary = await agent_service.startup()
+	app.state.agent_runtime_startup = startup_summary
+	log.info("ai-service startup completed summary={}", startup_summary)
+	try:
+		yield
+	finally:
+		await agent_service.shutdown()
+
+
+app = FastAPI(title="CodeGenX AI Service", version="1.0.0", lifespan=lifespan)
 
 
 @app.post("/api/ai/codegen/stream")
@@ -63,6 +83,7 @@ async def generate_code_stream(request: AiServiceGenerateRequest):
 	try:
 		stream = agent_service.stream_message(
 			app_id=request.app_id,
+			user_id=request.user_id,
 			session_id=session_id,
 			user_message=request.message,
 			trace_id=trace_id,
@@ -84,6 +105,45 @@ async def generate_code_stream(request: AiServiceGenerateRequest):
 			request.code_gen_type,
 		)
 		raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/ai/codegen/stop", response_model=AiServiceStopResponse)
+async def stop_code_stream(request: AiServiceStopRequest):
+	trace_id, request_id, session_id = _validate_stop_context(request)
+	log.info(
+		"ai-service public stop request traceId={} requestId={} appId={} sessionId={} reason={} graceSeconds={}",
+		trace_id,
+		request_id,
+		request.app_id,
+		session_id,
+		request.reason,
+		request.grace_seconds,
+	)
+	try:
+		result = await agent_service.stop_session(
+			app_id=request.app_id,
+			user_id=request.user_id,
+			session_id=session_id,
+			trace_id=trace_id,
+			request_id=request_id,
+			reason=request.reason,
+			grace_seconds=request.grace_seconds,
+		)
+		return AiServiceStopResponse.model_validate(result)
+	except Exception as exc:
+		log.exception(
+			"ai-service public stop failed traceId={} requestId={} appId={} sessionId={}",
+			trace_id,
+			request_id,
+			request.app_id,
+			session_id,
+		)
+		raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/internal/ai/codegen/stop", response_model=AiServiceStopResponse)
+async def internal_stop_code_stream(request: AiServiceStopRequest):
+	return await stop_code_stream(request)
 
 
 @app.post("/internal/ai/codegen/stream")
@@ -238,12 +298,102 @@ async def internal_generate_code_stream(request: AiServiceGenerateRequest, http_
 	)
 
 
+@app.get("/internal/monitor/overview")
+async def internal_get_monitor_overview():
+	return await get_monitor_query_service().get_overview()
+
+
+@app.get("/internal/monitor/sessions")
+async def internal_list_monitor_sessions(
+	page_num: int = Query(default=1, alias="pageNum"),
+	page_size: int = Query(default=10, alias="pageSize"),
+	status: str | None = None,
+	app_id: str | None = Query(default=None, alias="appId"),
+	user_id: str | None = Query(default=None, alias="userId"),
+	session_id: str | None = Query(default=None, alias="sessionId"),
+	trace_id: str | None = Query(default=None, alias="traceId"),
+):
+	query = MonitorSessionQueryRequest(
+		pageNum=page_num,
+		pageSize=page_size,
+		status=status,
+		appId=app_id,
+		userId=user_id,
+		sessionId=session_id,
+		traceId=trace_id,
+	)
+	return await get_monitor_query_service().list_sessions(query)
+
+
+@app.get("/internal/monitor/sessions/{session_id}")
+async def internal_get_monitor_session_detail(session_id: str):
+	detail = await get_monitor_query_service().get_session_detail(session_id)
+	if detail is None:
+		raise HTTPException(status_code=404, detail="session not found")
+	return detail
+
+
+@app.get("/internal/monitor/sessions/{session_id}/turns/{turn_id}")
+async def internal_get_monitor_turn_detail(session_id: str, turn_id: str):
+	detail = await get_monitor_query_service().get_turn_detail(session_id, turn_id)
+	if detail is None:
+		raise HTTPException(status_code=404, detail="turn not found")
+	return detail
+
+
+@app.get("/internal/monitor/alerts")
+async def internal_list_monitor_alerts(
+	page_num: int = Query(default=1, alias="pageNum"),
+	page_size: int = Query(default=10, alias="pageSize"),
+	status: str | None = None,
+	level: str | None = None,
+	rule_name: str | None = Query(default=None, alias="ruleName"),
+	session_id: str | None = Query(default=None, alias="sessionId"),
+):
+	query = MonitorAlertQueryRequest(
+		pageNum=page_num,
+		pageSize=page_size,
+		status=status,
+		level=level,
+		ruleName=rule_name,
+		sessionId=session_id,
+	)
+	return await get_monitor_query_service().list_alerts(query)
+
+
+@app.get("/internal/monitor/config")
+async def internal_get_monitor_config():
+	return await get_monitor_query_service().get_monitor_config()
+
+
+@app.get("/internal/monitor/health")
+async def internal_get_monitor_health():
+	return await get_health_checker().get_system_health()
+
+
+@app.post("/internal/monitor/cleanup")
+async def internal_cleanup_monitor_history(
+	retention_days: int = Query(default=7, alias="retentionDays", ge=1),
+	dry_run: bool = Query(default=True, alias="dryRun"),
+):
+	return await get_monitor_maintenance_service().cleanup_history(
+		retention_days=retention_days,
+		dry_run=dry_run,
+	)
+
+
+@app.get("/internal/monitor/metrics", response_class=PlainTextResponse)
+async def internal_get_monitor_metrics():
+	return PlainTextResponse(await get_monitor_maintenance_service().render_metrics_text())
+
+
 async def _build_internal_stream(request: AiServiceGenerateRequest, trace_id: str, request_id: str, session_id: str):
 	if not request.message.strip():
 		raise BusinessException(ErrorCode.PARAMS_ERROR, "生成消息不能为空")
 	if hasattr(agent_service, "stream_events"):
 		stream = agent_service.stream_events(
 			app_id=request.app_id,
+			user_id=request.user_id,
 			session_id=session_id,
 			user_message=request.message,
 			trace_id=trace_id,
@@ -253,6 +403,7 @@ async def _build_internal_stream(request: AiServiceGenerateRequest, trace_id: st
 		return stream, request.code_gen_type or "agent-decided", True
 	stream = agent_service.stream_message(
 		app_id=request.app_id,
+		user_id=request.user_id,
 		session_id=session_id,
 		user_message=request.message,
 		trace_id=trace_id,
@@ -263,6 +414,19 @@ async def _build_internal_stream(request: AiServiceGenerateRequest, trace_id: st
 
 
 def _validate_call_context(request: AiServiceGenerateRequest) -> tuple[str, str, str]:
+	trace_id = str(request.trace_id or "").strip()
+	request_id = str(request.request_id or "").strip()
+	session_id = str(request.session_id or "").strip()
+	if not trace_id:
+		raise BusinessException(ErrorCode.PARAMS_ERROR, "traceId 不能为空")
+	if not request_id:
+		raise BusinessException(ErrorCode.PARAMS_ERROR, "requestId 不能为空")
+	if not session_id:
+		raise BusinessException(ErrorCode.PARAMS_ERROR, "sessionId 不能为空")
+	return trace_id, request_id, session_id
+
+
+def _validate_stop_context(request: AiServiceStopRequest) -> tuple[str, str, str]:
 	trace_id = str(request.trace_id or "").strip()
 	request_id = str(request.request_id or "").strip()
 	session_id = str(request.session_id or "").strip()

@@ -18,3 +18,5 @@ Pillow
 selenium
 webdriver-manager
 cos-python-sdk-v5
+qdrant-client
+opentelemetry-sdk

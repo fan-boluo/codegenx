@@ -6,8 +6,18 @@ from bot.utils.log_utils import log
 from bot.utils.config import load_config
 
 class EmbeddingClient:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self):
+        if self._initialized:
+            return
+
         config = load_config()
         embedding_config = config.embedding
         provider_config = config.providers.dashscope
@@ -21,13 +31,16 @@ class EmbeddingClient:
         self.model_name = embedding_config.model_name or config.get_default_agent().resolved_model_name
         self.max_text_length = embedding_config.max_text_length
         self.api_timeout_seconds = embedding_config.api_timeout_seconds
+        self.dimensions = embedding_config.dimensions
+        self._initialized = True
         log.info(f"using model:{self.model_name}")
 
     async def embed(self, input_text) -> List[float]:
 
         completion = self.client.embeddings.create(
             model=self.model_name,
-            input=input_text
+            input=input_text,
+            dimensions=self.dimensions
         )
         return completion.data[0].embedding
 
@@ -50,6 +63,7 @@ class EmbeddingClient:
                 response = self.client.embeddings.create(
                     model=self.model_name,
                     input=batch_texts,
+                    dimensions=self.dimensions,
                     timeout=self.api_timeout_seconds,
                 )
                 response_data = response.data

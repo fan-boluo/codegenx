@@ -12,7 +12,7 @@ from shared.exceptions.error_code import ErrorCode
 from shared.exceptions.throw_utils import ThrowUtils
 from shared.monitor.monitor_context import MonitorContext, MonitorContextHolder
 from shared.orm.app import App
-from shared.schema.app import AppChatRequest
+from shared.schema.app import AppChatRequest, AppChatStopRequest, AppChatStopResponse
 
 from core.app_client import AppServiceClient
 from core.auth_proxy import JWTUser
@@ -79,6 +79,7 @@ class ChatService:
                 user_message=request.message,
                 code_gen_type=code_gen_type,
                 app_id=request.app_id,
+                user_id=str(login_user.user_id),
                 trace_id=trace_id,
                 request_id=request.request_id,
                 session_id=request.session_id,
@@ -149,6 +150,30 @@ class ChatService:
                     ChatHistoryMessageTypeEnum.AI.value,
                     login_user.user_id,
                 )
+
+    async def stop_chat_generation(
+        self,
+        request: AppChatStopRequest,
+        login_user: JWTUser,
+        trace_id: str | None = None,
+    ) -> AppChatStopResponse:
+        if not trace_id:
+            raise ValueError("trace_id is required")
+        if not request.request_id:
+            raise ValueError("request_id is required")
+        if not request.session_id:
+            raise ValueError("session_id is required")
+        await self._get_owned_app(request.app_id, login_user)
+        result = await self.ai_service_client.stop_generation(
+            app_id=request.app_id,
+            user_id=str(login_user.user_id),
+            trace_id=trace_id,
+            request_id=request.request_id,
+            session_id=request.session_id,
+            reason=request.reason,
+            grace_seconds=request.grace_seconds,
+        )
+        return AppChatStopResponse.model_validate(result.model_dump(by_alias=True))
             
 
     async def _get_owned_app(self, app_id: int, login_user: JWTUser) -> App:

@@ -58,6 +58,7 @@ import {
   HomeOutlined,
   AppstoreOutlined,
   HistoryOutlined,
+  DashboardOutlined,
 } from '@ant-design/icons-vue'
 
 const loginUserStore = useLoginUserStore()
@@ -94,6 +95,12 @@ const originItems = [
     icon: () => h(HistoryOutlined),
     label: '对话管理',
     title: '对话管理',
+  },
+  {
+    key: '/admin/monitor',
+    icon: () => h(DashboardOutlined),
+    label: '监控中心',
+    title: '监控中心',
   },
 ]
 

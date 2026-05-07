@@ -22,10 +22,10 @@ from api.health import router as health_router
 from api.user import router as user_router
 from api.app import router as app_router
 from api.chat_history import router as chat_history_router
+from api.stats import router as stats_router
 # from api.apikey import router as apikey_router
 # from api.chat import router as chat_router
 # from api.internal_chat import router as internal_chat_router
-# from api.stats import router as stats_router
 # from api.blacklist import router as blacklist_router
 from shared.utils.result_utils import error
 from shared.exceptions.error_code import ErrorCode
@@ -118,10 +118,10 @@ def create_app() -> FastAPI:
     app.include_router(app_router, prefix=settings.app_base_path)
     app.include_router(chat_history_router, prefix=settings.app_base_path)
     app.include_router(health_router, prefix=settings.app_base_path)
+    app.include_router(stats_router, prefix=settings.app_base_path)
     # app.include_router(apikey_router, prefix=settings.app_base_path)
     # app.include_router(chat_router, prefix=settings.app_base_path)
     # app.include_router(internal_chat_router, prefix=settings.app_base_path)
-    # app.include_router(stats_router, prefix=settings.app_base_path)
     # app.include_router(blacklist_router, prefix=settings.app_base_path)
 
     return app

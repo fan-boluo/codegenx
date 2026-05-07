@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import Field
+
+from shared.schema.common import CamelBaseModel, PageRequest
+
+
+class MonitorToolCallDetail(CamelBaseModel):
+    name: str = ""
+    latency_ms: int = Field(default=0, alias="latencyMs")
+    status: str = "success"
+    call_count: int = Field(default=1, alias="callCount")
+
+
+class MonitorSessionQueryRequest(PageRequest):
+    status: str | None = None
+    app_id: str | None = Field(default=None, alias="appId")
+    user_id: str | None = Field(default=None, alias="userId")
+    session_id: str | None = Field(default=None, alias="sessionId")
+    trace_id: str | None = Field(default=None, alias="traceId")
+
+
+class MonitorAlertQueryRequest(PageRequest):
+    status: str | None = None
+    level: str | None = None
+    rule_name: str | None = Field(default=None, alias="ruleName")
+    session_id: str | None = Field(default=None, alias="sessionId")
+
+
+class MonitorSessionSummary(CamelBaseModel):
+    session_id: str = Field(alias="sessionId")
+    trace_id: str = Field(alias="traceId")
+    app_id: str = Field(alias="appId")
+    user_id: str = Field(default="", alias="userId")
+    model: str = ""
+    status: str = "running"
+    total_turns: int = Field(default=0, alias="totalTurns")
+    total_prompt_tokens: int = Field(default=0, alias="totalPromptTokens")
+    total_completion_tokens: int = Field(default=0, alias="totalCompletionTokens")
+    token_budget: int = Field(default=0, alias="tokenBudget")
+    avg_llm_latency_ms: float = Field(default=0, alias="avgLlmLatencyMs")
+    avg_first_token_ms: float = Field(default=0, alias="avgFirstTokenMs")
+    max_llm_latency_ms: int = Field(default=0, alias="maxLlmLatencyMs")
+    min_llm_latency_ms: int = Field(default=0, alias="minLlmLatencyMs")
+    total_tool_calls: int = Field(default=0, alias="totalToolCalls")
+    total_errors: int = Field(default=0, alias="totalErrors")
+    recovery_count: int = Field(default=0, alias="recoveryCount")
+    last_recovery_kind: str = Field(default="", alias="lastRecoveryKind")
+    avg_memory_hits: float = Field(default=0, alias="avgMemoryHits")
+    total_memory_hits: int = Field(default=0, alias="totalMemoryHits")
+    end_reason: str = Field(default="", alias="endReason")
+    started_at: datetime | None = Field(default=None, alias="startedAt")
+    ended_at: datetime | None = Field(default=None, alias="endedAt")
+    duration_ms: int = Field(default=0, alias="durationMs")
+    updated_at: datetime | None = Field(default=None, alias="updatedAt")
+
+
+class MonitorTurnSummary(CamelBaseModel):
+    trace_id: str = Field(alias="traceId")
+    session_id: str = Field(alias="sessionId")
+    turn_id: str = Field(alias="turnId")
+    turn_number: int = Field(default=0, alias="turnNumber")
+    status: str = "running"
+    prompt_tokens: int = Field(default=0, alias="promptTokens")
+    completion_tokens: int = Field(default=0, alias="completionTokens")
+    llm_latency_ms: int = Field(default=0, alias="llmLatencyMs")
+    first_token_ms: int = Field(default=0, alias="firstTokenMs")
+    llm_recovery_count: int = Field(default=0, alias="llmRecoveryCount")
+    llm_recovery_kind: str = Field(default="", alias="llmRecoveryKind")
+    tool_calls_count: int = Field(default=0, alias="toolCallsCount")
+    tool_calls_detail: list[MonitorToolCallDetail] = Field(default_factory=list, alias="toolCallsDetail")
+    memory_hits: int = Field(default=0, alias="memoryHits")
+    memory_retrieval_ms: int = Field(default=0, alias="memoryRetrievalMs")
+    context_tokens: int = Field(default=0, alias="contextTokens")
+    context_token_usage: int = Field(default=0, alias="contextTokenUsage")
+    error_count: int = Field(default=0, alias="errorCount")
+    started_at: datetime | None = Field(default=None, alias="startedAt")
+    ended_at: datetime | None = Field(default=None, alias="endedAt")
+    duration_ms: int = Field(default=0, alias="durationMs")
+    created_at: datetime | None = Field(default=None, alias="createdAt")
+
+
+class MonitorAlertRecordVO(CamelBaseModel):
+    id: int | None = None
+    rule_name: str = Field(alias="ruleName")
+    level: str
+    trace_id: str = Field(alias="traceId")
+    session_id: str = Field(alias="sessionId")
+    turn_id: str = Field(default="", alias="turnId")
+    status: str = "open"
+    message: str = ""
+    observed_value: str = Field(default="", alias="observedValue")
+    threshold_value: str = Field(default="", alias="thresholdValue")
+    triggered_at: datetime | None = Field(default=None, alias="triggeredAt")
+    resolved_at: datetime | None = Field(default=None, alias="resolvedAt")
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class MonitorStatusCount(CamelBaseModel):
+    status: str
+    count: int = 0
+
+
+class MonitorRuleCount(CamelBaseModel):
+    rule_name: str = Field(alias="ruleName")
+    count: int = 0
+
+
+class MonitorOverviewStats(CamelBaseModel):
+    total_sessions: int = Field(default=0, alias="totalSessions")
+    running_sessions: int = Field(default=0, alias="runningSessions")
+    success_sessions: int = Field(default=0, alias="successSessions")
+    error_sessions: int = Field(default=0, alias="errorSessions")
+    total_turns: int = Field(default=0, alias="totalTurns")
+    avg_turn_duration_ms: float = Field(default=0, alias="avgTurnDurationMs")
+    avg_llm_latency_ms: float = Field(default=0, alias="avgLlmLatencyMs")
+    avg_first_token_ms: float = Field(default=0, alias="avgFirstTokenMs")
+    avg_context_tokens: float = Field(default=0, alias="avgContextTokens")
+    avg_context_token_usage: float = Field(default=0, alias="avgContextTokenUsage")
+    total_tool_calls: int = Field(default=0, alias="totalToolCalls")
+    total_memory_hits: int = Field(default=0, alias="totalMemoryHits")
+    open_alerts: int = Field(default=0, alias="openAlerts")
+    status_breakdown: list[MonitorStatusCount] = Field(default_factory=list, alias="statusBreakdown")
+    alert_breakdown: list[MonitorRuleCount] = Field(default_factory=list, alias="alertBreakdown")
+
+
+class MonitorSessionDetail(CamelBaseModel):
+    session: MonitorSessionSummary
+    turns: list[MonitorTurnSummary] = Field(default_factory=list)
+    alerts: list[MonitorAlertRecordVO] = Field(default_factory=list)
+
+
+class MonitorComponentHealth(CamelBaseModel):
+    name: str
+    status: str = "unknown"
+    message: str = ""
+    checked_at: datetime | None = Field(default=None, alias="checkedAt")
+    latency_ms: int = Field(default=0, alias="latencyMs")
+    consecutive_failures: int = Field(default=0, alias="consecutiveFailures")
+    last_success_at: datetime | None = Field(default=None, alias="lastSuccessAt")
+    last_error_at: datetime | None = Field(default=None, alias="lastErrorAt")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MonitorHealthStatus(CamelBaseModel):
+    enabled: bool = True
+    overall_status: str = Field(default="unknown", alias="overallStatus")
+    degraded: bool = False
+    checked_at: datetime | None = Field(default=None, alias="checkedAt")
+    components: list[MonitorComponentHealth] = Field(default_factory=list)
+
+
+class MonitorCleanupTableResult(CamelBaseModel):
+    table_name: str = Field(alias="tableName")
+    status: str = "success"
+    affected_rows: int = Field(default=0, alias="affectedRows")
+    cutoff_at: datetime | None = Field(default=None, alias="cutoffAt")
+    error_message: str = Field(default="", alias="errorMessage")
+
+
+class MonitorCleanupSummary(CamelBaseModel):
+    retention_days: int = Field(alias="retentionDays")
+    dry_run: bool = Field(default=False, alias="dryRun")
+    status: str = "success"
+    deleted_rows: int = Field(default=0, alias="deletedRows")
+    executed_at: datetime | None = Field(default=None, alias="executedAt")
+    table_results: list[MonitorCleanupTableResult] = Field(default_factory=list, alias="tableResults")

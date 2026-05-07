@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     nacos_schema:str= "http"
     nacos_heartbeat_interval_seconds: int = 5
 
+    qdrant_url:str = "localhost"
+    qdrant_port: int = 6333
+    qdrant_api_key: str = ""
+    qdrant_size: int =1024
+
     cors_allow_origin_patterns: str = "*"
     log_level: str = "INFO"
     # 会从.env里面直接读取覆盖吗

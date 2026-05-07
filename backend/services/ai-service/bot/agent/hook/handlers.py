@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
-from typing import Any, TYPE_CHECKING
-from bot.skill.skill_loader import SkillLoader
-from bot.agent.plan.planner import Planner
-from bot.memory.manager import MemoryManager
-from bot.session.manager import SessionManager
-from shared.constants import get_bot_context_dir
+from datetime import datetime
+from typing import Any
+import uuid
+
+from monitor.alert_evaluator import get_monitor_alert_evaluator
+from monitor.monitor_pipeline import get_monitor_pipeline
+from monitor.span_context import SpanContext
+from monitor.telemetry_schema import SessionTelemetry, TelemetryStatus, TurnTelemetry, TurnToolMetrics
 from shared.config.log_config import log
 
-if TYPE_CHECKING:
-    from bot.agent.runtime import TurnContext
 
 MEMORY_TOOL_NAMES = {
     "memory_search",
@@ -22,454 +21,536 @@ MEMORY_TOOL_NAMES = {
     "write_identity_memory",
 }
 
-class SecurityError(Exception):
-    pass
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
 
 
-def _is_memory_tool(tool_name: str) -> bool:
-    return tool_name in MEMORY_TOOL_NAMES
+def _session_status(state: Any) -> TelemetryStatus:
+    normalized = str(getattr(state, "value", state) or "").lower()
+    if normalized == "failed":
+        return TelemetryStatus.ERROR
+    if normalized == "stopped":
+        return TelemetryStatus.STOPPED
+    if normalized == "completed":
+        return TelemetryStatus.SUCCESS
+    return TelemetryStatus.RUNNING
 
 
-def _normalize_tool_history_content(result: Any) -> str | None:
+def _ensure_session_telemetry(session: Any) -> SessionTelemetry:
+    telemetry = getattr(session, "telemetry", None)
+    if isinstance(telemetry, SessionTelemetry):
+        return telemetry
+
+    telemetry = SessionTelemetry(
+        trace_id=session.trace_id,
+        session_id=session.session_id,
+        app_id=session.app_id,
+        user_id=session.user_id,
+        started_at=_utcnow(),
+        status=TelemetryStatus.RUNNING,
+    )
+    session.telemetry = telemetry
+    return telemetry
+
+
+def _ensure_turn_telemetry(turn: Any, session: Any) -> TurnTelemetry:
+    telemetry = getattr(turn, "telemetry", None)
+    if isinstance(telemetry, TurnTelemetry):
+        return telemetry
+
+    telemetry = TurnTelemetry(
+        trace_id=session.trace_id,
+        session_id=session.session_id,
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+        started_at=_utcnow(),
+        status=TelemetryStatus.RUNNING,
+    )
+    turn.telemetry = telemetry
+    return telemetry
+
+
+def _tool_status(result: Any) -> TelemetryStatus:
     if isinstance(result, dict):
         if result.get("error"):
-            return f"Error: {result['error']}"
-        if "data" in result and isinstance(result.get("data"), str):
-            return result.get("data") or ""
-        if "content" in result and isinstance(result.get("content"), str):
-            return result.get("content") or ""
-    elif isinstance(result, str):
-        return result
-    return None
+            return TelemetryStatus.ERROR
+        if result.get("success") is False:
+            return TelemetryStatus.ERROR
+    return TelemetryStatus.SUCCESS
 
 
-def _get_session_manager(context: TurnContext) -> SessionManager:
-    session_manager = context.metadata.get("session_manager")
-    if session_manager is not None:
-        return session_manager
-
-    session_manager = SessionManager(getattr(context, "app_id", "main"))
-    context.metadata["session_manager"] = session_manager
-    return session_manager
-
-
-def _load_chat_history(context: TurnContext) -> int:
-    if not context.session_id or context.history:
-        return len(context.history)
-
-    session_manager = _get_session_manager(context)
-    history = session_manager.load_history(context.session_id)
-    context.history = history
-    context.metadata["chat_history_path"] = str(session_manager._session_file(context.session_id))
-    context.metadata["loaded_history_count"] = len(history)
-    return len(history)
+def _memory_hits(result: Any) -> int:
+    if isinstance(result, dict):
+        details = result.get("details")
+        if isinstance(details, dict) and isinstance(details.get("results"), list):
+            return len(details["results"])
+        data = result.get("data")
+        if isinstance(data, list):
+            return len(data)
+    return 0
 
 
-def _persist_chat_history(context: TurnContext) -> str | None:
-    if not context.session_id:
-        return None
-
-    session_manager = _get_session_manager(context)
-    session_manager.save_history(context.session_id, context.history)
-    history_path = session_manager._session_file(context.session_id)
-    context.metadata["chat_history_path"] = str(history_path)
-    context.metadata["saved_history_count"] = len(context.history)
-    return str(history_path)
+def _duration_ms_from_datetimes(started_at: datetime, ended_at: datetime) -> int:
+    return max(0, int((ended_at - started_at).total_seconds() * 1000))
 
 
-def _memory_tool_preview(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
-    preview: dict[str, Any] = {"tool_name": tool_name, "app_id": tool_args.get("app_id", "main")}
-    if tool_name == "memory_search":
-        preview["query"] = str(tool_args.get("query", ""))[:160]
-        preview["limit"] = tool_args.get("limit")
-    elif tool_name == "memory_get":
-        preview["path"] = tool_args.get("path")
-        preview["from"] = tool_args.get("from")
-        preview["lines"] = tool_args.get("lines")
-    elif tool_name in {"write_short_term", "write_long_term", "write_identity_memory"}:
-        preview["memory_type"] = tool_args.get("memory_type", "short")
-        preview["content_preview"] = str(tool_args.get("content", ""))[:160]
-        preview["session_id"] = tool_args.get("session_id", "")
-        preview["turn_id"] = tool_args.get("turn_id", "")
-    return preview
+def _db_only_span(trace_id: str) -> SpanContext:
+    return SpanContext(trace_id=trace_id, span_id=uuid.uuid4().hex[:16], span=None)
 
 
-def _count_by_key(items: list[dict[str, Any]], key: str) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in items:
-        value = str(item.get(key, "") or "unknown")
-        counts[value] = counts.get(value, 0) + 1
-    return counts
+async def _persist_span(
+    *,
+    session: Any,
+    span_ctx: Any,
+    operation_name: str,
+    start_time: datetime,
+    status: str,
+    attributes: dict[str, Any] | None = None,
+    parent_span_id: str | None = None,
+    turn_id: str = "",
+    turn_number: int = 0,
+    end_time: datetime | None = None,
+) -> None:
+    if span_ctx is None:
+        return
+
+    await get_monitor_pipeline().persist_span(
+        app_id=session.app_id,
+        user_id=session.user_id,
+        trace_id=span_ctx.trace_id,
+        span_id=span_ctx.span_id,
+        parent_span_id=parent_span_id,
+        session_id=session.session_id,
+        turn_id=turn_id,
+        turn_number=turn_number,
+        operation_name=operation_name,
+        start_time=start_time,
+        end_time=end_time,
+        duration_ms=_duration_ms_from_datetimes(start_time, end_time) if end_time is not None else None,
+        status=status,
+        attributes=attributes,
+    )
 
 
-def _build_memory_audit_view(context: TurnContext) -> dict[str, Any]:
-    tool_calls = list(context.metadata.get("memory_tool_calls", []))
-    extraction_events = list(context.metadata.get("memory_candidate_extractions", []))
-    persisted_candidates = list(context.metadata.get("persisted_memory_candidates", []))
+async def on_session_start(session: Any, **kwargs):
+    turn = kwargs.get("turn")
+    if turn is None:
+        return
 
-    tool_summary = {
-        "total": len(tool_calls),
-        "by_stage": _count_by_key(tool_calls, "stage"),
-        "by_tool": _count_by_key(tool_calls, "tool_name"),
-        "success": sum(1 for item in tool_calls if item.get("stage") == "post" and item.get("success") is True),
-        "failed": sum(1 for item in tool_calls if item.get("stage") == "post" and item.get("success") is False),
+    runtime = getattr(session, "runtime", None)
+    assembler = getattr(runtime, "context_assembler", None) if runtime is not None else None
+    if assembler is not None:
+        await assembler.prepare_turn_context(session, turn, getattr(runtime, "_tool_catalog", []))
+
+    session.audit_context = {
+        "app_id": session.app_id,
+        "user_id": session.user_id,
+        "trace_id": turn.request.trace_id,
+        "session_id": session.session_id,
+        "request_id": turn.request.request_id,
+        "code_gen_type": turn.request.requested_code_gen_type or "agent-decided",
     }
-    extraction_summary = {
-        "turns_recorded": len(extraction_events),
-        "by_mode": _count_by_key(extraction_events, "mode"),
-        "accepted_total": sum(int(item.get("accepted_count", 0) or 0) for item in extraction_events),
-        "raw_total": sum(int(item.get("raw_count", 0) or 0) for item in extraction_events),
-        "duplicates_filtered_total": sum(int(item.get("duplicates_filtered", 0) or 0) for item in extraction_events),
-        "existing_memory_refs_total": sum(int(item.get("existing_memory_count", 0) or 0) for item in extraction_events),
+    session.trace_id = turn.request.trace_id
+    session.request_id = turn.request.request_id
+    session.requested_code_gen_type = turn.request.requested_code_gen_type
+
+    turn.request.trace_id = session.trace_id
+    turn.request.request_id = session.request_id
+    turn.requested_code_gen_type = turn.request.requested_code_gen_type
+    snapshot = {
+        "session": dict(session.audit_context),
+        "turn": {
+            "turn_id": turn.request.turn_id,
+            "turn_number": turn.turn_number,
+            "code_dir": turn.code_dir,
+            "safe_paths": list(turn.safe_paths),
+            "workspace_metadata": dict(turn.workspace_metadata),
+            "knowledge_cache": dict(turn.knowledge_cache),
+            "plan_summary": turn.plan_summary,
+            "context": turn.context.model_dump(),
+        },
     }
-
-    return {
-        "session_id": context.session_id,
-        "trace_id": context.metadata.get("trace_id", ""),
-        "turn_count": int(context.metadata.get("turn_count", 0) or 0),
-        "total_tokens": int(getattr(context, "session_total_tokens", 0) or 0),
-        "last_error": context.metadata.get("last_error", ""),
-        "memory_tool_summary": tool_summary,
-        "memory_candidate_summary": extraction_summary,
-        "memory_tool_calls": tool_calls,
-        "memory_candidate_extractions": extraction_events,
-        "persisted_memory_candidates": persisted_candidates,
-        "memory_summary": context.metadata.get("memory_summary", {}),
-        "updated_at": time.time(),
-    }
-
-
-def _render_memory_audit_markdown(audit_view: dict[str, Any]) -> str:
-    tool_summary = audit_view.get("memory_tool_summary", {})
-    candidate_summary = audit_view.get("memory_candidate_summary", {})
-    lines = [
-        "# Memory Audit",
-        f"session_id: {audit_view.get('session_id', '')}",
-        f"trace_id: {audit_view.get('trace_id', '')}",
-        f"turn_count: {audit_view.get('turn_count', 0)}",
-        f"total_tokens: {audit_view.get('total_tokens', 0)}",
-        "",
-        "## Memory Tools",
-        f"total: {tool_summary.get('total', 0)}",
-        f"by_stage: {json.dumps(tool_summary.get('by_stage', {}), ensure_ascii=False)}",
-        f"by_tool: {json.dumps(tool_summary.get('by_tool', {}), ensure_ascii=False)}",
-        f"success: {tool_summary.get('success', 0)}",
-        f"failed: {tool_summary.get('failed', 0)}",
-        "",
-        "## Candidate Extraction",
-        f"turns_recorded: {candidate_summary.get('turns_recorded', 0)}",
-        f"by_mode: {json.dumps(candidate_summary.get('by_mode', {}), ensure_ascii=False)}",
-        f"accepted_total: {candidate_summary.get('accepted_total', 0)}",
-        f"raw_total: {candidate_summary.get('raw_total', 0)}",
-        f"duplicates_filtered_total: {candidate_summary.get('duplicates_filtered_total', 0)}",
-        f"existing_memory_refs_total: {candidate_summary.get('existing_memory_refs_total', 0)}",
-        "",
-        f"persisted_memory_candidates: {len(audit_view.get('persisted_memory_candidates', []))}",
-    ]
-
-    if audit_view.get("last_error"):
-        lines.extend(["", f"last_error: {audit_view['last_error']}"])
-
-    return "\n".join(lines)
-
-
-def _persist_memory_audit_log(context: TurnContext, memory_mgr: MemoryManager, audit_view: dict[str, Any]) -> str:
-    context_dir = Path(get_bot_context_dir(getattr(context, "app_id", "main")))
-    context_dir.mkdir(parents=True, exist_ok=True)
-    audit_path = context_dir / f"memory_audit_{context.session_id}.jsonl"
-
-    records: list[dict[str, Any]] = []
-    for item in audit_view.get("memory_tool_calls", []):
-        records.append({"record_type": "memory_tool_call", **item})
-    for item in audit_view.get("memory_candidate_extractions", []):
-        records.append({"record_type": "memory_candidate_extraction", **item})
-    records.append(
+    snapshot_path = session.session_manager.save_turn_snapshot(turn.request.turn_id, snapshot)
+    turn.snapshot_path = str(snapshot_path)
+    session.session_manager.append_chat_history_message(
+        session.session_id,
         {
-            "record_type": "memory_audit_summary",
-            "session_id": context.session_id,
-            "trace_id": context.metadata.get("trace_id", ""),
-            "summary": {
-                "turn_count": audit_view.get("turn_count", 0),
-                "total_tokens": audit_view.get("total_tokens", 0),
-                "memory_tool_summary": audit_view.get("memory_tool_summary", {}),
-                "memory_candidate_summary": audit_view.get("memory_candidate_summary", {}),
-                "persisted_memory_candidates": len(audit_view.get("persisted_memory_candidates", [])),
-            },
-        }
+            "trace_id": session.trace_id,
+            "session_id": session.session_id,
+            "turn_id": turn.request.turn_id,
+            "role": "user",
+            "content": turn.context.user_input,
+            "request_id": turn.request.request_id,
+            "create_time": _utcnow().isoformat(),
+        },
     )
 
-    audit_path.write_text(
-        "\n".join(json.dumps(record, ensure_ascii=False) for record in records) + "\n",
-        encoding="utf-8",
+    if getattr(session, "session_span", None) is not None:
+        return
+
+    telemetry = _ensure_session_telemetry(session)
+    pipeline = get_monitor_pipeline()
+    session.session_span = pipeline.on_session_start(
+        session_id=session.session_id,
+        user_id=session.user_id,
+        client_version=session.client_version,
+        model=getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
+        tokens_remaining=0,
     )
-    return str(audit_path)
+    session.session_span_started_at = _utcnow()
+    await _persist_span(
+        session=session,
+        span_ctx=session.session_span,
+        operation_name="agent.session",
+        start_time=session.session_span_started_at,
+        status=TelemetryStatus.RUNNING.value,
+        attributes={
+            "client.version": session.client_version,
+            "model.name": getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
+            "span.type": "root",
+            "user.id": session.user_id,
+        },
+    )
+    await pipeline.persist_session_metrics(
+        telemetry,
+        model=getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
+        token_budget=0,
+        sum_llm_latency_ms=0,
+        sum_first_token_ms=0,
+        max_llm_latency_ms=0,
+        min_llm_latency_ms=999999,
+        total_errors=0,
+        last_recovery_kind="",
+        end_reason="",
+    )
 
 
-async def _persist_memory_candidates(context: TurnContext, memory_mgr: MemoryManager) -> list[dict[str, Any]]:
-    persisted: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = {
-        (str(item.get("memory_type", "")), str(item.get("content", "")))
-        for item in context.metadata.get("persisted_memory_candidates", [])
-        if item.get("memory_type") and item.get("content")
+async def on_turn_start(turn: Any, **kwargs):
+    session = kwargs["session"]
+    telemetry = _ensure_turn_telemetry(turn, session)
+    telemetry.turn_number = turn.turn_number
+    turn_span = get_monitor_pipeline().on_turn_start(
+        session_id=session.session_id,
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+    )
+    turn.active_span_refs["turn"] = turn_span or _db_only_span(session.trace_id)
+    turn.active_span_refs["turn_started_at_utc"] = _utcnow()
+    await _persist_span(
+        session=session,
+        span_ctx=turn.active_span_refs["turn"],
+        operation_name="agent.turn",
+        start_time=turn.active_span_refs["turn_started_at_utc"],
+        status=TelemetryStatus.RUNNING.value,
+        parent_span_id=getattr(session.session_span, "span_id", None),
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+        attributes={
+            "turn.id": turn.request.turn_id,
+            "turn.number": turn.turn_number,
+        },
+    )
+    _ensure_session_telemetry(session).total_turns = session.turn_counter
+
+
+async def pre_llm_call(turn: Any, **kwargs):
+    session = kwargs["session"]
+    telemetry = _ensure_turn_telemetry(turn, session)
+    prompt_tokens = int(kwargs.get("prompt_tokens", 0) or 0)
+    projected_total_tokens = int(kwargs.get("projected_total_tokens", 0) or 0)
+    telemetry.context.token_count = prompt_tokens
+    telemetry.context.token_usage = projected_total_tokens
+    turn.current_prompt_tokens = prompt_tokens
+    turn.projected_total_tokens = projected_total_tokens
+    turn.active_span_refs["llm_started_at"] = time.perf_counter()
+    turn.active_span_refs["llm_started_at_utc"] = _utcnow()
+    llm_runtime_span = get_monitor_pipeline().on_llm_call_start(
+        session_id=session.session_id,
+        turn=turn.turn_number,
+        turn_id=turn.request.turn_id,
+    )
+    turn.active_span_refs["llm_runtime"] = llm_runtime_span
+    turn.active_span_refs["llm"] = llm_runtime_span or _db_only_span(session.trace_id)
+    await _persist_span(
+        session=session,
+        span_ctx=turn.active_span_refs["llm"],
+        operation_name="llm.call",
+        start_time=turn.active_span_refs["llm_started_at_utc"],
+        status=TelemetryStatus.RUNNING.value,
+        parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+        attributes={
+            "turn.id": turn.request.turn_id,
+            "llm.prompt_tokens": prompt_tokens,
+        },
+    )
+
+
+async def post_llm_call(turn: Any, **kwargs):
+    session = kwargs["session"]
+    telemetry = _ensure_turn_telemetry(turn, session)
+    usage = dict(kwargs.get("usage") or {})
+    started_at = turn.active_span_refs.pop("llm_started_at", None)
+    llm_span = turn.active_span_refs.pop("llm", None)
+    llm_runtime_span = turn.active_span_refs.pop("llm_runtime", None)
+    total_ms = max(0, int((time.perf_counter() - started_at) * 1000)) if started_at else 0
+
+    telemetry.llm.prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    telemetry.llm.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    telemetry.llm.total_ms = total_ms
+    telemetry.llm.status = TelemetryStatus.SUCCESS
+    session.sum_llm_latency_ms += telemetry.llm.total_ms
+    session.sum_first_token_ms += telemetry.llm.first_token_ms
+    session.max_llm_latency_ms = max(session.max_llm_latency_ms, telemetry.llm.total_ms)
+    session.min_llm_latency_ms = min(session.min_llm_latency_ms, telemetry.llm.total_ms)
+    if telemetry.llm.recovery_kind:
+        session.last_recovery_kind = telemetry.llm.recovery_kind
+
+    get_monitor_pipeline().on_context_assembly(
+        session_id=session.session_id,
+        token_count=telemetry.context.token_count,
+        turn_id=turn.request.turn_id,
+    )
+    get_monitor_pipeline().on_llm_call_end(
+        span_ctx=llm_runtime_span,
+        session_id=session.session_id,
+        model=getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
+        prompt_tokens=telemetry.llm.prompt_tokens,
+        completion_tokens=telemetry.llm.completion_tokens,
+        first_token_ms=telemetry.llm.first_token_ms,
+        total_ms=telemetry.llm.total_ms,
+        status="ok",
+    )
+    await _persist_span(
+        session=session,
+        span_ctx=llm_span,
+        operation_name="llm.call",
+        start_time=turn.active_span_refs.pop("llm_started_at_utc", _utcnow()),
+        end_time=_utcnow(),
+        status=TelemetryStatus.SUCCESS.value,
+        parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+        attributes={
+            "llm.prompt_tokens": telemetry.llm.prompt_tokens,
+            "llm.completion_tokens": telemetry.llm.completion_tokens,
+            "llm.first_token_ms": telemetry.llm.first_token_ms,
+            "llm.total_ms": telemetry.llm.total_ms,
+        },
+    )
+
+    alerts = await get_monitor_alert_evaluator().evaluate_llm(
+        trace_id=session.trace_id,
+        session_telemetry=_ensure_session_telemetry(session),
+        turn_telemetry=telemetry,
+        token_budget=0,
+        projected_total_tokens=turn.projected_total_tokens,
+    )
+    if alerts:
+        log.info("LLM alerts session={} turn={} count={}", session.session_id, turn.request.turn_id, len(alerts))
+
+
+async def pre_tool_use(turn: Any, **kwargs):
+    session = kwargs["session"]
+    tool_call = kwargs.get("tool_call") or {}
+    tool_name = str(tool_call.get("name", "") or "")
+    tool_id = str(tool_call.get("id") or tool_name)
+    runtime_span = get_monitor_pipeline().on_tool_call_start(
+        session_id=session.session_id,
+        tool_name=tool_name,
+        turn_id=turn.request.turn_id,
+    )
+    turn.active_span_refs.setdefault("tool", {})[tool_id] = {
+        "tool_name": tool_name,
+        "started_at": time.perf_counter(),
+        "started_at_utc": _utcnow(),
+        "runtime_span": runtime_span,
+        "span": runtime_span or _db_only_span(session.trace_id),
     }
+    tool_state = turn.active_span_refs["tool"][tool_id]
+    await _persist_span(
+        session=session,
+        span_ctx=tool_state.get("span"),
+        operation_name=f"tool.{tool_name}",
+        start_time=tool_state["started_at_utc"],
+        status=TelemetryStatus.RUNNING.value,
+        parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+        attributes={
+            "tool.name": tool_name,
+        },
+    )
 
-    for candidate in context.metadata.get("memory_candidates", []):
-        memory_type = candidate.get("memory_type")
-        content = str(candidate.get("content", "")).strip()
-        if not memory_type or not content:
-            continue
 
-        key = (str(memory_type), content)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        try:
-            await memory_mgr.write_memory(content, memory_type, context.session_id)
-            persisted.append({"memory_type": str(memory_type), "content": content})
-        except Exception as exc:
-            logger.warning(f"Failed to persist memory candidate: {exc}")
-
-    return persisted
-
-async def on_session_start(context: TurnContext, **kwargs):
-    context.app_id = context.app_id or "main"
-    context.metadata.setdefault("start_time", time.time())
-    context.metadata.setdefault("create_time", time.time())
-    context.metadata.setdefault("memory_tool_calls", [])
-    context.metadata.setdefault("memory_candidate_extractions", [])
-    context.metadata.setdefault("tool_result_overrides", {})
-    context.metadata.setdefault("persisted_memory_candidates", [])
-
-    try:
-        loaded_count = _load_chat_history(context)
-        log.info("[Hook] Loaded {} history messages for session {}", loaded_count, context.session_id)
-    except Exception as e:
-        log.warning("Failed to load chat history for session {}: {}", context.session_id, e)
-
-    try:
-        memory_mgr = context.metadata.get("memory_manager")
-        if memory_mgr is None:
-            memory_mgr = MemoryManager(context.app_id)
-        context.metadata["memory_manager"] = memory_mgr
-        if not context.metadata.get("memory_bootstrapped"):
-            bootstrap_summary = await memory_mgr.bootstrap()
-            context.metadata["memory_summary"] = bootstrap_summary
-            context.metadata["static_memory_context"] = memory_mgr.get_static_memory_context()
-            context.metadata["memory_bootstrapped"] = True
-            log.info(
-                "Memory bootstrap complete session={} files={} chunks={}",
-                context.session_id,
-                bootstrap_summary.get("indexed_files", 0),
-                bootstrap_summary.get("indexed_chunks", 0),
-            )
-        else:
-            context.metadata.setdefault("memory_summary", memory_mgr.build_bootstrap_summary())
-            context.metadata.setdefault("static_memory_context", memory_mgr.get_static_memory_context())
-    except Exception as e:
-        log.warning("Failed to initialize MemoryManager: {}", e)
-        context.metadata["memory_summary"] = {}
-        context.metadata["static_memory_context"] = ""
-
-    try:
-        planner = context.metadata.get("planner") or Planner()
-        context.metadata["planner"] = planner
-        if not context.metadata.get("plan_state_locked"):
-            context.plan_state = planner.get_state()
-        log.info("Planner initialized. Current plan state: {}", context.plan_state)
-    except Exception as e:
-        log.warning("Failed to initialize Planner: {}", e)
-        context.plan_state = "INIT"
-
-    try:
-        if "skill_catalog" not in context.metadata:
-            skills = SkillLoader().load_all_skills()
-            if skills:
-                context.metadata["skill_catalog"] = [
-                    {"name": s.name, "description": s.metadata.get("description", "")} 
-                    for s in skills
-                ]
-                log.info("SkillLoader successfully loaded {} skills.", len(skills))
-            else:
-                context.metadata["skill_catalog"] = []
-                log.info("SkillLoader found 0 skills.")
-    except Exception as e:
-        log.warning("Failed to load skills: {}", e)
-        context.metadata["skill_catalog"] = []
-
-    log.info("[Hook] OnSessionStart: Session {} started, trace_id={}", context.session_id, context.metadata["trace_id"])
-
-async def on_turn_start(context: TurnContext, **kwargs):
-    context.metadata["turn_count"] = context.metadata.get("turn_count", 0) + 1
-    context.metadata["turn_start_time"] = time.time()
-    
-    # Update plan state
-    planner = context.metadata.get("planner")
-    if planner and not context.metadata.get("plan_state_locked"):
-        try:
-            planner.note_round()
-            context.plan_state = planner.get_state()
-        except Exception as e:
-            log.warning("Failed to update planner state: {}", e)
-            
-    log.info("[Hook] OnTurnStart: Turn {}, count={}", context.turn_id, context.metadata["turn_count"])
-
-async def pre_llm_call(context: TurnContext, **kwargs):
-    budget = int(kwargs.get("token_budget", context.token_budget) or context.token_budget or 0)
-    projected_total_tokens = int(kwargs.get("projected_total_tokens", context.projected_total_tokens) or 0)
-    context.token_budget = budget
-    if budget and projected_total_tokens >= budget:
-        log.warning("[Hook] PreLLMCall: Token budget exceeded ({} >= {})", projected_total_tokens, budget)
-
-    memory_mgr = context.metadata.get("memory_manager")
-    if memory_mgr and context.user_input:
-        try:
-            recall_payload = await memory_mgr.search_for_prompt(context.user_input, limit=5)
-            context.metadata["retrieved_memories"] = recall_payload.get("text", "")
-            context.metadata["retrieved_memory_count"] = recall_payload.get("count", 0)
-        except Exception as exc:
-            log.warning("[Hook] PreLLMCall: memory recall failed: {}", exc)
-            context.metadata["retrieved_memories"] = ""
-            context.metadata["retrieved_memory_count"] = 0
-    
-    log.debug("[Hook] PreLLMCall: Ready for LLM call in turn {}", context.turn_id)
-
-async def post_llm_call(context: TurnContext, **kwargs):
-    response = kwargs.get("response", {})
-    tool_calls = response.get("tool_calls", [])
-
-    usage = kwargs.get("usage") or {}
-    usage = {
-        "prompt_tokens": int(usage.get("prompt_tokens", context.current_prompt_tokens) or 0),
-        "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
-        "total_tokens": int(usage.get("total_tokens", 0) or 0),
-    }
-    context.last_llm_usage = usage
-
-    log.debug("[Hook] PostLLMCall: LLM yielded {} tool calls. Tokens used: {}", len(tool_calls), usage["total_tokens"])
-
-async def pre_tool_use(context: TurnContext, **kwargs):
-    tool_call = kwargs.get("tool_call", {})
-    tool_name = tool_call.get("name", "")
-    args = tool_call.get("arguments", {}) or tool_call.get("args", {})
-
-    if _is_memory_tool(tool_name):
-        context.metadata.setdefault("memory_tool_calls", []).append(
-            {
-                "stage": "pre",
-                "tool_call_id": tool_call.get("id", tool_name),
-                **_memory_tool_preview(tool_name, args if isinstance(args, dict) else {}),
-            }
-        )
-
-    context.metadata["current_tool_start_time"] = time.time()
-    log.info("[Hook] PreToolUse: Executing tool {}", tool_name)
-    return {}
-
-async def post_tool_use(context: TurnContext, **kwargs):
-    tool_call = kwargs.get("tool_call", {})
-    tool_name = tool_call.get("name", "")
+async def post_tool_use(turn: Any, **kwargs):
+    session = kwargs["session"]
+    tool_call = kwargs.get("tool_call") or {}
     result = kwargs.get("result")
-    args = tool_call.get("arguments", {}) or tool_call.get("args", {})
-    
-    start_time = context.metadata.pop("current_tool_start_time", time.time())
-    execution_time = time.time() - start_time
-    
-    log.info("[Hook] PostToolUse: Executed tool {} in {:.3f}s", tool_name, execution_time)
-    
-    observation = str(result)
-    max_len = 5000
-    if observation and isinstance(observation, str) and len(observation) > max_len:
-        log.warning("[Hook] PostToolUse: Capturing preview for long observation from {} (length {})", tool_name, len(observation))
-        context.metadata.setdefault("tool_result_previews", {})[tool_call.get("id", tool_name)] = (
-            observation[:max_len] + "\n... [TRUNCATED FOR PREVIEW]"
+    tool_id = str(tool_call.get("id") or tool_call.get("name") or "")
+    tool_state = turn.active_span_refs.setdefault("tool", {}).pop(tool_id, {})
+    tool_name = str(tool_state.get("tool_name") or tool_call.get("name") or "unknown")
+    started_at = tool_state.get("started_at")
+    latency_ms = max(0, int((time.perf_counter() - started_at) * 1000)) if started_at else 0
+    status = _tool_status(result)
+
+    telemetry = _ensure_turn_telemetry(turn, session)
+    telemetry.tool.append(
+        TurnToolMetrics(
+            tool_name=tool_name,
+            latency_ms=latency_ms,
+            status=status,
+            call_count=1,
+        )
+    )
+
+    get_monitor_pipeline().on_tool_call_end(
+        span_ctx=tool_state.get("runtime_span"),
+        session_id=session.session_id,
+        tool_name=tool_name,
+        latency_ms=latency_ms,
+        status="error" if status == TelemetryStatus.ERROR else "ok",
+    )
+    await _persist_span(
+        session=session,
+        span_ctx=tool_state.get("span"),
+        operation_name=f"tool.{tool_name}",
+        start_time=tool_state.get("started_at_utc", _utcnow()),
+        end_time=_utcnow(),
+        status=status.value,
+        parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+        attributes={
+            "tool.name": tool_name,
+            "tool.latency_ms": latency_ms,
+        },
+    )
+
+    if tool_name in MEMORY_TOOL_NAMES:
+        hits = _memory_hits(result)
+        telemetry.memory.hits += hits
+        telemetry.memory.latency_ms += latency_ms
+        telemetry.memory.source = tool_name
+        session.total_memory_hits += hits
+        get_monitor_pipeline().on_memory_retrieval(
+            session_id=session.session_id,
+            hits=hits,
+            latency_ms=latency_ms,
+            turn_id=turn.request.turn_id,
+            source=tool_name,
         )
 
-    history_override = _normalize_tool_history_content(result)
-    if history_override is not None:
-        context.metadata.setdefault("tool_result_overrides", {})[tool_call.get("id", tool_name)] = history_override
+    alerts = await get_monitor_alert_evaluator().evaluate_tool(
+        trace_id=session.trace_id,
+        session_telemetry=_ensure_session_telemetry(session),
+        turn_telemetry=telemetry,
+        tool_name=tool_name,
+        tool_status=status.value,
+    )
+    session.total_tool_calls += 1
+    if alerts:
+        log.info("Tool alerts session={} turn={} tool={} count={}", session.session_id, turn.request.turn_id, tool_name, len(alerts))
 
-    if observation:
-        context.metadata.setdefault("tool_metrics", []).append(
-            {
-                "tool_name": tool_name,
-                "execution_time": execution_time,
-                "observation_length": len(observation),
-            }
-        )
-        context.metrics = list(context.metadata.get("tool_metrics", []))
-        log.debug("[Hook] PostToolUse: Observation length: {}", len(str(observation)))
 
-    if _is_memory_tool(tool_name):
-        context.metadata.setdefault("memory_tool_calls", []).append(
-            {
-                "stage": "post",
-                "tool_call_id": tool_call.get("id", tool_name),
-                "execution_time": execution_time,
-                "success": not (isinstance(result, dict) and result.get("success") is False),
-                "result_preview": observation[:160],
-                **_memory_tool_preview(tool_name, args if isinstance(args, dict) else {}),
-            }
-        )
+async def on_turn_end(turn: Any, **kwargs):
+    session = kwargs["session"]
+    telemetry = _ensure_turn_telemetry(turn, session)
+    telemetry.ended_at = _utcnow()
+    finished_at = float(turn.finished_at or time.time())
+    started_at = float(turn.started_at or finished_at)
+    telemetry.duration_ms = max(0, int((finished_at - started_at) * 1000))
+    telemetry.status = _session_status(turn.state)
 
-async def on_turn_end(context: TurnContext, **kwargs):
-    start_time = context.metadata.get("turn_start_time", time.time())
-    duration = time.time() - start_time
-    context.metadata["turn_processing_time"] = duration
-    context.metadata["memory_candidate_count"] = len(context.metadata.get("memory_candidates", []))
+    get_monitor_pipeline().on_turn_end(
+        session_id=session.session_id,
+        turn_id=turn.request.turn_id,
+        status="error" if telemetry.status == TelemetryStatus.ERROR else "ok",
+        duration_ms=telemetry.duration_ms,
+        prompt_tokens=telemetry.llm.prompt_tokens,
+        completion_tokens=telemetry.llm.completion_tokens,
+        tool_call_count=len(telemetry.tool),
+        memory_hits=telemetry.memory.hits,
+    )
+    await _persist_span(
+        session=session,
+        span_ctx=turn.active_span_refs.get("turn"),
+        operation_name="agent.turn",
+        start_time=turn.active_span_refs.pop("turn_started_at_utc", telemetry.started_at or _utcnow()),
+        end_time=telemetry.ended_at,
+        status=telemetry.status.value,
+        parent_span_id=getattr(session.session_span, "span_id", None),
+        turn_id=turn.request.turn_id,
+        turn_number=turn.turn_number,
+        attributes={
+            "turn.id": turn.request.turn_id,
+            "turn.duration_ms": telemetry.duration_ms,
+            "turn.prompt_tokens": telemetry.llm.prompt_tokens,
+            "turn.completion_tokens": telemetry.llm.completion_tokens,
+            "turn.tool_call_count": len(telemetry.tool),
+            "turn.memory_hits": telemetry.memory.hits,
+        },
+    )
+    await get_monitor_pipeline().persist_turn_metrics(telemetry)
 
-    try:
-        _persist_chat_history(context)
-    except Exception as e:
-        log.warning("Failed to persist chat history for session {}: {}", context.session_id, e)
 
-    memory_mgr = context.metadata.get("memory_manager")
-    if memory_mgr:
-        try:
-            persisted = await _persist_memory_candidates(context, memory_mgr)
-            if persisted:
-                context.metadata.setdefault("persisted_memory_candidates", []).extend(persisted)
-            context.metadata["memory_candidates"] = []
-        except Exception as exc:
-            log.warning("Failed to persist memory candidates for session {}: {}", context.session_id, exc)
+async def on_error(turn: Any, **kwargs):
+    session = kwargs["session"]
+    telemetry = _ensure_turn_telemetry(turn, session)
+    telemetry.status = TelemetryStatus.ERROR
+    session.total_errors += 1
+    error = kwargs.get("error")
+    get_monitor_pipeline().on_error(
+        session_id=session.session_id,
+        span_ctx=turn.active_span_refs.get("turn"),
+        exception=error if isinstance(error, Exception) else RuntimeError(str(error)),
+        error_type=type(error).__name__ if isinstance(error, Exception) else "RuntimeError",
+    )
 
-    audit_view = _build_memory_audit_view(context)
-    context.metadata["memory_audit_view"] = audit_view
-    context.metadata["memory_audit_display"] = _render_memory_audit_markdown(audit_view)
-    
-    log.info("[Hook] OnTurnEnd: Turn {} completed in {:.3f}s", context.turn_id, duration)
 
-async def on_error(context: TurnContext, **kwargs):
-    error = kwargs.get("error", "Unknown Error")
-    error_type = type(error).__name__ if isinstance(error, Exception) else "UnknownType"
-    
-    context.metadata["last_error"] = str(error)
-    context.metadata["last_error_type"] = error_type
+async def on_session_end(session: Any, **kwargs):
+    telemetry = _ensure_session_telemetry(session)
+    telemetry.ended_at = _utcnow()
+    telemetry.status = _session_status(session.state)
+    telemetry.total_prompt_tokens = session.total_prompt_tokens
+    telemetry.total_completion_tokens = session.total_completion_tokens
+    telemetry.total_tool_calls = session.total_tool_calls
+    telemetry.total_memory_hits = session.total_memory_hits
+    telemetry.recovery_count = session.recovery_count
+    end_reason = str(kwargs.get("end_reason", "completed") or "completed")
 
-    try:
-        _persist_chat_history(context)
-    except Exception as persist_error:
-        log.warning("Failed to persist chat history after error for session {}: {}", context.session_id, persist_error)
-    
-    log.error("[Hook] OnError: [{}] in session {}: {}", error_type, context.session_id, error)
-
-async def on_session_end(context: TurnContext, **kwargs):
-    start_time = context.metadata.get("create_time", time.time())
-    duration = time.time() - start_time
-    
-    total_turns = context.metadata.get("turn_count", 0)
-    total_tokens = context.session_total_tokens
-    
-    # Clean up MemoryManager
-    memory_mgr = context.metadata.get("memory_manager")
-    if memory_mgr:
-        try:
-            audit_view = _build_memory_audit_view(context)
-            context.metadata["memory_audit_view"] = audit_view
-            context.metadata["memory_audit_display"] = _render_memory_audit_markdown(audit_view)
-            audit_log_path = _persist_memory_audit_log(context, memory_mgr, audit_view)
-            context.metadata["memory_audit_log_path"] = audit_log_path
-        except Exception as e:
-            log.warning("Failed to finalize memory audit: {}", e)
-            
-    log.info("[Hook] OnSessionEnd: Session {} ended. Duration={:.2f}s, Turns={}, Tokens={}", context.session_id, duration, total_turns, total_tokens)
+    get_monitor_pipeline().on_session_end(
+        session_id=session.session_id,
+        root_span=session.session_span,
+        end_reason=end_reason,
+        total_turns=telemetry.total_turns,
+        total_tokens=telemetry.total_prompt_tokens + telemetry.total_completion_tokens,
+        status="error" if telemetry.status == TelemetryStatus.ERROR else "ok",
+    )
+    await _persist_span(
+        session=session,
+        span_ctx=session.session_span,
+        operation_name="agent.session",
+        start_time=getattr(session, "session_span_started_at", telemetry.started_at or _utcnow()),
+        end_time=telemetry.ended_at,
+        status=telemetry.status.value,
+        attributes={
+            "session.end_reason": end_reason,
+            "session.total_turns": telemetry.total_turns,
+            "session.total_tokens": telemetry.total_prompt_tokens + telemetry.total_completion_tokens,
+        },
+    )
+    await get_monitor_pipeline().persist_session_metrics(
+        telemetry,
+        model=getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
+        token_budget=0,
+        sum_llm_latency_ms=session.sum_llm_latency_ms,
+        sum_first_token_ms=session.sum_first_token_ms,
+        max_llm_latency_ms=session.max_llm_latency_ms,
+        min_llm_latency_ms=session.min_llm_latency_ms,
+        total_errors=session.total_errors,
+        last_recovery_kind=session.last_recovery_kind,
+        end_reason=end_reason,
+    )

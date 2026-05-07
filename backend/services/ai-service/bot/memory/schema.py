@@ -1,45 +1,33 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
 class MemoryType(str,Enum):
     LONG = "long"
     SHORT = "short"
-    USER = "user"
-    SOUL = "soul"
-    IDENTITY = "identity"
-
-class MemorySource(str, Enum):
-    """Memory source type (matches TS MemorySource)."""
-    MEMORY = "memory"
-    SESSIONS = "sessions"
-    MANUAL = "manual"
 
 
 @dataclass
 class MemorySearchResult:
     """
-    Memory search result (matches TS MemorySearchResult).
-
     Attributes:
-        path: Relative file path
-        start_line: Start line number (1-indexed)
-        end_line: End line number (1-indexed)
-        score: Search score (0-1)
+        id: Optional chunk id
+        text: Full chunk text
         snippet: Text snippet,一段text的子串[:200] ...
-        source: Source type (memory | sessions | manual)
-        citation: Optional citation string
-        id: Optional chunk id (used by BuiltinMemoryManager)
-        text: Full chunk text (used by BuiltinMemoryManager, alias for snippet)
+        score: Search score (0-1)
+        type: long/short
+
     """
-    path: str
-    start_line: int
-    end_line: int
-    score: float
+    id: str | None
+    text: str | None
     snippet: str
-    source: MemorySource
-    citation: str | None = None
-    id: str | None = None
-    text: str | None = None
+    score: float
+    type: MemoryType
+    access_count: int | None
+    importance:float | None
+    version: int | None
+    category:str | None  # 对应的是库里面的memory_type字段
+    vector:list[float] | None = field(default=None)  # 可选的向量字段，便于后续直接使用
+
 
 

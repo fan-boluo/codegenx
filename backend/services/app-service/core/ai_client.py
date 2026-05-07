@@ -17,6 +17,8 @@ from shared.monitor.monitor_context import MonitorContextHolder
 from shared.schema.ai_service import (
     AiServiceErrorPayload,
     AiServiceGenerateRequest,
+    AiServiceStopRequest,
+    AiServiceStopResponse,
     AiServiceStreamChunk,
     AiServiceStreamMeta,
 )
@@ -36,9 +38,11 @@ class AiServiceClient:
         http_port = getattr(settings, "ai_service_http_port", None) or "8002"
         self.base_url = f"http://{settings.ai_service_host}:{http_port}"
         self.stream_url = f"{self.base_url}/internal/ai/codegen/stream"
+        self.stop_url = f"{self.base_url}/internal/ai/codegen/stop"
         self.timeout_ms = int(settings.ai_timeout_seconds * 1000)
         self._stream_timeout = httpx.Timeout(connect=5.0, read=None, write=10.0, pool=5.0)
         self._max_attempts = 2
+        self._request_timeout = httpx.Timeout(10.0)
 
     async def generate_code_stream(
         self,
@@ -46,6 +50,7 @@ class AiServiceClient:
         user_message: str,
         code_gen_type: CodeGenTypeEnum | None = None,
         app_id: int,
+        user_id: str | None = None,
         trace_id: str,
         request_id: str,
         session_id: str,
@@ -57,6 +62,7 @@ class AiServiceClient:
         )
         payload = AiServiceGenerateRequest(
             appId=app_id,
+            userId=user_id,
             message=user_message,
             codeGenType=code_gen_type.value if code_gen_type else None,
             traceId=resolved_trace_id,
@@ -149,6 +155,37 @@ class AiServiceClient:
                 await asyncio.sleep(0.2 * attempt)
 
         raise BusinessException(ErrorCode.SYSTEM_ERROR, "调用 AI 服务流式生成失败")
+
+    async def stop_generation(
+        self,
+        *,
+        app_id: int,
+        user_id: str | None,
+        trace_id: str,
+        request_id: str,
+        session_id: str,
+        reason: str | None = None,
+        grace_seconds: float | None = None,
+    ) -> AiServiceStopResponse:
+        payload = AiServiceStopRequest(
+            appId=app_id,
+            userId=user_id,
+            sessionId=session_id,
+            traceId=trace_id,
+            requestId=request_id,
+            reason=reason,
+            graceSeconds=grace_seconds,
+        )
+        async with httpx.AsyncClient(timeout=self._request_timeout) as client:
+            response = await client.post(
+                self.stop_url,
+                headers=self._build_headers(trace_id, request_id),
+                json=payload.model_dump(by_alias=True, exclude_none=True),
+            )
+        if response.status_code >= 400:
+            error_payload = self._parse_error_payload(response)
+            raise BusinessException(error_payload.code, error_payload.message)
+        return AiServiceStopResponse.model_validate(response.json())
 
     @staticmethod
     def _validate_call_context(*, trace_id: str | None, request_id: str | None, session_id: str | None) -> tuple[str, str, str]:

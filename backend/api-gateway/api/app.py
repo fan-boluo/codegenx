@@ -75,6 +75,22 @@ async def chat_to_gen_code_post(
     )
 
 
+@router.post("/chat/stop")
+async def stop_chat_generation(
+    request: Request,
+    payload: dict[str, Any],
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    proxy = ChatProxy()
+    return await proxy.request_json(
+        method="POST",
+        path="/api/app/chat/stop",
+        authorization=authorization,
+        trace_id=getattr(request.state, "trace_id", None),
+        json_body=payload,
+    )
+
+
 @router.post("/deploy")
 async def deploy_app(
     payload: dict[str, Any],

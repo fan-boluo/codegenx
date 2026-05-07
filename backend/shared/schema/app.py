@@ -36,6 +36,23 @@ class AppChatRequest(CamelBaseModel):
     stream: bool = False
 
 
+class AppChatStopRequest(CamelBaseModel):
+    app_id: int = Field(alias="appId")
+    session_id: str = Field(alias="sessionId")
+    request_id: str | None = Field(default=None, alias="requestId")
+    grace_seconds: float | None = Field(default=None, alias="graceSeconds")
+    reason: str | None = None
+
+
+class AppChatStopResponse(CamelBaseModel):
+    accepted: bool
+    session_id: str = Field(alias="sessionId")
+    stopped_turn_count: int = Field(alias="stoppedTurnCount")
+    dropped_turn_count: int = Field(alias="droppedTurnCount")
+    active_turn_ids: list[str] = Field(default_factory=list, alias="activeTurnIds")
+    dropped_turn_ids: list[str] = Field(default_factory=list, alias="droppedTurnIds")
+
+
 class AppQueryRequest(PageRequest):
     id: int | None = None
     app_name: str | None = Field(default=None, alias="appName")

@@ -22,11 +22,31 @@ class AiServiceRouteResponse(CamelBaseModel):
 
 class AiServiceGenerateRequest(CamelBaseModel):
     app_id: int = Field(alias="appId")
+    user_id: str | None = Field(default=None, alias="userId")
     message: str
     code_gen_type: str | None = Field(default=None, alias="codeGenType")
     session_id: str | None = Field(default=None, alias="sessionId")
     trace_id: str | None = Field(default=None, alias="traceId")
     request_id: str | None = Field(default=None, alias="requestId")
+
+
+class AiServiceStopRequest(CamelBaseModel):
+    app_id: int = Field(alias="appId")
+    user_id: str | None = Field(default=None, alias="userId")
+    session_id: str = Field(alias="sessionId")
+    trace_id: str | None = Field(default=None, alias="traceId")
+    request_id: str | None = Field(default=None, alias="requestId")
+    reason: str | None = None
+    grace_seconds: float | None = Field(default=None, alias="graceSeconds")
+
+
+class AiServiceStopResponse(CamelBaseModel):
+    accepted: bool
+    session_id: str = Field(alias="sessionId")
+    stopped_turn_count: int = Field(alias="stoppedTurnCount")
+    dropped_turn_count: int = Field(alias="droppedTurnCount")
+    active_turn_ids: list[str] = Field(default_factory=list, alias="activeTurnIds")
+    dropped_turn_ids: list[str] = Field(default_factory=list, alias="droppedTurnIds")
 
 
 class AiServiceStreamMeta(CamelBaseModel):

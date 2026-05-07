@@ -3,6 +3,7 @@ import importlib
 import sys
 from abc import ABC
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 from pydantic import BaseModel
 from bot.tools.base import Tool, BaseTool
@@ -11,13 +12,15 @@ from bot.utils.log_utils import log
 
 # 工具目录
 BUILTIN_TOOLS_DIR = Path(__file__).parent.parent / "tools"
+_TOOL_REGISTRY_SINGLETON: "ToolRegistry | None" = None
+_TOOL_REGISTRY_LOCK = Lock()
 
-class ToolsHandler:
+class ToolRegistry:
     def __init__(self):
         self.tools: list[Tool] = []
-        self.load_tools()
+        self.regist_tools()
 
-    def load_tools(self):
+    def regist_tools(self):
         """
         加载所有的工具
         """
@@ -122,5 +125,16 @@ if __name__ == '__main__':
 
     # asyncio.run(test_read())
 
-    handler = ToolsHandler()
-    handler.load_tools()  # 二次执行
+    handler = ToolRegistry()
+    handler.regist_tools()  # 二次执行
+
+
+def get_tool_registry() -> ToolRegistry:
+    global _TOOL_REGISTRY_SINGLETON
+    if _TOOL_REGISTRY_SINGLETON is not None:
+        return _TOOL_REGISTRY_SINGLETON
+
+    with _TOOL_REGISTRY_LOCK:
+        if _TOOL_REGISTRY_SINGLETON is None:
+            _TOOL_REGISTRY_SINGLETON = ToolRegistry()
+    return _TOOL_REGISTRY_SINGLETON

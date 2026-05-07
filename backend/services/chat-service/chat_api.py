@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.mysql.session import get_db_session
 from shared.config.log_config import log
-from shared.schema.app import AppChatRequest
+from shared.schema.app import AppChatRequest, AppChatStopRequest, AppChatStopResponse
 from shared.schema.common import BaseResponse
 from shared.utils.result_utils import success
 
@@ -82,6 +82,37 @@ async def chat_to_gen_code_post(
         return success("".join(chunks))
     except Exception as exc:
         log.exception("chat to gen code failed traceId={} appId={} userId={}", trace_id, payload.app_id, current_user.user_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/api/app/chat/stop", response_model=BaseResponse[AppChatStopResponse])
+async def stop_chat_generation(
+    payload: AppChatStopRequest,
+    http_request: Request,
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+):
+    trace_id = getattr(http_request.state, "trace_id", None)
+    log.info(
+        "chat-service stop request traceId={} appId={} userId={} sessionId={} graceSeconds={} reason={}",
+        trace_id,
+        payload.app_id,
+        current_user.user_id,
+        payload.session_id,
+        payload.grace_seconds,
+        payload.reason,
+    )
+    try:
+        result = await ChatService(db).stop_chat_generation(payload, current_user, trace_id=trace_id)
+        return success(result)
+    except Exception as exc:
+        log.exception(
+            "chat-service stop failed traceId={} appId={} userId={} sessionId={}",
+            trace_id,
+            payload.app_id,
+            current_user.user_id,
+            payload.session_id,
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

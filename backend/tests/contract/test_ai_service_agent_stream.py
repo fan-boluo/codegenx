@@ -76,6 +76,7 @@ class AiServiceAgentStreamContractTest(unittest.TestCase):
             "/api/ai/codegen/stream",
             json={
                 "appId": 101,
+                "userId": "u-101",
                 "message": "生成一个官网首页",
                 "traceId": "trace-101",
                 "requestId": "req-101",
@@ -91,6 +92,7 @@ class AiServiceAgentStreamContractTest(unittest.TestCase):
         self.assertEqual(self.fake_agent.calls[0]["trace_id"], "trace-101")
         self.assertEqual(self.fake_agent.calls[0]["request_id"], "req-101")
         self.assertEqual(self.fake_agent.calls[0]["session_id"], "session-101")
+        self.assertEqual(self.fake_agent.calls[0]["user_id"], "u-101")
         self.assertIsNone(self.fake_agent.calls[0]["requested_code_gen_type"])
 
     def test_internal_stream_wraps_agent_chunks_as_sse(self) -> None:

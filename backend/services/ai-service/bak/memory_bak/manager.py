@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Optional, Any, List
 
 from bot.llm.llm import EmbeddingClient
-from bot.memory.hybrid import normalize_scores, merge_hybrid_results, apply_mmr
-from bot.memory.schema import MemoryType, MemorySource, MemorySearchResult
+from bot.memory_bak.hybrid import normalize_scores, merge_hybrid_results, apply_mmr
+from bot.memory_bak.schema import MemoryType, MemorySource, MemorySearchResult
 from bot.utils.log_utils import log
 from shared.constants import get_bot_context_dir, get_bot_memory_dir, get_bot_runtime_app_dir, get_bot_session_dir
 
@@ -87,7 +87,7 @@ class MemoryManager:
     #     self.db.row_factory = sqlite3.Row
     #     self.db.executescript(init_sql)
     #     self.db.commit()
-    #     log.info(f"初始化 memory database 路径 {self.db_path}")
+    #     log.info(f"初始化 memory_bak database 路径 {self.db_path}")
 
     def _normalize_memory_type(self, memory_type: MemoryType | str) -> MemoryType:
         if isinstance(memory_type, MemoryType):
@@ -97,7 +97,7 @@ class MemoryManager:
     def _resolve_workspace_path(self, path_value: str) -> Path:
         candidate = Path(path_value)
         if not candidate.is_absolute():
-            if candidate.parts and candidate.parts[0] in {"memory", "session", "context"}:
+            if candidate.parts and candidate.parts[0] in {"memory_bak", "session", "context"}:
                 candidate = self.workspace_dir / candidate
             elif candidate.name in {"USER.md", "SOUL.md", "IDENTITY.md", "MEMORY.md"}:
                 candidate = self.memory_dir / candidate.name
@@ -244,7 +244,7 @@ class MemoryManager:
     def _build_fts_query(self, query: str) -> str:
         tokens = [token for token in re.findall(r"[\w\u4e00-\u9fff-]+", query.lower()) if token]
         if not tokens:
-            return '"memory"'
+            return '"memory_bak"'
 
         unique_tokens: list[str] = []
         for token in tokens:
@@ -261,7 +261,7 @@ class MemoryManager:
         if not results:
             return ""
 
-        lines = ["# Retrieved memory context", ""]
+        lines = ["# Retrieved memory_bak context", ""]
         current_len = len(lines[0])
         for result in results:
             citation = f"{result.path}#L{result.start_line}-L{result.end_line}"

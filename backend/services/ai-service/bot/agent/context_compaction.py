@@ -62,7 +62,7 @@ class ContextCompactor:
     def _build_transcript_snapshot(self, context: Any) -> dict[str, Any]:
         metadata = {}
         for key, value in dict(getattr(context, "metadata", {})).items():
-            if key in {"memory_manager", "planner", "session_manager", "candidate_extractor"}:
+            if key in {"planner", "session_manager"}:
                 continue
             if key == "context_compaction" and isinstance(value, dict):
                 stable_state = dict(value)
@@ -185,16 +185,6 @@ class ContextCompactor:
 
         if getattr(context, "plan_state", ""):
             summary_lines.append(f"Plan state: {context.plan_state}")
-
-        if context.metadata.get("retrieved_memory_count"):
-            summary_lines.append(
-                f"Retrieved memory count: {context.metadata.get('retrieved_memory_count', 0)}"
-            )
-
-        if context.metadata.get("memory_candidate_count") is not None:
-            summary_lines.append(
-                f"Memory candidate count: {context.metadata.get('memory_candidate_count', 0)}"
-            )
 
         for message in recent_messages:
             role = message.get("role", "unknown")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from shared.config.config import get_settings
@@ -36,3 +37,13 @@ session_maker = async_sessionmaker(
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async with session_maker() as session:
         yield session
+
+
+async def warm_up_mysql_pool() -> None:
+    """Open one real connection so the async engine pool is ready before traffic arrives."""
+    async with session_maker() as session:
+        await session.execute(text("SELECT 1"))
+
+
+async def shutdown_mysql_engine() -> None:
+    await engine.dispose()

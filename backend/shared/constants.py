@@ -92,7 +92,7 @@ CODE_GEN_TYPE_HTML = 0
 CODE_GEN_TYPE_MULTI_FILE = 1
 CODE_GEN_TYPE_VUE_PROJECT = 2
 
-# Chat memory settings
+# Chat memory_bak settings
 CHAT_MEMORY_MAX_TURNS = 50
 CHAT_MEMORY_TTL_HOURS = 24
 
@@ -113,7 +113,7 @@ BOT_APP_RUNTIME_ROOT = BOT_WORKSPACE_DIR
 BOT_APP_CODE_ROOT = BOT_APPS_ROOT / "code"
 BOT_APP_DEPLOY_ROOT = BOT_APPS_ROOT / "deploy"
 BOT_DEFAULT_SESSION_DIR = BOT_WORKSPACE_DIR / "session"
-BOT_DEFAULT_MEMORY_DIR = BOT_WORKSPACE_DIR / "memory"
+BOT_DEFAULT_MEMORY_DIR = BOT_WORKSPACE_DIR / "memory_bak"
 CHAT_HISTORY_ROOT = BOT_APP_RUNTIME_ROOT
 CHAT_HISTORY_FILE_NAME = "chat_history.jsonl"
 CHAT_HISTORY_ARCHIVE_PREFIX = "chat_"
@@ -137,7 +137,7 @@ def get_bot_context_dir(app_id: str | int) -> Path:
 
 
 def get_bot_memory_dir(app_id: str | int) -> Path:
-    return get_bot_runtime_app_dir(app_id) / "memory"
+    return get_bot_runtime_app_dir(app_id) / "memory_bak"
 
 
 def get_bot_session_dir(app_id: str | int) -> Path:

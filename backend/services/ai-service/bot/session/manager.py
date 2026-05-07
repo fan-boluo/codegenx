@@ -96,6 +96,12 @@ class SessionManager:
     def _session_file(self, session_id: str) -> Path:
         return self.session_dir / f"session_{session_id}.jsonl"
 
+    def _turn_snapshot_file(self, turn_id: str) -> Path:
+        return self.session_dir / f"turn_{turn_id}__snapshot.json"
+
+    def _chat_history_file(self, session_id: str) -> Path:
+        return self.session_dir / f"chat_history_{session_id}.jsonal"
+
     def _get_lock(self) -> threading.Lock:
         """✅ 获取真实锁对象（修复 PrivateAttr 包装问题）"""
         return self.__dict__["_lock"]
@@ -148,6 +154,21 @@ class SessionManager:
         self._cache[session_id] = session
         self.flush_to_disk(session_id)
         return session
+
+    def save_turn_snapshot(self, turn_id: str, snapshot: dict[str, Any]) -> Path:
+        snapshot_file = self._turn_snapshot_file(turn_id)
+        with self._lock:
+            with open(snapshot_file, "w", encoding="utf-8") as file:
+                json.dump(snapshot, file, ensure_ascii=False, indent=2)
+        return snapshot_file
+
+    def append_chat_history_message(self, session_id: str, message: dict[str, Any]) -> Path:
+        history_file = self._chat_history_file(session_id)
+        serialized = json.dumps(message, ensure_ascii=False) + "\n"
+        with self._lock:
+            with open(history_file, "a", encoding="utf-8") as file:
+                file.write(serialized)
+        return history_file
 
 if __name__ == '__main__':
     # 初始化管理器

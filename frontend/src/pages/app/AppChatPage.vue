@@ -149,10 +149,16 @@
               :disabled="isGenerating || isCreatingApp"
             />
             <div class="input-actions">
+              <a-button v-if="isGenerating" danger @click="stopGeneration" :loading="isStoppingGeneration">
+                <template #icon>
+                  <StopOutlined />
+                </template>
+              </a-button>
               <a-button
+                v-else
                 type="primary"
                 @click="sendMessage"
-                :loading="isGenerating || isCreatingApp"
+                :loading="isCreatingApp"
                 :disabled="!canOperateApp"
               >
                 <template #icon>
@@ -256,6 +262,7 @@ import {
   ExportOutlined,
   InfoCircleOutlined,
   SendOutlined,
+  StopOutlined,
 } from '@ant-design/icons-vue'
 
 interface Message {
@@ -284,7 +291,13 @@ const suppressAutoInitialMessage = ref(false)
 const messages = ref<Message[]>([])
 const userInput = ref('')
 const isGenerating = ref(false)
+const isStoppingGeneration = ref(false)
 const messagesContainer = ref<HTMLElement>()
+const activeGenerationRequestId = ref('')
+const activeGenerationSessionId = ref('')
+const activeGenerationMessageIndex = ref<number | null>(null)
+const activeStreamController = ref<AbortController | null>(null)
+const stopRequested = ref(false)
 
 const loadingHistory = ref(false)
 const hasMoreHistory = ref(false)
@@ -438,6 +451,18 @@ const showAppDetail = () => {
 
 const getMessageAt = (index: number) => {
   return messages.value[index]
+}
+
+const clearActiveGeneration = (requestId?: string) => {
+  if (requestId && activeGenerationRequestId.value && activeGenerationRequestId.value !== requestId) {
+    return
+  }
+  activeGenerationRequestId.value = ''
+  activeGenerationSessionId.value = ''
+  activeGenerationMessageIndex.value = null
+  activeStreamController.value = null
+  stopRequested.value = false
+  isStoppingGeneration.value = false
 }
 
 const loadChatHistory = async (isLoadMore = false) => {
@@ -666,6 +691,14 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
   let fullContent = ''
   const currentSessionId = ensureChatSessionId(appId.value)
   const requestId = createClientId()
+  const abortController = new AbortController()
+
+  activeGenerationRequestId.value = requestId
+  activeGenerationSessionId.value = currentSessionId
+  activeGenerationMessageIndex.value = aiMessageIndex
+  activeStreamController.value = abortController
+  stopRequested.value = false
+  isStoppingGeneration.value = false
 
   const finishStream = () => {
     if (streamCompleted) {
@@ -674,6 +707,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
 
     streamCompleted = true
     isGenerating.value = false
+    clearActiveGeneration(requestId)
 
     setTimeout(async () => {
       await fetchAppInfo()
@@ -715,6 +749,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
     message.error(traceId ? `${errorMessage} traceId: ${traceId}` : errorMessage)
     streamCompleted = true
     isGenerating.value = false
+    clearActiveGeneration(requestId)
   }
 
   try {
@@ -727,6 +762,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
+      signal: abortController.signal,
       body: JSON.stringify({
         appId: Number(appId.value),
         message: userMessage,
@@ -818,12 +854,24 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
       finishStream()
     }
   } catch (error) {
+    if (abortController.signal.aborted && stopRequested.value) {
+      const targetMessage = getMessageAt(aiMessageIndex)
+      if (targetMessage) {
+        targetMessage.loading = false
+        if (!targetMessage.content) {
+          targetMessage.content = '已停止本次生成。'
+        }
+      }
+      isGenerating.value = false
+      clearActiveGeneration(requestId)
+      return
+    }
     console.error('创建流式请求失败：', error)
-    handleError(error, aiMessageIndex)
+    handleError(error, aiMessageIndex, requestId)
   }
 }
 
-const handleError = (error: unknown, aiMessageIndex: number) => {
+const handleError = (error: unknown, aiMessageIndex: number, requestId?: string) => {
   console.error('生成代码失败：', error)
   const targetMessage = getMessageAt(aiMessageIndex)
   if (targetMessage) {
@@ -832,6 +880,55 @@ const handleError = (error: unknown, aiMessageIndex: number) => {
   }
   message.error('生成失败，请重试')
   isGenerating.value = false
+  clearActiveGeneration(requestId)
+}
+
+const stopGeneration = async () => {
+  if (
+    !isGenerating.value ||
+    isStoppingGeneration.value ||
+    !appId.value ||
+    !activeGenerationRequestId.value ||
+    !activeGenerationSessionId.value
+  ) {
+    return
+  }
+
+  isStoppingGeneration.value = true
+  stopRequested.value = true
+  const currentRequestId = activeGenerationRequestId.value
+  const currentSessionId = activeGenerationSessionId.value
+  const currentMessageIndex = activeGenerationMessageIndex.value
+
+  try {
+    const response = await request.post('/api/app/chat/stop', {
+      appId: Number(appId.value),
+      sessionId: currentSessionId,
+      requestId: currentRequestId,
+      reason: 'user-stop',
+    })
+
+    if (response.data?.code !== 0) {
+      throw new Error(response.data?.message || '停止失败')
+    }
+
+    const targetMessage =
+      typeof currentMessageIndex === 'number' ? getMessageAt(currentMessageIndex) : undefined
+    if (targetMessage) {
+      targetMessage.loading = false
+      if (!targetMessage.content) {
+        targetMessage.content = '已停止本次生成。'
+      }
+    }
+
+    activeStreamController.value?.abort()
+    message.info('已停止生成')
+  } catch (error) {
+    console.error('停止生成失败：', error)
+    stopRequested.value = false
+    isStoppingGeneration.value = false
+    message.error('停止失败，请重试')
+  }
 }
 
 const updatePreview = () => {
@@ -1061,6 +1158,7 @@ watch(
 
 onUnmounted(() => {
   window.removeEventListener('message', handleWindowMessage)
+  activeStreamController.value?.abort()
 })
 </script>
 
@@ -1219,6 +1317,8 @@ onUnmounted(() => {
   position: absolute;
   bottom: 8px;
   right: 8px;
+  display: flex;
+  gap: 8px;
 }
 
 .preview-section {

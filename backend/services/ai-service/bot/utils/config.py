@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
-from typing import List
-
+from typing import ClassVar, List
+from functools import lru_cache
 from pydantic import AliasChoices, ConfigDict, Field, BaseModel
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings
@@ -29,7 +29,7 @@ class AgentConfig(Base):
     max_tokens: int = 8192
     context_max_tokens: int = Field(
         default=8192,
-        validation_alias=AliasChoices("contextMaxTokens", "context_max_tokens", "contextWindowTokens", "context_window_tokens"),
+        validation_alias=AliasChoices("contextMaxTokens"),
     )
     context_max_history_turns: int = Field(
         default=5,
@@ -40,10 +40,23 @@ class AgentConfig(Base):
         validation_alias=AliasChoices("contextSummaryMaxLength", "context_summary_max_length"),
     )
     temperature: float = 0.1
-    max_tool_iterations: int = 40
+    max_tool_iterations: int = 20
+    session_worker_idle_seconds: int = Field(
+        default=1800,
+        validation_alias=AliasChoices("sessionWorkerIdleSeconds", "session_worker_idle_seconds"),
+    )
+    session_stop_grace_seconds: float = Field(
+        default=2.0,
+        validation_alias=AliasChoices("sessionStopGraceSeconds", "session_stop_grace_seconds"),
+    )
     # Deprecated compatibility field: accepted from old configs but ignored at runtime.
     memory_window: int | None = Field(default=None, exclude=True)
-    reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
+    max_same_tool_calls: ClassVar[int] = 3
+    max_continuation_attempts: ClassVar[int] = 3
+    max_compact_attempts: ClassVar[int] = 2
+    max_transport_attempts: ClassVar[int] = 3
+    transport_backoff_base_seconds: ClassVar[float] = 1.0
+    transport_backoff_max_seconds: ClassVar[float] = 8.0
 
     @property
     def context_window_tokens(self) -> int:
@@ -151,10 +164,16 @@ class ToolsConfig(Base):
     # mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
-# memory----------------------------------
-class MemorySearchConfig(BaseModel):
-    """Memory search configuration - mirrors TS memorySearch (src/agents/memory-search.ts)"""
+# memory ----------------------------------
+class MemorySearchConfig(Base):
+    """Memory search configuration """
     enabled: bool = Field(default=True)
+    search_top_k:int = Field(default=10)
+    search_score_threshold :float = Field(default=0.60)
+    short_lookback_days:int =Field(default=7)  # 短期记忆搜索天数范围
+    hybrid_vector_weight:float = Field(default=0.7)
+    long_term_weight:float = Field(default=0.7)
+    merge_result_similarity:float = Field(default=0.8)
     # sources: list[Literal["memory", "sessions"]] = Field(default=["memory"])
     # extraPaths: list[str] = Field(default_factory=list)
     # provider: Literal["openai", "local", "gemini", "voyage", "mistral", "ollama", "auto"] = Field(default="auto")
@@ -170,19 +189,96 @@ class MemorySearchConfig(BaseModel):
     # cache: MemorySearchCacheConfig = Field(default_factory=MemorySearchCacheConfig)
 
 
-class MemoryFlushConfig(BaseModel):
-    """Memory flush configuration - mirrors TS memoryFlush (src/auto-reply/reply/memory-flush.ts)"""
+class MemoryFlushConfig(Base):
+    """Memory flush configuration )"""
     enabled: bool = Field(default=True)
     softThresholdTokens: int = Field(default=4000)
     forceFlushTranscriptBytes: int | None = Field(default=2 * 1024 * 1024)  # 2MB
     prompt: str | None = Field(default=None)
     systemPrompt: str | None = Field(default=None)
+    ttlDays: int = Field(default=7)  # 短期记忆过期天数
+    shortDuplicatedScoreThreshold: float = Field(default=0.90)  # 短期记忆去重分数阈值，超过这个分数的记忆会被认为是重复的，不会被写入记忆库
+    longMatchesScoreThreshold: float = Field(default=0.7)  # 长期记忆写入匹配分数阈值，分数大于这个值的被认为与当前的短期记忆相关，会交给大模型判断
+    longMatchesTopK: int = Field(default=3)  # 长期记忆写入匹配结果的最大数量
+    longDirectWriteImportanceThreshold: float = Field(default=0.79)  # 长期记忆直接写入的重要性阈值，无匹配且超过这个分数的记忆会被直接写入长期记忆库
 
 
 class MemoryConfig(Base):
     search: MemorySearchConfig = Field(default_factory=MemorySearchConfig)
     store: MemoryFlushConfig = Field(default_factory=MemoryFlushConfig)
 
+
+class MonitorStorageConfig(Base):
+    enabled: bool = Field(default=True)
+    persistSpans: bool = Field(default=True)
+    persistSessionMetrics: bool = Field(default=True)
+    persistTurnMetrics: bool = Field(default=True)
+    useRedisWindows: bool = Field(default=True)
+
+
+class MonitorAlertLevel(str):
+    WARN = "WARN"
+    ERROR = "ERROR"
+
+
+class MonitorLatencyWindowRuleConfig(Base):
+    enabled: bool = Field(default=True)
+    level: str = Field(default=MonitorAlertLevel.WARN)
+    windowSize: int = Field(default=5)
+    thresholdSeconds: int = Field(default=10)
+
+
+class MonitorLatencyThresholdRuleConfig(Base):
+    enabled: bool = Field(default=True)
+    level: str = Field(default=MonitorAlertLevel.ERROR)
+    thresholdSeconds: int = Field(default=60)
+
+
+class MonitorRatioRuleConfig(Base):
+    enabled: bool = Field(default=True)
+    level: str = Field(default=MonitorAlertLevel.WARN)
+    thresholdRatio: float = Field(default=0.90)
+
+
+class MonitorConsecutiveFailureRuleConfig(Base):
+    enabled: bool = Field(default=True)
+    level: str = Field(default=MonitorAlertLevel.ERROR)
+    thresholdCount: int = Field(default=3)
+
+
+class MonitorTurnThresholdRuleConfig(Base):
+    enabled: bool = Field(default=True)
+    level: str = Field(default=MonitorAlertLevel.WARN)
+    thresholdTurns: int = Field(default=50)
+
+
+class MonitorAlertRulesConfig(Base):
+    llmAvgLatencyLast5: MonitorLatencyWindowRuleConfig = Field(
+        default_factory=MonitorLatencyWindowRuleConfig,
+        validation_alias=AliasChoices("llmAvgLatencyLast5", "llmLast5AvgLatency"),
+    )
+    llmSingleTimeout: MonitorLatencyThresholdRuleConfig = Field(
+        default_factory=MonitorLatencyThresholdRuleConfig,
+        validation_alias=AliasChoices("llmSingleTimeout", "llmInvokeLatency"),
+    )
+    tokenQuotaUsage: MonitorRatioRuleConfig = Field(
+        default_factory=MonitorRatioRuleConfig,
+        validation_alias=AliasChoices("tokenQuotaUsage", "TokenUsagePercent"),
+    )
+    toolConsecutiveFailures: MonitorConsecutiveFailureRuleConfig = Field(
+        default_factory=MonitorConsecutiveFailureRuleConfig,
+        validation_alias=AliasChoices("toolConsecutiveFailures", "ToolContinueFailCount"),
+    )
+    sessionMaxTurns: MonitorTurnThresholdRuleConfig = Field(
+        default_factory=MonitorTurnThresholdRuleConfig,
+        validation_alias=AliasChoices("sessionMaxTurns", "TurnMax"),
+    )
+
+
+class MonitorConfig(Base):
+    enabled: bool = Field(default=True)
+    storage: MonitorStorageConfig = Field(default_factory=MonitorStorageConfig)
+    alerts: MonitorAlertRulesConfig = Field(default_factory=MonitorAlertRulesConfig)
 
 class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
@@ -191,6 +287,7 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    monitor:MonitorConfig = Field(default_factory=MonitorConfig)
 
     def get_default_agent(self) -> AgentConfig:
         if not self.agents:
@@ -216,7 +313,7 @@ class Config(BaseSettings):
             return getattr(self.providers, normalized)
         return self.providers.custom
 
-
+@lru_cache(maxsize=1)
 def load_config(config_path: Path | None = None) -> Config:
     """
     Load configuration from file or create default.
