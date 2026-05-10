@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -20,22 +21,23 @@ class AlertLevel(str, Enum):
     WARN = "WARN"
     ERROR = "ERROR"
 
+
 class OperationName(str, Enum):
-    SESSION = "session"
-    CONTEXT = "context"  # 组装上下文
-    LLM = "llm"  # 调用llm
-    TOOL = "tool"
-    MEMORY_RETRIEVE = "memory_retrieve"
+    SESSION = "agent.session"
+    CONTEXT = "agent.context"
+    LLM = "llm.call"
+    TOOL = "tool"          # prefix; actual value is "tool.<name>"
+    MEMORY = "memory.retrieve"
+    TURN = "agent.turn"
 
-"""
-指标统计：
-runtime中产生的指标在特定触发时机会通过pipeline先写入SpanCollector的缓冲区
 
-"""
-# 指标收集
+# ---------------------------------------------------------------------------
+# Per-turn metric sub-models (tracked live in handlers)
+# ---------------------------------------------------------------------------
+
 class TurnContextMetrics(BaseModel):
     token_count: int = 0
-    token_usage: float = 0.0  # 使用百分比，相对于设置的模型上下文
+    token_usage: float = 0.0
     is_compress: bool = False
 
 
@@ -51,56 +53,40 @@ class TurnLLMMetrics(BaseModel):
 
 class TurnToolMetrics(BaseModel):
     tool_name: str = ""
-    latency_ms: int = 0  # 调用时长
-    is_error: bool = False  # 调用结果
+    latency_ms: int = 0
+    is_error: bool = False
 
 
 class TurnMemoryMetrics(BaseModel):
-    hits: int = 0  # 命中数
-    latency_ms: int = 0  # 调用时长
+    hits: int = 0
+    latency_ms: int = 0
     is_error: bool = False
-    # source: str = ""  # 来源，长期？短期
 
 
-class SpanTelemetry(BaseModel):
-    """ 要监测的指标 """
+# ---------------------------------------------------------------------------
+# SpanRecord: one row in the `spans` table, buffered in SpanCollector
+# ---------------------------------------------------------------------------
+
+class SpanRecord(BaseModel):
+    span_id: str = Field(default_factory=lambda: secrets.token_hex(8))
+    parent_span_id: str | None = None
     trace_id: str
     session_id: str
-    request_id: str
-    turn_id: str
-    app_id: str
-    user_id: str
-    # 监测的每个span
-    span_id: str
-    span_name: str
-    operation_name: OperationName  # span是什么操作，session？llm tool mem_search
-    attributes:dict[str, Any]  # 操作产生的指标，上面四类
+    app_id: str = "main"
+    user_id: str = ""
+    turn_id: str = ""
+    turn_number: int = 0
+    operation_name: str          # e.g. OperationName.LLM.value
+    start_time: datetime
+    end_time: datetime | None = None
+    duration_ms: int | None = None
+    status: str = "running"
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
-# 落库的指标
-# class SessionTelemetry(BaseModel):
-#     trace_id: str = ""
-#     session_id: str
-#     app_id: str = "main"
-#     user_id: str = ""
-#     model: str = "unknown"
-#     token_budget: int = 0
-#     started_at: datetime | None = None
-#     ended_at: datetime | None = None
-#     status: TelemetryStatus = TelemetryStatus.RUNNING
-#     total_turns: int = 0
-#     total_prompt_tokens: int = 0
-#     total_completion_tokens: int = 0
-#     sum_llm_latency_ms: int = 0
-#     sum_first_token_ms: int = 0
-#     max_llm_latency_ms: int = 0
-#     min_llm_latency_ms: int = 999999
-#     total_tool_calls: int = 0
-#     total_errors: int = 0
-#     total_memory_hits: int = 0
-#     recovery_count: int = 0
-#     last_recovery_kind: str = ""
-#     end_reason: str = ""
 
+# ---------------------------------------------------------------------------
+# TurnTelemetry: per-turn tracking object (lives on turn state in handlers)
+# ---------------------------------------------------------------------------
 
 class TurnTelemetry(BaseModel):
     trace_id: str = ""
@@ -112,12 +98,59 @@ class TurnTelemetry(BaseModel):
     ended_at: datetime | None = None
     duration_ms: int = 0
     status: TelemetryStatus = TelemetryStatus.RUNNING
-    context: TurnContextMetrics = Field(default_factory=lambda: TurnContextMetrics())
-    llm: TurnLLMMetrics = Field(default_factory=lambda: TurnLLMMetrics())
+    context: TurnContextMetrics = Field(default_factory=TurnContextMetrics)
+    llm: TurnLLMMetrics = Field(default_factory=TurnLLMMetrics)
     tool: list[TurnToolMetrics] = Field(default_factory=list)
-    memory: TurnMemoryMetrics = Field(default_factory=lambda: TurnMemoryMetrics())
+    memory: TurnMemoryMetrics = Field(default_factory=TurnMemoryMetrics)
 
 
+# ---------------------------------------------------------------------------
+# SessionTelemetry: session-level metric accumulator (lives on session state)
+# ---------------------------------------------------------------------------
+
+class SessionTelemetry(BaseModel):
+    trace_id: str = ""
+    session_id: str
+    app_id: str = "main"
+    user_id: str = ""
+    model: str = "unknown"
+    token_budget: int = 0
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    status: TelemetryStatus = TelemetryStatus.RUNNING
+    end_reason: str = ""
+    # Aggregated from turns
+    total_turns: int = 0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    sum_llm_latency_ms: int = 0
+    sum_first_token_ms: int = 0
+    max_llm_latency_ms: int = 0
+    min_llm_latency_ms: int = 999999
+    total_tool_calls: int = 0
+    total_errors: int = 0
+    total_memory_hits: int = 0
+    recovery_count: int = 0
+    last_recovery_kind: str = ""
+
+    def record_turn(self, turn: TurnTelemetry) -> None:
+        """Accumulate per-turn metrics into this session summary."""
+        self.total_turns += 1
+        self.total_prompt_tokens += turn.llm.prompt_tokens
+        self.total_completion_tokens += turn.llm.completion_tokens
+        llm_ms = turn.llm.total_ms
+        self.sum_llm_latency_ms += llm_ms
+        self.sum_first_token_ms += turn.llm.first_token_ms
+        if llm_ms > 0:
+            self.max_llm_latency_ms = max(self.max_llm_latency_ms, llm_ms)
+            self.min_llm_latency_ms = min(self.min_llm_latency_ms, llm_ms)
+        self.total_tool_calls += len(turn.tool)
+        if turn.status == TelemetryStatus.ERROR:
+            self.total_errors += 1
+        self.total_memory_hits += turn.memory.hits
+        if turn.llm.recovery_count > 0:
+            self.recovery_count += turn.llm.recovery_count
+            self.last_recovery_kind = turn.llm.recovery_kind
 
 
 

@@ -32,7 +32,7 @@ from monitor.maintenance_service import get_monitor_maintenance_service
 from monitor.monitor_pipeline import get_monitor_pipeline
 from monitor.monitor_query_service import get_monitor_query_service
 from monitor.monitor_store import get_monitor_store
-from monitor.telemetry_schema import RequestTelemetry, SessionTelemetry, TelemetryStatus, TurnTelemetry
+from monitor.telemetry_schema import SessionTelemetry, TelemetryStatus, TurnTelemetry
 from shared.config.log_config import log
 from shared.constants import get_bot_code_dir
 from shared.schema.ai_service import AiServiceGenerateRequest
@@ -418,7 +418,6 @@ class AgentRuntime:
 
             request_state.finished_at = time.time()
             if request_state.state == AgentState.COMPLETED:
-                await self._persist_request_metrics(session_state, request_state, end_reason="completed")
                 await self._publish_request_event(
                     session_state,
                     request_state,
@@ -429,11 +428,6 @@ class AgentRuntime:
                     ),
                 )
             elif request_state.state == AgentState.STOPPED:
-                await self._persist_request_metrics(
-                    session_state,
-                    request_state,
-                    end_reason=self._stop_reason(session_state),
-                )
                 await self._publish_request_event(
                     session_state,
                     request_state,
@@ -444,19 +438,10 @@ class AgentRuntime:
                     ),
                 )
             else:
-                await self._persist_request_metrics(
-                    session_state,
-                    request_state,
-                    end_reason=request_state.error_text or "failed",
-                )
+                pass
         except TurnStoppedError:
             request_state.state = AgentState.STOPPED
             request_state.finished_at = time.time()
-            await self._persist_request_metrics(
-                session_state,
-                request_state,
-                end_reason=self._stop_reason(session_state),
-            )
             await self._publish_request_event(
                 session_state,
                 request_state,
@@ -469,11 +454,6 @@ class AgentRuntime:
         except asyncio.CancelledError:
             request_state.state = AgentState.STOPPED
             request_state.finished_at = time.time()
-            await self._persist_request_metrics(
-                session_state,
-                request_state,
-                end_reason=self._stop_reason(session_state),
-            )
             await self._publish_request_event(
                 session_state,
                 request_state,
@@ -489,7 +469,6 @@ class AgentRuntime:
             request_state.error_text = str(exc)
             request_state.finished_at = time.time()
             session_state.state = AgentState.FAILED
-            await self._persist_request_metrics(session_state, request_state)
             await self._publish_request_event(
                 session_state,
                 request_state,
@@ -786,7 +765,6 @@ class AgentRuntime:
         request_state.error_text = str(exc)
         request_state.finished_at = time.time()
         session_state.state = AgentState.FAILED
-        await self._persist_request_metrics(session_state, request_state)
         await self._publish_request_event(
             session_state,
             request_state,
@@ -799,7 +777,6 @@ class AgentRuntime:
 
         request_state.state = AgentState.STOPPED
         request_state.finished_at = time.time()
-        await self._persist_request_metrics(session_state, request_state, end_reason=reason)
         await self._publish_request_event(
             session_state,
             request_state,
@@ -823,29 +800,6 @@ class AgentRuntime:
         if state == AgentState.COMPLETED:
             return TelemetryStatus.SUCCESS
         return TelemetryStatus.RUNNING
-
-    async def _persist_request_metrics(
-        self,
-        session_state: RuntimeSessionState,
-        request_state: RuntimeRequestState,
-        *,
-        end_reason: str | None = None,
-    ) -> None:
-        request_telemetry = RequestTelemetry(
-            trace_id=str(getattr(request_state.request, "trace_id", "") or session_state.trace_id or ""),
-            session_id=session_state.session_id,
-            request_id=request_state.request_id,
-            app_id=session_state.app_id,
-            user_id=session_state.user_id,
-            model=getattr(self.agent_config, "resolved_model_name", "unknown"),
-            token_budget=int(getattr(session_state.telemetry, "token_budget", 0) or 0),
-            started_at=datetime.utcfromtimestamp(request_state.started_at) if request_state.started_at else None,
-            ended_at=datetime.utcfromtimestamp(request_state.finished_at) if request_state.finished_at else None,
-            status=self._telemetry_status_for_request(request_state.state),
-            end_reason=str(end_reason or self._stop_reason(session_state) or request_state.state.value or "completed"),
-        )
-        await get_monitor_pipeline().persist_request_metrics(request_telemetry)
-
 
     async def startup_backup_service(self) -> None:
         try:

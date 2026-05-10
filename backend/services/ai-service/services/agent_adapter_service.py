@@ -41,7 +41,6 @@ from infra.mysql.session import shutdown_mysql_engine
 from infra.qdrant.client import shutdown_qdrant_client
 from infra.redis.redis_client import redis_client
 from monitor.health_checker import get_health_checker
-from monitor.telemetry_sdk import TelemetrySDK
 from shared.config.log_config import log
 
 
@@ -62,22 +61,8 @@ class AgentAdapterService:
         return runtime
 
     def _init_telemetry(self) -> bool:
-        endpoint = str(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "") or "").strip()
-        if not endpoint:
-            return False
-
-        try:
-            TelemetrySDK.init(
-                service_name="codegenx-ai-service",
-                service_version="1.0.0",
-                otlp_endpoint=endpoint,
-                resource_attributes={"service.component": "ai-service"},
-            )
-            self._telemetry_started = True
-            return True
-        except Exception as exc:
-            log.warning("Failed to initialize telemetry SDK: {}", exc)
-            return False
+        # OTLP telemetry removed — monitor module now uses its own collectors.
+        return False
 
     async def _health_check_loop(self) -> None:
         checker = get_health_checker()
@@ -132,10 +117,6 @@ class AgentAdapterService:
                     await self._runtime.stop()
                 self._runtime = None
 
-            if self._telemetry_started:
-                with suppress(Exception):
-                    TelemetrySDK.shutdown()
-                self._telemetry_started = False
 
             with suppress(Exception):
                 await redis_client.aclose()
