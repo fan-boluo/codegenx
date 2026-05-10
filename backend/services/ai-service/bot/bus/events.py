@@ -37,29 +37,14 @@ class OutboundMessage:
 
 
 @dataclass
-class RuntimeTurnRequest:
-    """Turn request submitted to the runtime loop."""
-
-    app_id: str
-    user_id: str
-    session_id: str
-    turn_id: str
-    trace_id: str
-    request_id: str
-    user_input: str
-    requested_code_gen_type: str | None = None
-    client_version: str = "ai-service"
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class RuntimeTurnEvent:
     """Runtime event mirrored onto the shared outbound bus."""
 
     session_id: str
-    turn_id: str
+    request_id: str
     event_type: str
     state: str
     data: Any = None
+    turn_id: str = ""
 
 

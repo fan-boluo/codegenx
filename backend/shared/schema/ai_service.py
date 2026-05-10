@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import Field
 
 from shared.schema.common import CamelBaseModel
@@ -22,12 +24,14 @@ class AiServiceRouteResponse(CamelBaseModel):
 
 class AiServiceGenerateRequest(CamelBaseModel):
     app_id: int = Field(alias="appId")
-    user_id: str | None = Field(default=None, alias="userId")
+    user_id: str = Field(default="userx", alias="userId")
     message: str
     code_gen_type: str | None = Field(default=None, alias="codeGenType")
-    session_id: str | None = Field(default=None, alias="sessionId")
-    trace_id: str | None = Field(default=None, alias="traceId")
-    request_id: str | None = Field(default=None, alias="requestId")
+    session_id: str = Field(default="", alias="sessionId")
+    trace_id: str  = Field(default="", alias="traceId")
+    request_id: str = Field(default="", alias="requestId")
+    client_version: str = Field(default="ai-service", alias="clientVersion")
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AiServiceStopRequest(CamelBaseModel):
@@ -43,10 +47,11 @@ class AiServiceStopRequest(CamelBaseModel):
 class AiServiceStopResponse(CamelBaseModel):
     accepted: bool
     session_id: str = Field(alias="sessionId")
-    stopped_turn_count: int = Field(alias="stoppedTurnCount")
-    dropped_turn_count: int = Field(alias="droppedTurnCount")
+    stopped_request_count: int = Field(alias="stoppedRequestCount")
+    dropped_request_count: int = Field(alias="droppedRequestCount")
+    active_request_ids: list[str] = Field(default_factory=list, alias="activeRequestIds")
+    dropped_request_ids: list[str] = Field(default_factory=list, alias="droppedRequestIds")
     active_turn_ids: list[str] = Field(default_factory=list, alias="activeTurnIds")
-    dropped_turn_ids: list[str] = Field(default_factory=list, alias="droppedTurnIds")
 
 
 class AiServiceStreamMeta(CamelBaseModel):

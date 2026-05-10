@@ -4,18 +4,22 @@ import asyncio
 from contextlib import suppress
 import json
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, AsyncGenerator
 
 from pydantic import BaseModel, Field
 
+from agent.plan.planner import Planner
+from agent.runtime_schema import RuntimeSessionState, TurnContext
 from bot.agent.context import ContextAssembler, TurnReducer
 from bot.agent.hook.registry import register_all_hooks
 from bot.agent.hook.runner import HookRunner
 from bot.agent.tool_executor import ToolExecutor
 from bot.agent.tool_handler import get_tool_registry
-from bot.bus import MessageBus, RuntimeTurnEvent, RuntimeTurnRequest
+from bot.bus import MessageBus, RuntimeTurnEvent
 from bot.memory.memory_manager import get_memory_manager
 from bot.session.manager import SessionManager
 from bot.skill.skill_loader import SkillLoader
@@ -28,101 +32,11 @@ from monitor.maintenance_service import get_monitor_maintenance_service
 from monitor.monitor_pipeline import get_monitor_pipeline
 from monitor.monitor_query_service import get_monitor_query_service
 from monitor.monitor_store import get_monitor_store
+from monitor.telemetry_schema import RequestTelemetry, SessionTelemetry, TelemetryStatus, TurnTelemetry
 from shared.config.log_config import log
 from shared.constants import get_bot_code_dir
+from shared.schema.ai_service import AiServiceGenerateRequest
 
-
-class AgentState(str, Enum):
-    IDLE = "idle"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    STOPPED = "stopped"
-
-
-class TurnContext(BaseModel):
-    build_tool: list[dict[str, Any]] = Field(default_factory=list)
-    skill: list[dict[str, str]] = Field(default_factory=list)
-    memory: list[str] = Field(default_factory=list)
-    system_prompt: str = ""
-    chat_history: list[dict[str, Any]] = Field(default_factory=list)
-    user_input: str = ""
-
-
-class AgentEvent(BaseModel):
-    event_type: str
-    data: Any = None
-    state: AgentState
-
-
-class TurnStoppedError(Exception):
-    pass
-
-
-@dataclass
-class RuntimeTurnState:
-    request: RuntimeTurnRequest
-    turn_number: int
-    context: TurnContext
-    code_dir: str = ""
-    safe_paths: list[str] = field(default_factory=list)
-    workspace_metadata: dict[str, Any] = field(default_factory=dict)
-    knowledge_cache: dict[str, Any] = field(default_factory=dict)
-    prompt_template: str = ""
-    plan_summary: str = ""
-    snapshot_path: str = ""
-    state: AgentState = AgentState.IDLE
-    llm_usage: dict[str, Any] = field(default_factory=dict)
-    tool_metrics: list[dict[str, Any]] = field(default_factory=list)
-    memory_metrics: dict[str, Any] = field(default_factory=dict)
-    recovery_state: dict[str, Any] = field(default_factory=dict)
-    transition_reason: str = ""
-    current_prompt_tokens: int = 0
-    projected_total_tokens: int = 0
-    error_text: str = ""
-    started_at: float = 0.0
-    finished_at: float = 0.0
-    active_span_refs: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class RuntimeSessionState:
-    app_id: str
-    user_id: str
-    session_id: str
-    trace_id: str
-    request_id: str
-    requested_code_gen_type: str | None
-    client_version: str
-    session_manager: SessionManager
-    runtime: AgentRuntime
-    turn_counter: int = 0
-    total_prompt_tokens: int = 0
-    total_completion_tokens: int = 0
-    total_tool_calls: int = 0
-    total_memory_hits: int = 0
-    sum_llm_latency_ms: int = 0
-    sum_first_token_ms: int = 0
-    max_llm_latency_ms: int = 0
-    min_llm_latency_ms: int = 999999
-    total_errors: int = 0
-    last_recovery_kind: str = ""
-    recovery_count: int = 0
-    started_at: float = 0.0
-    last_activity_at: float = 0.0
-    state: AgentState = AgentState.IDLE
-    session_span: Any = None
-    audit_context: dict[str, Any] = field(default_factory=dict)
-    active_turns: dict[str, RuntimeTurnState] = field(default_factory=dict)
-    active_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
-    worker_task: asyncio.Task | None = None
-    queue: asyncio.Queue[RuntimeTurnRequest] = field(default_factory=asyncio.Queue)
-    stop_signal: asyncio.Event = field(default_factory=asyncio.Event)
-    stop_reason: str = ""
-    closed: bool = False
-
-    def touch(self) -> None:
-        self.last_activity_at = time.time()
 
 
 class AgentRuntime:
@@ -140,17 +54,33 @@ class AgentRuntime:
         turn_reducer: TurnReducer | None = None,
         message_bus: MessageBus | None = None,
     ):
+
+        self.config = load_config()
         self.agent_config = self._resolve_agent_config()
         self.max_tool_iterations = max(1, int(self.agent_config.max_tool_iterations or 40))
         self.max_same_tool_calls = 3
         self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
+
         self.message_bus = message_bus or MessageBus()
-        self.context_assembler = context_assembler or ContextAssembler()
+        # self.context_assembler = context_assembler or ContextAssembler()
         self.turn_reducer = turn_reducer or TurnReducer()
-        self.tool_executor = tool_executor or ToolExecutor(get_tool_registry(), safe_paths=[str(get_bot_code_dir("main"))])
-        self._tool_catalog = [
-            tool for tool in self.tool_executor.tools_handler.tools if tool.name not in self.EXCLUDED_TOOL_NAMES
-        ]
+        self.tool_registry = get_tool_registry()
+        self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
+        self.planner = Planner()
+        self.skill_loader = SkillLoader()
+        self.skills = self.skill_loader.load_all_skills()
+
+        log.info("共加载{}个工具", len(self.tool_registry.tools))
+        log.info("共加载{}个skill", len(self.skills) if self.skills else 0)
+
+        try:
+            self.memory_manager = get_memory_manager()
+            self.memory_manager.warm_up()
+            log.info("启动 warm_up_memory_manager ready")
+        except Exception as exc:
+
+            log.warning("AgentRuntime startup failed to warm MemoryManager: {}", exc)
+
         self.hook_runner = hook_runner or HookRunner()
         if hook_runner is None:
             register_all_hooks(self.hook_runner)
@@ -158,10 +88,15 @@ class AgentRuntime:
         self._shutdown_event = asyncio.Event()
         self._session_states: dict[str, RuntimeSessionState] = {}
         self._session_lock = asyncio.Lock()
+        # 一些初始化操作,后台服务
+        self.startup_backup_service()
+        # self._tool_catalog = [
+        #     tool for tool in self.tool_executor.tools_handler.tools if tool.name not in self.EXCLUDED_TOOL_NAMES
+        # ]
 
     def _resolve_agent_config(self) -> AgentConfig:
         try:
-            return load_config().get_default_agent()
+            return self.config.get_default_agent()
         except Exception as exc:
             log.warning("Failed to load runtime config, using defaults: {}", exc)
             return AgentConfig()
@@ -171,6 +106,7 @@ class AgentRuntime:
             return
         self._shutdown_event.clear()
         self._dispatcher_task = asyncio.create_task(self._dispatch_loop(), name="agent-runtime-dispatcher")
+        log.info("启动完成 dispatch_loop,等待消息。。。")
 
     async def stop(self) -> None:
         self._shutdown_event.set()
@@ -194,34 +130,42 @@ class AgentRuntime:
                 except asyncio.CancelledError:
                     pass
 
-    async def submit_turn(self, request: RuntimeTurnRequest) -> AsyncGenerator[AgentEvent, None]:
+    async def submit_request(self, request: AiServiceGenerateRequest) -> AsyncGenerator[AgentEvent, None]:
+        """
+        完成一次请求，消息收发
+        """
         await self.start()
-        subscriber = self.message_bus.subscribe_turn(request.turn_id)
+        request_id = self._request_id(request)
+        subscriber = self.message_bus.subscribe_request(request_id)
         try:
             await self.message_bus.publish_inbound(request)
+            log.info("message_bus 输送请求：{}",request_id)
             while True:
                 item = await subscriber.get()
                 if not isinstance(item, RuntimeTurnEvent):
                     continue
                 event = AgentEvent(event_type=item.event_type, data=item.data, state=AgentState(item.state))
                 yield event
-                if event.event_type in {"TurnCompleted", "TurnStopped", "Error"}:
-                    await self._wait_for_turn_cleanup(request.session_id, request.turn_id)
+                if event.event_type in {"RequestCompleted", "RequestStopped", "Error"}:
+                    await self._wait_for_request_cleanup(str(request.session_id or ""), request_id)
                     break
         finally:
-            self.message_bus.unsubscribe_turn(request.turn_id, subscriber)
+            self.message_bus.unsubscribe_request(request_id, subscriber)
 
-    async def stop_session(
+    async def stop_request(
         self,
         *,
         session_id: str,
+        request_id: str,
         reason: str = "user-stop",
         grace_seconds: float | None = None,
     ) -> dict[str, Any]:
         session_state: RuntimeSessionState | None = None
         active_tasks: list[tuple[str, asyncio.Task[Any]]] = []
-        dropped_requests: list[RuntimeTurnRequest] = []
+        dropped_requests: list[AiServiceGenerateRequest] = []
+        remaining_requests: list[AiServiceGenerateRequest] = []
         stop_reason = str(reason or "user-stop")
+        target_request_id = str(request_id or "").strip()
 
         async with self._session_lock:
             session_state = self._session_states.get(session_id)
@@ -229,23 +173,31 @@ class AgentRuntime:
                 return {
                     "accepted": False,
                     "sessionId": session_id,
-                    "stoppedTurnCount": 0,
-                    "droppedTurnCount": 0,
+                    "stoppedRequestCount": 0,
+                    "droppedRequestCount": 0,
+                    "activeRequestIds": [],
+                    "droppedRequestIds": [],
                     "activeTurnIds": [],
-                    "droppedTurnIds": [],
                 }
 
-            session_state.stop_signal.set()
-            session_state.stop_reason = stop_reason
             session_state.touch()
-            active_tasks = list(session_state.active_tasks.items())
+            if target_request_id in session_state.active_tasks:
+                session_state.stop_signal.set()
+                session_state.stop_reason = stop_reason
+                active_tasks = [(target_request_id, session_state.active_tasks[target_request_id])]
             while True:
                 try:
                     queued_request = session_state.queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if isinstance(queued_request, RuntimeTurnRequest):
-                    dropped_requests.append(queued_request)
+                if isinstance(queued_request, AiServiceGenerateRequest):
+                    if self._request_id(queued_request) == target_request_id:
+                        dropped_requests.append(queued_request)
+                    else:
+                        remaining_requests.append(queued_request)
+
+            for queued_request in remaining_requests:
+                await session_state.queue.put(queued_request)
 
         for queued_request in dropped_requests:
             await self._publish_stopped_request(queued_request, reason=stop_reason)
@@ -260,77 +212,85 @@ class AgentRuntime:
 
         async with self._session_lock:
             current_state = self._session_states.get(session_id)
-            if current_state is not None and not current_state.closed and not current_state.active_tasks:
+            if current_state is not None and not current_state.closed:
                 current_state.stop_signal.clear()
                 current_state.stop_reason = ""
+
+        current_state = self._session_states.get(session_id)
+        active_turn_ids: list[str] = []
+        if current_state is not None:
+            for active_request_id, _ in active_tasks:
+                request_state = current_state.active_requests.get(active_request_id)
+                if request_state is not None and request_state.active_turn_id:
+                    active_turn_ids.append(request_state.active_turn_id)
 
         return {
             "accepted": bool(active_tasks or dropped_requests),
             "sessionId": session_id,
-            "stoppedTurnCount": len(active_tasks),
-            "droppedTurnCount": len(dropped_requests),
-            "activeTurnIds": [turn_id for turn_id, _ in active_tasks],
-            "droppedTurnIds": [request.turn_id for request in dropped_requests],
+            "stoppedRequestCount": len(active_tasks),
+            "droppedRequestCount": len(dropped_requests),
+            "activeRequestIds": [active_request_id for active_request_id, _ in active_tasks],
+            "droppedRequestIds": [str(request.request_id or "") for request in dropped_requests],
+            "activeTurnIds": active_turn_ids,
         }
 
     async def _dispatch_loop(self) -> None:
         while not self._shutdown_event.is_set():
             request = await self.message_bus.consume_inbound()
-            if not isinstance(request, RuntimeTurnRequest):
+            log.info("dispatcher loop 接收到请求：{} {}", request.request_id,str(getattr(request, "message", "") or "")[:10])
+            if not isinstance(request, AiServiceGenerateRequest):
                 continue
             session_state = await self._get_or_create_session_state(request)
+            # request加入session的queue
             await session_state.queue.put(request)
+            log.debug("{} 加入到session的消息队列",request.request_id)
 
-    async def _get_or_create_session_state(self, request: RuntimeTurnRequest) -> RuntimeSessionState:
+
+    async def _get_or_create_session_state(self, request: AiServiceGenerateRequest) -> RuntimeSessionState:
         async with self._session_lock:
-            session_state = self._session_states.get(request.session_id)
+            session_id = str(request.session_id or "")
+            session_state = self._session_states.get(session_id)
             if session_state is not None and not session_state.closed:
-                session_state.user_id = request.user_id
-                session_state.trace_id = request.trace_id
-                session_state.request_id = request.request_id
-                session_state.requested_code_gen_type = request.requested_code_gen_type
-                session_state.client_version = request.client_version
+                session_state.request = request
                 session_state.touch()
                 return session_state
 
-            app_id = str(request.app_id or "main")
-            session_manager = SessionManager(app_id)
             session_state = RuntimeSessionState(
-                app_id=app_id,
-                user_id=str(request.user_id or "").strip(),
-                session_id=request.session_id,
-                trace_id=request.trace_id,
-                request_id=request.request_id,
-                requested_code_gen_type=request.requested_code_gen_type,
-                client_version=request.client_version,
-                session_manager=session_manager,
-                runtime=self,
-                started_at=time.time(),
-                last_activity_at=time.time(),
+                session_id=session_id,
+                request=request,
+                runtime=self
             )
+            context = TurnContext()
+            # TODO
+            await self.hook_runner.dispatch("OnSessionStart", session_state,context)
+
             session_state.worker_task = asyncio.create_task(
                 self._session_worker(session_state),
-                name=f"agent-session-{request.session_id}",
+                name=f"agent-session-{session_id}",
             )
-            self._session_states[request.session_id] = session_state
+            log.info("创建session 循环：{}",session_id)
+            self._session_states[session_id] = session_state
+
             return session_state
 
-    async def _wait_for_turn_cleanup(self, session_id: str, turn_id: str) -> None:
+    async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
         while True:
             async with self._session_lock:
                 session_state = self._session_states.get(session_id)
-                if session_state is None or turn_id not in session_state.active_tasks:
+                if session_state is None or request_id not in session_state.active_tasks:
                     return
             await asyncio.sleep(0)
 
     async def _session_worker(self, session_state: RuntimeSessionState) -> None:
         session_state.state = AgentState.RUNNING
         while not self._shutdown_event.is_set() and not session_state.closed:
+            log.debug("进入session 循环：{}", session_state.session_id)
             try:
                 request = await asyncio.wait_for(
                     session_state.queue.get(),
                     timeout=max(1, int(self.agent_config.session_worker_idle_seconds or 1800)),
                 )
+                log.debug("session loop 获取到请求：{}",request.request_id)
             except asyncio.TimeoutError:
                 await self._close_session_state(session_state, end_reason="idle-timeout")
                 return
@@ -338,33 +298,34 @@ class AgentRuntime:
                 await self._close_session_state(session_state, end_reason="runtime-stop")
                 raise
 
-            turn_state = await self._build_turn_state(session_state, request)
-            session_state.active_turns[request.turn_id] = turn_state
-            turn_task = asyncio.create_task(
-                self._run_turn_task(session_state, turn_state),
-                name=f"agent-turn-{request.turn_id}",
+            request_state = await self._build_request_state(session_state, request)
+            session_state.active_requests[request_state.request_id] = request_state
+            request_task = asyncio.create_task(
+                self._execute_request(session_state, request_state),
+                name=f"agent-request-{request_state.request_id}",
             )
-            session_state.active_tasks[request.turn_id] = turn_task
+            log.debug("请求任务开始执行:{}",request_state.request_id)
+            session_state.active_tasks[request_state.request_id] = request_task
             try:
-                await turn_task
+                await request_task
             except Exception as exc:
-                log.exception("Turn crashed for session {} turn {}", session_state.session_id, request.turn_id)
-                await self._finalize_worker_turn_error(session_state, turn_state, exc)
+                log.exception("Request crashed for session {} request {}", session_state.session_id, request_state.request_id)
+                await self._finalize_worker_request_error(session_state, request_state, exc)
             except asyncio.CancelledError:
-                turn_task.cancel()
+                request_task.cancel()
                 with suppress(asyncio.CancelledError):
-                    await turn_task
-                await self._finalize_cancelled_turn(session_state, turn_state, reason="runtime-stop")
+                    await request_task
+                await self._finalize_cancelled_request(session_state, request_state, reason="runtime-stop")
                 await self._close_session_state(session_state, end_reason="runtime-stop")
                 raise
             finally:
-                session_state.active_tasks.pop(request.turn_id, None)
+                session_state.active_tasks.pop(request_state.request_id, None)
+                session_state.active_requests.pop(request_state.request_id, None)
                 if not session_state.closed:
                     session_state.stop_signal.clear()
                     session_state.stop_reason = ""
-                session_state.active_turns.pop(request.turn_id, None)
                 session_state.touch()
-                session_state.session_manager.save_history(session_state.session_id, turn_state.context.chat_history)
+                session_state.session_manager.save_history(session_state.session_id, request_state.context.chat_history)
 
     async def _close_session_state(self, session_state: RuntimeSessionState, *, end_reason: str) -> None:
         if session_state.closed:
@@ -372,7 +333,7 @@ class AgentRuntime:
         session_state.closed = True
         if end_reason == "runtime-stop" and session_state.active_turns:
             session_state.state = AgentState.STOPPED
-        elif session_state.total_errors > 0:
+        elif session_state.state == AgentState.FAILED:
             session_state.state = AgentState.FAILED
         else:
             session_state.state = AgentState.COMPLETED
@@ -382,30 +343,165 @@ class AgentRuntime:
         async with self._session_lock:
             self._session_states.pop(session_state.session_id, None)
 
-    async def _build_turn_state(self, session_state: RuntimeSessionState, request: RuntimeTurnRequest) -> RuntimeTurnState:
-        session_state.turn_counter += 1
-        turn_context = TurnContext(
-            user_input=request.user_input,
-        )
-        return RuntimeTurnState(
+    async def _build_request_state(self, session_state: RuntimeSessionState, request: AiServiceGenerateRequest) -> RuntimeRequestState:
+        session_state.request = request
+        return RuntimeRequestState(
             request=request,
-            turn_number=session_state.turn_counter,
-            context=turn_context,
+            request_id=self._request_id(request),
+            context=TurnContext(user_input=str(request.message or "")),
             state=AgentState.IDLE,
         )
 
-    async def _run_turn_task(self, session_state: RuntimeSessionState, turn_state: RuntimeTurnState) -> None:
+    def _build_turn_id(self, request_state: RuntimeRequestState) -> str:
+        return f"{request_state.request_id}-turn-{request_state.turn_counter:04d}"
 
-        async for _ in self._execute_turn(session_state, turn_state):
-            pass
+    async def _build_turn_state(self, session_state: RuntimeSessionState, request_state: RuntimeRequestState) -> RuntimeTurnState:
+        session_state.turn_counter += 1
+        request_state.turn_counter += 1
+        turn_context = TurnContext(
+            build_tool=deepcopy(request_state.context.build_tool),
+            skill=deepcopy(request_state.context.skill),
+            memory=list(request_state.context.memory),
+            system_prompt=request_state.context.system_prompt,
+            chat_history=deepcopy(request_state.context.chat_history),
+            user_input=request_state.context.user_input,
+        )
+        return RuntimeTurnState(
+            request=request_state.request,
+            request_state=request_state,
+            turn_id=self._build_turn_id(request_state),
+            turn_number=session_state.turn_counter,
+            context=turn_context,
+            code_dir=request_state.code_dir,
+            safe_paths=list(request_state.safe_paths),
+            workspace_metadata=deepcopy(request_state.workspace_metadata),
+            knowledge_cache=deepcopy(request_state.knowledge_cache),
+            prompt_template=request_state.prompt_template,
+            plan_summary=request_state.plan_summary,
+            state=AgentState.IDLE,
+        )
+
+    async def _execute_request(self, session_state: RuntimeSessionState, request_state: RuntimeRequestState) -> None:
+        """
+        处理单个请求的任务
+        """
+        session_state.request = request_state.request
+        request_state.state = AgentState.RUNNING
+        request_state.started_at = time.time()
+        await self.hook_runner.dispatch("OnTurnStart", session_state, request_state=request_state)
+
+        try:
+            while request_state.state == AgentState.RUNNING:
+                self._raise_if_stop_requested(session_state)
+                turn_state = await self._build_turn_state(session_state, request_state)
+                session_state.active_turns[turn_state.turn_id] = turn_state
+                request_state.active_turn_id = turn_state.turn_id
+                try:
+                    await self._execute_turn(session_state, request_state, turn_state)
+                finally:
+                    request_state.context.chat_history = deepcopy(turn_state.context.chat_history)
+                    request_state.context.user_input = turn_state.context.user_input
+                    session_state.active_turns.pop(turn_state.turn_id, None)
+                    request_state.active_turn_id = ""
+
+                if turn_state.state == AgentState.STOPPED:
+                    request_state.state = AgentState.STOPPED
+                    break
+                if turn_state.state == AgentState.FAILED:
+                    request_state.state = AgentState.FAILED
+                    request_state.error_text = turn_state.error_text
+                    session_state.state = AgentState.FAILED
+                    break
+                if not turn_state.requires_followup:
+                    request_state.state = AgentState.COMPLETED
+                    break
+
+            request_state.finished_at = time.time()
+            if request_state.state == AgentState.COMPLETED:
+                await self._persist_request_metrics(session_state, request_state, end_reason="completed")
+                await self._publish_request_event(
+                    session_state,
+                    request_state,
+                    AgentEvent(
+                        event_type="RequestCompleted",
+                        data={"request_id": request_state.request_id},
+                        state=AgentState.COMPLETED,
+                    ),
+                )
+            elif request_state.state == AgentState.STOPPED:
+                await self._persist_request_metrics(
+                    session_state,
+                    request_state,
+                    end_reason=self._stop_reason(session_state),
+                )
+                await self._publish_request_event(
+                    session_state,
+                    request_state,
+                    AgentEvent(
+                        event_type="RequestStopped",
+                        data={"request_id": request_state.request_id, "reason": self._stop_reason(session_state)},
+                        state=AgentState.STOPPED,
+                    ),
+                )
+            else:
+                await self._persist_request_metrics(
+                    session_state,
+                    request_state,
+                    end_reason=request_state.error_text or "failed",
+                )
+        except TurnStoppedError:
+            request_state.state = AgentState.STOPPED
+            request_state.finished_at = time.time()
+            await self._persist_request_metrics(
+                session_state,
+                request_state,
+                end_reason=self._stop_reason(session_state),
+            )
+            await self._publish_request_event(
+                session_state,
+                request_state,
+                AgentEvent(
+                    event_type="RequestStopped",
+                    data={"request_id": request_state.request_id, "reason": self._stop_reason(session_state)},
+                    state=AgentState.STOPPED,
+                ),
+            )
+        except asyncio.CancelledError:
+            request_state.state = AgentState.STOPPED
+            request_state.finished_at = time.time()
+            await self._persist_request_metrics(
+                session_state,
+                request_state,
+                end_reason=self._stop_reason(session_state),
+            )
+            await self._publish_request_event(
+                session_state,
+                request_state,
+                AgentEvent(
+                    event_type="RequestStopped",
+                    data={"request_id": request_state.request_id, "reason": self._stop_reason(session_state)},
+                    state=AgentState.STOPPED,
+                ),
+            )
+            raise
+        except Exception as exc:
+            request_state.state = AgentState.FAILED
+            request_state.error_text = str(exc)
+            request_state.finished_at = time.time()
+            session_state.state = AgentState.FAILED
+            await self._persist_request_metrics(session_state, request_state)
+            await self._publish_request_event(
+                session_state,
+                request_state,
+                AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
+            )
 
     async def _execute_turn(
         self,
         session_state: RuntimeSessionState,
+        request_state: RuntimeRequestState,
         turn_state: RuntimeTurnState,
-    ) -> AsyncGenerator[AgentEvent, None]:
-        await self.hook_runner.dispatch("OnSessionStart", session_state, turn=turn_state)
-        request = turn_state.request
+    ) -> None:
         turn_state.state = AgentState.RUNNING
         turn_state.started_at = time.time()
 
@@ -413,145 +509,158 @@ class AgentRuntime:
             self._raise_if_stop_requested(session_state)
 
             await self.hook_runner.dispatch("OnTurnStart", turn_state, session=session_state)
-            on_turn_start = AgentEvent(event_type="OnTurnStart", state=AgentState.RUNNING)
+            on_turn_start = AgentEvent(
+                event_type="OnTurnStart",
+                data={"request_id": request_state.request_id, "turn_id": turn_state.turn_id},
+                state=AgentState.RUNNING,
+            )
             await self._publish_runtime_event(session_state, turn_state, on_turn_start)
-            yield on_turn_start
-
-            tool_iterations = 0
-            last_tool_signature: str | None = None
-            consecutive_same_tool_calls = 0
             llm_response = {"content": "", "tool_calls": [], "finish_reason": None}
 
             self.context_assembler.ensure_user_message(turn_state.context)
-            while turn_state.state == AgentState.RUNNING:
+            self._raise_if_stop_requested(session_state)
+            messages = await self.context_assembler.assemble(turn_state.context)
+            prompt_tokens = self._estimate_message_tokens(messages)
+            session_telemetry = session_state.telemetry
+            projected_total_tokens = prompt_tokens
+            if session_telemetry is not None:
+                projected_total_tokens += (
+                    int(session_telemetry.total_prompt_tokens or 0)
+                    + int(session_telemetry.total_completion_tokens or 0)
+                )
+            await self.hook_runner.dispatch(
+                "PreLLMCall",
+                turn_state,
+                session=session_state,
+                messages=messages,
+                prompt_tokens=prompt_tokens,
+                projected_total_tokens=projected_total_tokens,
+                tool_catalog=turn_state.context.build_tool,
+            )
+            await self._publish_runtime_event(
+                session_state,
+                turn_state,
+                AgentEvent(
+                    event_type="LLM_Thinking_Start",
+                    data={
+                        "request_id": request_state.request_id,
+                        "turn_id": turn_state.turn_id,
+                        "prompt_tokens": prompt_tokens,
+                        "message_count": len(messages),
+                    },
+                    state=AgentState.RUNNING,
+                ),
+            )
+
+            from bot.llm.async_client import AsyncLLMClient
+
+            llm_client = AsyncLLMClient()
+            llm_response = {"content": "", "tool_calls": [], "finish_reason": None}
+            async for chunk in llm_client.invoke_stream(messages, turn_state.context.build_tool):
                 self._raise_if_stop_requested(session_state)
-                messages = await self.context_assembler.assemble(turn_state.context)
-                turn_state.current_prompt_tokens = self._estimate_message_tokens(messages)
-                turn_state.projected_total_tokens = session_state.total_prompt_tokens + session_state.total_completion_tokens + turn_state.current_prompt_tokens
-                await self.hook_runner.dispatch(
-                    "PreLLMCall",
-                    turn_state,
-                    session=session_state,
-                    messages=messages,
-                    prompt_tokens=turn_state.current_prompt_tokens,
-                    projected_total_tokens=turn_state.projected_total_tokens,
-                    tool_catalog=turn_state.context.build_tool,
-                )
-                await self._publish_runtime_event(
-                    session_state,
-                    turn_state,
-                    AgentEvent(
-                        event_type="LLM_Thinking_Start",
-                        data={"prompt_tokens": turn_state.current_prompt_tokens, "message_count": len(messages)},
-                        state=AgentState.RUNNING,
-                    ),
-                )
-
-                from bot.llm.async_client import AsyncLLMClient
-
-                llm_client = AsyncLLMClient()
-                llm_response = {"content": "", "tool_calls": [], "finish_reason": None}
-                async for chunk in llm_client.invoke_stream(messages, turn_state.context.build_tool):
-                    self._raise_if_stop_requested(session_state)
-                    if chunk["type"] == "content":
-                        llm_response["content"] += chunk["data"]
-                        event = AgentEvent(event_type="LLM_Response_Chunk", data=chunk["data"], state=AgentState.RUNNING)
-                        await self._publish_runtime_event(session_state, turn_state, event)
-                        yield event
-                    elif chunk["type"] == "tool_calls":
-                        llm_response["tool_calls"] = chunk["data"]
-                    elif chunk["type"] == "response_info":
-                        llm_response["finish_reason"] = (chunk.get("data") or {}).get("finish_reason")
-
-                completion_tokens = self._estimate_completion_tokens(llm_response)
-                usage = {
-                    "prompt_tokens": turn_state.current_prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": turn_state.current_prompt_tokens + completion_tokens,
-                }
-                turn_state.llm_usage = usage
-                session_state.total_prompt_tokens += usage["prompt_tokens"]
-                session_state.total_completion_tokens += usage["completion_tokens"]
-                await self.hook_runner.dispatch(
-                    "PostLLMCall",
-                    turn_state,
-                    session=session_state,
-                    response=llm_response,
-                    usage=usage,
-                    messages=messages,
-                )
-
-                assistant_message: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": llm_response.get("content", ""),
-                }
-                tool_calls = llm_response.get("tool_calls", []) or []
-                if tool_calls:
-                    assistant_message["tool_calls"] = [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
-                            },
-                        }
-                        for tc in tool_calls
-                    ]
-                turn_state.context.chat_history.append(assistant_message)
-
-                if not tool_calls:
-                    turn_state.state = AgentState.COMPLETED
-                    break
-
-                for tool_call in tool_calls:
-                    self._raise_if_stop_requested(session_state)
-                    tool_iterations += 1
-                    if tool_iterations > self.max_tool_iterations:
-                        raise RuntimeError(f"Agent exceeded max tool iterations ({self.max_tool_iterations}) for one turn")
-
-                    signature = self._tool_call_signature(tool_call)
-                    if signature == last_tool_signature:
-                        consecutive_same_tool_calls += 1
-                    else:
-                        last_tool_signature = signature
-                        consecutive_same_tool_calls = 1
-                    if consecutive_same_tool_calls >= self.max_same_tool_calls:
-                        raise RuntimeError(
-                            f"Agent repeated the same tool call {consecutive_same_tool_calls} times without making progress: {tool_call.get('name')}"
-                        )
-
-                    await self.hook_runner.dispatch("PreToolUse", turn_state, session=session_state, tool_call=tool_call)
-                    start_event = AgentEvent(event_type="ToolExecutionStart", data=tool_call, state=AgentState.RUNNING)
-                    await self._publish_runtime_event(session_state, turn_state, start_event)
-                    yield start_event
-                    result = await self.tool_executor.execute(tool_call, turn_state, session_state)
-                    self._raise_if_stop_requested(session_state)
-                    await self.hook_runner.dispatch("PostToolUse", turn_state, session=session_state, tool_call=tool_call, result=result)
-
-                    tool_message = {
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id", ""),
-                        "name": tool_call.get("name", ""),
-                        "content": self._build_tool_history_result(result),
-                    }
-                    turn_state.context.chat_history.append(tool_message)
-                    end_event = AgentEvent(
-                        event_type="ToolExecutionEnd",
-                        data={"tool_id": tool_call.get("id"), "result": tool_message["content"]},
+                if chunk["type"] == "content":
+                    llm_response["content"] += chunk["data"]
+                    event = AgentEvent(
+                        event_type="LLM_Response_Chunk",
+                        data=chunk["data"],
                         state=AgentState.RUNNING,
                     )
-                    await self._publish_runtime_event(session_state, turn_state, end_event)
-                    yield end_event
+                    await self._publish_runtime_event(session_state, turn_state, event)
+                elif chunk["type"] == "tool_calls":
+                    llm_response["tool_calls"] = chunk["data"]
+                elif chunk["type"] == "response_info":
+                    llm_response["finish_reason"] = (chunk.get("data") or {}).get("finish_reason")
+
+            completion_tokens = self._estimate_completion_tokens(llm_response)
+            usage = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            }
+            if session_telemetry is not None:
+                session_telemetry.total_prompt_tokens += usage["prompt_tokens"]
+                session_telemetry.total_completion_tokens += usage["completion_tokens"]
+            await self.hook_runner.dispatch(
+                "PostLLMCall",
+                turn_state,
+                session=session_state,
+                response=llm_response,
+                usage=usage,
+                messages=messages,
+            )
+
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": llm_response.get("content", ""),
+            }
+            tool_calls = llm_response.get("tool_calls", []) or []
+            if tool_calls:
+                assistant_message["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+            turn_state.context.chat_history.append(assistant_message)
+
+            turn_state.requires_followup = bool(tool_calls)
+            for tool_call in tool_calls:
+                self._raise_if_stop_requested(session_state)
+                request_state.tool_iterations += 1
+                if request_state.tool_iterations > self.max_tool_iterations:
+                    raise RuntimeError(f"Agent exceeded max tool iterations ({self.max_tool_iterations}) for one request")
+
+                signature = self._tool_call_signature(tool_call)
+                if signature == request_state.last_tool_signature:
+                    request_state.consecutive_same_tool_calls += 1
+                else:
+                    request_state.last_tool_signature = signature
+                    request_state.consecutive_same_tool_calls = 1
+                if request_state.consecutive_same_tool_calls >= self.max_same_tool_calls:
+                    raise RuntimeError(
+                        f"Agent repeated the same tool call {request_state.consecutive_same_tool_calls} times without making progress: {tool_call.get('name')}"
+                    )
+
+                await self.hook_runner.dispatch("PreToolUse", turn_state, session=session_state, tool_call=tool_call)
+                start_event = AgentEvent(event_type="ToolExecutionStart", data=tool_call, state=AgentState.RUNNING)
+                await self._publish_runtime_event(session_state, turn_state, start_event)
+                result = await self.tool_executor.execute(tool_call, turn_state, session_state)
+                self._raise_if_stop_requested(session_state)
+                await self.hook_runner.dispatch("PostToolUse", turn_state, session=session_state, tool_call=tool_call, result=result)
+
+                tool_message = {
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id", ""),
+                    "name": tool_call.get("name", ""),
+                    "content": self._build_tool_history_result(result),
+                }
+                turn_state.context.chat_history.append(tool_message)
+                end_event = AgentEvent(
+                    event_type="ToolExecutionEnd",
+                    data={"tool_id": tool_call.get("id"), "result": tool_message["content"]},
+                    state=AgentState.RUNNING,
+                )
+                await self._publish_runtime_event(session_state, turn_state, end_event)
 
             await self.turn_reducer.reduce(turn_state.context)
             turn_state.finished_at = time.time()
             await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
-            final_state = turn_state.state if turn_state.state != AgentState.RUNNING else AgentState.COMPLETED
-            turn_state.state = final_state
-            completed_event = AgentEvent(event_type="TurnCompleted", state=final_state)
+            turn_state.state = AgentState.COMPLETED
+            completed_event = AgentEvent(
+                event_type="TurnCompleted",
+                data={
+                    "request_id": request_state.request_id,
+                    "turn_id": turn_state.turn_id,
+                    "requires_followup": turn_state.requires_followup,
+                },
+                state=AgentState.COMPLETED,
+            )
             await self._publish_runtime_event(session_state, turn_state, completed_event)
-            yield completed_event
         except TurnStoppedError as exc:
             turn_state.state = AgentState.STOPPED
             turn_state.transition_reason = str(exc)
@@ -559,7 +668,6 @@ class AgentRuntime:
             await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             stopped_event = self._build_stopped_event(turn_state, reason=str(exc))
             await self._publish_runtime_event(session_state, turn_state, stopped_event)
-            yield stopped_event
         except asyncio.CancelledError:
             reason = self._stop_reason(session_state)
             turn_state.state = AgentState.STOPPED
@@ -568,7 +676,6 @@ class AgentRuntime:
             await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             stopped_event = self._build_stopped_event(turn_state, reason=reason)
             await self._publish_runtime_event(session_state, turn_state, stopped_event)
-            yield stopped_event
         except Exception as exc:
             turn_state.state = AgentState.FAILED
             turn_state.error_text = str(exc)
@@ -577,23 +684,23 @@ class AgentRuntime:
             await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             error_event = AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED)
             await self._publish_runtime_event(session_state, turn_state, error_event)
-            yield error_event
 
-    async def _publish_stopped_request(self, request: RuntimeTurnRequest, *, reason: str) -> None:
+    async def _publish_stopped_request(self, request: AiServiceGenerateRequest, *, reason: str) -> None:
         await self.message_bus.publish_outbound(
             RuntimeTurnEvent(
-                session_id=request.session_id,
-                turn_id=request.turn_id,
-                event_type="TurnStopped",
+                session_id=str(request.session_id or ""),
+                request_id=self._request_id(request),
+                turn_id="",
+                event_type="RequestStopped",
                 state=AgentState.STOPPED.value,
-                data={"reason": reason, "turn_id": request.turn_id},
+                data={"reason": reason, "request_id": self._request_id(request)},
             )
         )
 
     def _build_stopped_event(self, turn_state: RuntimeTurnState, *, reason: str) -> AgentEvent:
         return AgentEvent(
             event_type="TurnStopped",
-            data={"reason": reason, "turn_id": turn_state.request.turn_id},
+            data={"reason": reason, "turn_id": turn_state.turn_id, "request_id": turn_state.request_state.request_id},
             state=AgentState.STOPPED,
         )
 
@@ -613,7 +720,25 @@ class AgentRuntime:
         await self.message_bus.publish_outbound(
             RuntimeTurnEvent(
                 session_id=session_state.session_id,
-                turn_id=turn_state.request.turn_id,
+                request_id=turn_state.request_state.request_id,
+                turn_id=turn_state.turn_id,
+                event_type=event.event_type,
+                state=event.state.value,
+                data=event.data,
+            )
+        )
+
+    async def _publish_request_event(
+        self,
+        session_state: RuntimeSessionState,
+        request_state: RuntimeRequestState,
+        event: AgentEvent,
+    ) -> None:
+        await self.message_bus.publish_outbound(
+            RuntimeTurnEvent(
+                session_id=session_state.session_id,
+                request_id=request_state.request_id,
+                turn_id=request_state.active_turn_id,
                 event_type=event.event_type,
                 state=event.state.value,
                 data=event.data,
@@ -656,61 +781,83 @@ class AgentRuntime:
             parts.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
         return self._estimate_text_tokens("\n".join(part for part in parts if part))
 
-    async def _finalize_worker_turn_error(self, session_state: RuntimeSessionState, turn_state: RuntimeTurnState, exc: Exception) -> None:
-        if turn_state.finished_at <= 0:
-            turn_state.state = AgentState.FAILED
-            turn_state.error_text = str(exc)
-            turn_state.finished_at = time.time()
-            await self.hook_runner.dispatch("OnError", turn_state, session=session_state, error=exc)
-            await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
+    async def _finalize_worker_request_error(self, session_state: RuntimeSessionState, request_state: RuntimeRequestState, exc: Exception) -> None:
+        request_state.state = AgentState.FAILED
+        request_state.error_text = str(exc)
+        request_state.finished_at = time.time()
+        session_state.state = AgentState.FAILED
+        await self._persist_request_metrics(session_state, request_state)
+        await self._publish_request_event(
+            session_state,
+            request_state,
+            AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
+        )
 
-        error_event = AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED)
-        await self._publish_runtime_event(session_state, turn_state, error_event)
-
-    async def _finalize_cancelled_turn(self, session_state: RuntimeSessionState, turn_state: RuntimeTurnState, *, reason: str) -> None:
-        if turn_state.finished_at > 0:
+    async def _finalize_cancelled_request(self, session_state: RuntimeSessionState, request_state: RuntimeRequestState, *, reason: str) -> None:
+        if request_state.finished_at > 0:
             return
 
-        turn_state.state = AgentState.STOPPED
-        turn_state.transition_reason = reason
-        turn_state.finished_at = time.time()
-        await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
-        await self._publish_runtime_event(session_state, turn_state, self._build_stopped_event(turn_state, reason=reason))
+        request_state.state = AgentState.STOPPED
+        request_state.finished_at = time.time()
+        await self._persist_request_metrics(session_state, request_state, end_reason=reason)
+        await self._publish_request_event(
+            session_state,
+            request_state,
+            AgentEvent(
+                event_type="RequestStopped",
+                data={"request_id": request_state.request_id, "reason": reason},
+                state=AgentState.STOPPED,
+            ),
+        )
 
-    @classmethod
-    async def startup_process_runtime(cls) -> dict[str, Any]:
-        summary: dict[str, Any] = {
-            "config_loaded": False,
-            "mysql_pool_ready": False,
-            "qdrant_ready": False,
-            "tool_count": 0,
-            "skill_count": 0,
-        }
+    @staticmethod
+    def _request_id(request: AiServiceGenerateRequest) -> str:
+        return str(getattr(request, "request_id", "") or "")
 
-        load_config()
-        summary["config_loaded"] = True
+    @staticmethod
+    def _telemetry_status_for_request(state: AgentState) -> TelemetryStatus:
+        if state == AgentState.FAILED:
+            return TelemetryStatus.ERROR
+        if state == AgentState.STOPPED:
+            return TelemetryStatus.STOPPED
+        if state == AgentState.COMPLETED:
+            return TelemetryStatus.SUCCESS
+        return TelemetryStatus.RUNNING
 
+    async def _persist_request_metrics(
+        self,
+        session_state: RuntimeSessionState,
+        request_state: RuntimeRequestState,
+        *,
+        end_reason: str | None = None,
+    ) -> None:
+        request_telemetry = RequestTelemetry(
+            trace_id=str(getattr(request_state.request, "trace_id", "") or session_state.trace_id or ""),
+            session_id=session_state.session_id,
+            request_id=request_state.request_id,
+            app_id=session_state.app_id,
+            user_id=session_state.user_id,
+            model=getattr(self.agent_config, "resolved_model_name", "unknown"),
+            token_budget=int(getattr(session_state.telemetry, "token_budget", 0) or 0),
+            started_at=datetime.utcfromtimestamp(request_state.started_at) if request_state.started_at else None,
+            ended_at=datetime.utcfromtimestamp(request_state.finished_at) if request_state.finished_at else None,
+            status=self._telemetry_status_for_request(request_state.state),
+            end_reason=str(end_reason or self._stop_reason(session_state) or request_state.state.value or "completed"),
+        )
+        await get_monitor_pipeline().persist_request_metrics(request_telemetry)
+
+
+    async def startup_backup_service(self) -> None:
         try:
             await warm_up_mysql_pool()
-            summary["mysql_pool_ready"] = True
         except Exception as exc:
             log.warning("AgentRuntime startup failed to warm MySQL pool: {}", exc)
 
         try:
             await warm_up_qdrant_client()
-            summary["qdrant_ready"] = True
+            log.info("启动 warm_up_qdrant_client ready")
         except Exception as exc:
             log.warning("AgentRuntime startup failed to warm Qdrant client: {}", exc)
-
-        summary["tool_count"] = len(get_tool_registry().tools)
-        summary["skill_count"] = len(SkillLoader().load_all_skills() or [])
-
-        try:
-            get_memory_manager().warm_up()
-            summary["memory_manager_ready"] = True
-        except Exception as exc:
-            summary["memory_manager_ready"] = False
-            log.warning("AgentRuntime startup failed to warm MemoryManager: {}", exc)
 
         for initializer_name, initializer in (
             ("monitor_pipeline", get_monitor_pipeline),
@@ -722,9 +869,7 @@ class AgentRuntime:
         ):
             try:
                 initializer()
-                summary[f"{initializer_name}_ready"] = True
-            except Exception as exc:
-                summary[f"{initializer_name}_ready"] = False
-                log.warning("AgentRuntime startup failed to initialize {}: {}", initializer_name, exc)
 
-        return summary
+                log.info(f"启动 {initializer_name} ready")
+            except Exception as exc:
+                log.warning("AgentRuntime startup failed to initialize {}: {}", initializer_name, exc)

@@ -58,9 +58,39 @@ class MonitorSessionSummary(CamelBaseModel):
     updated_at: datetime | None = Field(default=None, alias="updatedAt")
 
 
+class MonitorRequestSummary(CamelBaseModel):
+    session_id: str = Field(alias="sessionId")
+    request_id: str = Field(alias="requestId")
+    trace_id: str = Field(alias="traceId")
+    app_id: str = Field(alias="appId")
+    user_id: str = Field(default="", alias="userId")
+    model: str = ""
+    status: str = "running"
+    total_turns: int = Field(default=0, alias="totalTurns")
+    total_prompt_tokens: int = Field(default=0, alias="totalPromptTokens")
+    total_completion_tokens: int = Field(default=0, alias="totalCompletionTokens")
+    token_budget: int = Field(default=0, alias="tokenBudget")
+    avg_llm_latency_ms: float = Field(default=0, alias="avgLlmLatencyMs")
+    avg_first_token_ms: float = Field(default=0, alias="avgFirstTokenMs")
+    max_llm_latency_ms: int = Field(default=0, alias="maxLlmLatencyMs")
+    min_llm_latency_ms: int = Field(default=0, alias="minLlmLatencyMs")
+    total_tool_calls: int = Field(default=0, alias="totalToolCalls")
+    total_errors: int = Field(default=0, alias="totalErrors")
+    recovery_count: int = Field(default=0, alias="recoveryCount")
+    last_recovery_kind: str = Field(default="", alias="lastRecoveryKind")
+    avg_memory_hits: float = Field(default=0, alias="avgMemoryHits")
+    total_memory_hits: int = Field(default=0, alias="totalMemoryHits")
+    end_reason: str = Field(default="", alias="endReason")
+    started_at: datetime | None = Field(default=None, alias="startedAt")
+    ended_at: datetime | None = Field(default=None, alias="endedAt")
+    duration_ms: int = Field(default=0, alias="durationMs")
+    updated_at: datetime | None = Field(default=None, alias="updatedAt")
+
+
 class MonitorTurnSummary(CamelBaseModel):
     trace_id: str = Field(alias="traceId")
     session_id: str = Field(alias="sessionId")
+    request_id: str = Field(default="", alias="requestId")
     turn_id: str = Field(alias="turnId")
     turn_number: int = Field(default=0, alias="turnNumber")
     status: str = "running"
@@ -129,6 +159,7 @@ class MonitorOverviewStats(CamelBaseModel):
 
 class MonitorSessionDetail(CamelBaseModel):
     session: MonitorSessionSummary
+    requests: list[MonitorRequestSummary] = Field(default_factory=list)
     turns: list[MonitorTurnSummary] = Field(default_factory=list)
     alerts: list[MonitorAlertRecordVO] = Field(default_factory=list)
 

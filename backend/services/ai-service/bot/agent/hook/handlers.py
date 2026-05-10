@@ -3,14 +3,23 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import uuid
 
+from agent import runtime
+from agent.context import get_context_assembler
+from agent.runtime_schema import AgentState
+from memory.memory_manager import get_memory_manager
 from monitor.alert_evaluator import get_monitor_alert_evaluator
 from monitor.monitor_pipeline import get_monitor_pipeline
 from monitor.span_context import SpanContext
 from monitor.telemetry_schema import SessionTelemetry, TelemetryStatus, TurnTelemetry, TurnToolMetrics
+from bot.session.manager import SessionManager
+from prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE
 from shared.config.log_config import log
+
+if TYPE_CHECKING:
+    from bot.agent.runtime import RuntimeSessionState
 
 
 MEMORY_TOOL_NAMES = {
@@ -62,7 +71,8 @@ def _ensure_turn_telemetry(turn: Any, session: Any) -> TurnTelemetry:
     telemetry = TurnTelemetry(
         trace_id=session.trace_id,
         session_id=session.session_id,
-        turn_id=turn.request.turn_id,
+        request_id=str(getattr(turn.request, "request_id", "") or ""),
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
         started_at=_utcnow(),
         status=TelemetryStatus.RUNNING,
@@ -133,69 +143,54 @@ async def _persist_span(
     )
 
 
-async def on_session_start(session: Any, **kwargs):
-    turn = kwargs.get("turn")
-    if turn is None:
+async def on_session_start(session: RuntimeSessionState, **kwargs):
+    runtime = session.runtime or None
+    request = session.request or None
+    if runtime is None or request is None:
+        log.warning("runtime or request is None ,on session start pass")
+        return
+    # 上下文
+    context = kwargs.get("context")
+    if context is None:
         return
 
-    runtime = getattr(session, "runtime", None)
-    assembler = getattr(runtime, "context_assembler", None) if runtime is not None else None
-    if assembler is not None:
-        await assembler.prepare_turn_context(session, turn, getattr(runtime, "_tool_catalog", []))
+    session_manager = SessionManager(str(request.app_id))
+    session.session_manager = session_manager
 
-    session.audit_context = {
-        "app_id": session.app_id,
-        "user_id": session.user_id,
-        "trace_id": turn.request.trace_id,
-        "session_id": session.session_id,
-        "request_id": turn.request.request_id,
-        "code_gen_type": turn.request.requested_code_gen_type or "agent-decided",
-    }
-    session.trace_id = turn.request.trace_id
-    session.request_id = turn.request.request_id
-    session.requested_code_gen_type = turn.request.requested_code_gen_type
+    # 组装tool skill到session
+    await get_context_assembler().build_fix_context(session)
 
-    turn.request.trace_id = session.trace_id
-    turn.request.request_id = session.request_id
-    turn.requested_code_gen_type = turn.request.requested_code_gen_type
-    snapshot = {
-        "session": dict(session.audit_context),
-        "turn": {
-            "turn_id": turn.request.turn_id,
-            "turn_number": turn.turn_number,
-            "code_dir": turn.code_dir,
-            "safe_paths": list(turn.safe_paths),
-            "workspace_metadata": dict(turn.workspace_metadata),
-            "knowledge_cache": dict(turn.knowledge_cache),
-            "plan_summary": turn.plan_summary,
-            "context": turn.context.model_dump(),
-        },
-    }
-    snapshot_path = session.session_manager.save_turn_snapshot(turn.request.turn_id, snapshot)
-    turn.snapshot_path = str(snapshot_path)
-    session.session_manager.append_chat_history_message(
+    # 聊天记录
+    now = _utcnow().isoformat()
+    request_dict = request.model_dump()
+    request_dict["started_at"]=now
+    session_manager.append_chat_history_message(
         session.session_id,
-        {
-            "trace_id": session.trace_id,
-            "session_id": session.session_id,
-            "turn_id": turn.request.turn_id,
-            "role": "user",
-            "content": turn.context.user_input,
-            "request_id": turn.request.request_id,
-            "create_time": _utcnow().isoformat(),
-        },
+        request_dict,
     )
 
-    if getattr(session, "session_span", None) is not None:
-        return
+    # 监控初始化
+    span_attribute = request_dict.copy()
+    span_attribute['last_activity_at'] = now
+    span_attribute['turn_number'] = 0
+
+    session.state = AgentState.RUNNING
 
     telemetry = _ensure_session_telemetry(session)
+    telemetry.model = getattr(session.runtime.agent_config, "resolved_model_name", "unknown")
+    telemetry.token_budget = 0
     pipeline = get_monitor_pipeline()
+    # session需要
+    # 根span的固定值写入，封装一下
+
+
+
+    # 子span初始化，写入需要初始化的属性，封装一下 就用tele_schema里面的
     session.session_span = pipeline.on_session_start(
         session_id=session.session_id,
         user_id=session.user_id,
-        client_version=session.client_version,
-        model=getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
+        trace=session.client_version,
+        model=telemetry.model,
         tokens_remaining=0,
     )
     session.session_span_started_at = _utcnow()
@@ -207,32 +202,36 @@ async def on_session_start(session: Any, **kwargs):
         status=TelemetryStatus.RUNNING.value,
         attributes={
             "client.version": session.client_version,
-            "model.name": getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
+            "model.name": telemetry.model,
             "span.type": "root",
             "user.id": session.user_id,
         },
-    )
-    await pipeline.persist_session_metrics(
-        telemetry,
-        model=getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
-        token_budget=0,
-        sum_llm_latency_ms=0,
-        sum_first_token_ms=0,
-        max_llm_latency_ms=0,
-        min_llm_latency_ms=999999,
-        total_errors=0,
-        last_recovery_kind="",
-        end_reason="",
     )
 
 
 async def on_turn_start(turn: Any, **kwargs):
     session = kwargs["session"]
+    snapshot = {
+        "session": dict(session.audit_context),
+        "turn": {
+            "request_id": turn.request.request_id,
+            "turn_id": turn.turn_id,
+            "turn_number": turn.turn_number,
+            "code_dir": turn.code_dir,
+            "safe_paths": list(turn.safe_paths),
+            "workspace_metadata": dict(turn.workspace_metadata),
+            "knowledge_cache": dict(turn.knowledge_cache),
+            "plan_summary": turn.plan_summary,
+            "context": turn.context.model_dump(),
+        },
+    }
+    snapshot_path = session.session_manager.save_turn_snapshot(turn.turn_id, snapshot)
+    turn.snapshot_path = str(snapshot_path)
     telemetry = _ensure_turn_telemetry(turn, session)
     telemetry.turn_number = turn.turn_number
     turn_span = get_monitor_pipeline().on_turn_start(
         session_id=session.session_id,
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
     )
     turn.active_span_refs["turn"] = turn_span or _db_only_span(session.trace_id)
@@ -244,16 +243,13 @@ async def on_turn_start(turn: Any, **kwargs):
         start_time=turn.active_span_refs["turn_started_at_utc"],
         status=TelemetryStatus.RUNNING.value,
         parent_span_id=getattr(session.session_span, "span_id", None),
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
         attributes={
-            "turn.id": turn.request.turn_id,
+            "turn.id": turn.turn_id,
             "turn.number": turn.turn_number,
         },
     )
-    _ensure_session_telemetry(session).total_turns = session.turn_counter
-
-
 async def pre_llm_call(turn: Any, **kwargs):
     session = kwargs["session"]
     telemetry = _ensure_turn_telemetry(turn, session)
@@ -261,14 +257,12 @@ async def pre_llm_call(turn: Any, **kwargs):
     projected_total_tokens = int(kwargs.get("projected_total_tokens", 0) or 0)
     telemetry.context.token_count = prompt_tokens
     telemetry.context.token_usage = projected_total_tokens
-    turn.current_prompt_tokens = prompt_tokens
-    turn.projected_total_tokens = projected_total_tokens
     turn.active_span_refs["llm_started_at"] = time.perf_counter()
     turn.active_span_refs["llm_started_at_utc"] = _utcnow()
     llm_runtime_span = get_monitor_pipeline().on_llm_call_start(
         session_id=session.session_id,
         turn=turn.turn_number,
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
     )
     turn.active_span_refs["llm_runtime"] = llm_runtime_span
     turn.active_span_refs["llm"] = llm_runtime_span or _db_only_span(session.trace_id)
@@ -279,10 +273,10 @@ async def pre_llm_call(turn: Any, **kwargs):
         start_time=turn.active_span_refs["llm_started_at_utc"],
         status=TelemetryStatus.RUNNING.value,
         parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
         attributes={
-            "turn.id": turn.request.turn_id,
+            "turn.id": turn.turn_id,
             "llm.prompt_tokens": prompt_tokens,
         },
     )
@@ -301,17 +295,12 @@ async def post_llm_call(turn: Any, **kwargs):
     telemetry.llm.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
     telemetry.llm.total_ms = total_ms
     telemetry.llm.status = TelemetryStatus.SUCCESS
-    session.sum_llm_latency_ms += telemetry.llm.total_ms
-    session.sum_first_token_ms += telemetry.llm.first_token_ms
-    session.max_llm_latency_ms = max(session.max_llm_latency_ms, telemetry.llm.total_ms)
-    session.min_llm_latency_ms = min(session.min_llm_latency_ms, telemetry.llm.total_ms)
-    if telemetry.llm.recovery_kind:
-        session.last_recovery_kind = telemetry.llm.recovery_kind
+    session_telemetry = _ensure_session_telemetry(session)
 
     get_monitor_pipeline().on_context_assembly(
         session_id=session.session_id,
         token_count=telemetry.context.token_count,
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
     )
     get_monitor_pipeline().on_llm_call_end(
         span_ctx=llm_runtime_span,
@@ -331,7 +320,7 @@ async def post_llm_call(turn: Any, **kwargs):
         end_time=_utcnow(),
         status=TelemetryStatus.SUCCESS.value,
         parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
         attributes={
             "llm.prompt_tokens": telemetry.llm.prompt_tokens,
@@ -343,13 +332,13 @@ async def post_llm_call(turn: Any, **kwargs):
 
     alerts = await get_monitor_alert_evaluator().evaluate_llm(
         trace_id=session.trace_id,
-        session_telemetry=_ensure_session_telemetry(session),
+        session_telemetry=session_telemetry,
         turn_telemetry=telemetry,
-        token_budget=0,
-        projected_total_tokens=turn.projected_total_tokens,
+        token_budget=session_telemetry.token_budget,
+        projected_total_tokens=telemetry.context.token_usage,
     )
     if alerts:
-        log.info("LLM alerts session={} turn={} count={}", session.session_id, turn.request.turn_id, len(alerts))
+        log.info("LLM alerts session={} turn={} count={}", session.session_id, turn.turn_id, len(alerts))
 
 
 async def pre_tool_use(turn: Any, **kwargs):
@@ -360,7 +349,7 @@ async def pre_tool_use(turn: Any, **kwargs):
     runtime_span = get_monitor_pipeline().on_tool_call_start(
         session_id=session.session_id,
         tool_name=tool_name,
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
     )
     turn.active_span_refs.setdefault("tool", {})[tool_id] = {
         "tool_name": tool_name,
@@ -377,7 +366,7 @@ async def pre_tool_use(turn: Any, **kwargs):
         start_time=tool_state["started_at_utc"],
         status=TelemetryStatus.RUNNING.value,
         parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
         attributes={
             "tool.name": tool_name,
@@ -421,7 +410,7 @@ async def post_tool_use(turn: Any, **kwargs):
         end_time=_utcnow(),
         status=status.value,
         parent_span_id=getattr(turn.active_span_refs.get("turn"), "span_id", None),
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
         attributes={
             "tool.name": tool_name,
@@ -434,12 +423,11 @@ async def post_tool_use(turn: Any, **kwargs):
         telemetry.memory.hits += hits
         telemetry.memory.latency_ms += latency_ms
         telemetry.memory.source = tool_name
-        session.total_memory_hits += hits
         get_monitor_pipeline().on_memory_retrieval(
             session_id=session.session_id,
             hits=hits,
             latency_ms=latency_ms,
-            turn_id=turn.request.turn_id,
+            turn_id=turn.turn_id,
             source=tool_name,
         )
 
@@ -450,9 +438,8 @@ async def post_tool_use(turn: Any, **kwargs):
         tool_name=tool_name,
         tool_status=status.value,
     )
-    session.total_tool_calls += 1
     if alerts:
-        log.info("Tool alerts session={} turn={} tool={} count={}", session.session_id, turn.request.turn_id, tool_name, len(alerts))
+        log.info("Tool alerts session={} turn={} tool={} count={}", session.session_id, turn.turn_id, tool_name, len(alerts))
 
 
 async def on_turn_end(turn: Any, **kwargs):
@@ -466,7 +453,7 @@ async def on_turn_end(turn: Any, **kwargs):
 
     get_monitor_pipeline().on_turn_end(
         session_id=session.session_id,
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         status="error" if telemetry.status == TelemetryStatus.ERROR else "ok",
         duration_ms=telemetry.duration_ms,
         prompt_tokens=telemetry.llm.prompt_tokens,
@@ -482,10 +469,10 @@ async def on_turn_end(turn: Any, **kwargs):
         end_time=telemetry.ended_at,
         status=telemetry.status.value,
         parent_span_id=getattr(session.session_span, "span_id", None),
-        turn_id=turn.request.turn_id,
+        turn_id=turn.turn_id,
         turn_number=turn.turn_number,
         attributes={
-            "turn.id": turn.request.turn_id,
+            "turn.id": turn.turn_id,
             "turn.duration_ms": telemetry.duration_ms,
             "turn.prompt_tokens": telemetry.llm.prompt_tokens,
             "turn.completion_tokens": telemetry.llm.completion_tokens,
@@ -500,7 +487,6 @@ async def on_error(turn: Any, **kwargs):
     session = kwargs["session"]
     telemetry = _ensure_turn_telemetry(turn, session)
     telemetry.status = TelemetryStatus.ERROR
-    session.total_errors += 1
     error = kwargs.get("error")
     get_monitor_pipeline().on_error(
         session_id=session.session_id,
@@ -514,17 +500,14 @@ async def on_session_end(session: Any, **kwargs):
     telemetry = _ensure_session_telemetry(session)
     telemetry.ended_at = _utcnow()
     telemetry.status = _session_status(session.state)
-    telemetry.total_prompt_tokens = session.total_prompt_tokens
-    telemetry.total_completion_tokens = session.total_completion_tokens
-    telemetry.total_tool_calls = session.total_tool_calls
-    telemetry.total_memory_hits = session.total_memory_hits
-    telemetry.recovery_count = session.recovery_count
-    end_reason = str(kwargs.get("end_reason", "completed") or "completed")
+    telemetry.end_reason = str(kwargs.get("end_reason", "completed") or "completed")
+
+    await get_monitor_pipeline().persist_session_metrics(telemetry)
 
     get_monitor_pipeline().on_session_end(
         session_id=session.session_id,
         root_span=session.session_span,
-        end_reason=end_reason,
+        end_reason=telemetry.end_reason,
         total_turns=telemetry.total_turns,
         total_tokens=telemetry.total_prompt_tokens + telemetry.total_completion_tokens,
         status="error" if telemetry.status == TelemetryStatus.ERROR else "ok",
@@ -537,20 +520,8 @@ async def on_session_end(session: Any, **kwargs):
         end_time=telemetry.ended_at,
         status=telemetry.status.value,
         attributes={
-            "session.end_reason": end_reason,
+            "session.end_reason": telemetry.end_reason,
             "session.total_turns": telemetry.total_turns,
             "session.total_tokens": telemetry.total_prompt_tokens + telemetry.total_completion_tokens,
         },
-    )
-    await get_monitor_pipeline().persist_session_metrics(
-        telemetry,
-        model=getattr(session.runtime.agent_config, "resolved_model_name", "unknown"),
-        token_budget=0,
-        sum_llm_latency_ms=session.sum_llm_latency_ms,
-        sum_first_token_ms=session.sum_first_token_ms,
-        max_llm_latency_ms=session.max_llm_latency_ms,
-        min_llm_latency_ms=session.min_llm_latency_ms,
-        total_errors=session.total_errors,
-        last_recovery_kind=session.last_recovery_kind,
-        end_reason=end_reason,
     )

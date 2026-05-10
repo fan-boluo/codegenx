@@ -86,6 +86,7 @@ class SkillLoader:
         return re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL).strip()
 
 
+
 if __name__ == '__main__':
     skills = SkillLoader().load_all_skills()
     print(skills)

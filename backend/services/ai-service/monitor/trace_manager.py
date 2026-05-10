@@ -3,7 +3,7 @@ import secrets
 from opentelemetry import trace
 
 from monitor.span_context import SpanContext
-
+from shared.schema.ai_service import AiServiceGenerateRequest
 
 # ============================================================
 # 2. Trace 管理
@@ -29,10 +29,7 @@ class TraceManager:
 
     def create_root_span(
         self,
-        session_id: str,
-        user_id: str,
-        client_version: str,
-        model: str
+        request:AiServiceGenerateRequest
     ) -> "SpanContext":
         """
         创建会话根 Span。
@@ -42,14 +39,13 @@ class TraceManager:
             name="agent.session",
             attributes={
                 "session.id": session_id,
+                "trace_id":trace_id,
                 "user.id": user_id,
-                "client.version": client_version,
-                "model.name": model,
                 "span.type": "root"
             }
         )
         return SpanContext(
-            trace_id=self._normalize_trace_id(span.get_span_context().trace_id),
+            trace_id=trace_id,
             span_id=self._normalize_span_id(span.get_span_context().span_id),
             span=span
         )

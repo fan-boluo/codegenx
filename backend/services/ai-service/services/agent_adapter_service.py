@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import sys
 
+from shared.schema.ai_service import AiServiceGenerateRequest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 AI_SERVICE_ROOT = Path(__file__).resolve().parents[1]
 if str(AI_SERVICE_ROOT) not in sys.path:
@@ -34,7 +36,6 @@ def _ensure_local_constant_module() -> None:
 _ensure_local_constant_module()
 
 from bot.agent.runtime import AgentEvent, AgentRuntime
-from bot.bus import RuntimeTurnRequest
 from bot.utils.config import load_config
 from infra.mysql.session import shutdown_mysql_engine
 from infra.qdrant.client import shutdown_qdrant_client
@@ -52,9 +53,6 @@ class AgentAdapterService:
         self._started = False
         self._health_task: asyncio.Task | None = None
         self._telemetry_started = False
-
-    def _app_key(self, app_id: int) -> str:
-        return str(app_id)
 
     def _get_runtime(self) -> AgentRuntime:
         runtime = self._runtime
@@ -98,28 +96,28 @@ class AgentAdapterService:
                 return dict(self._startup_summary)
 
             telemetry_started = self._init_telemetry()
-            summary = await AgentRuntime.startup_process_runtime()
             runtime = self._get_runtime()
             await runtime.start()
-
+            log.info("启动runtime完毕")
             if self._health_task is None:
                 self._health_task = asyncio.create_task(
                     self._health_check_loop(),
                     name="ai-service-health-check",
                 )
+                log.info("启动健康检查")
 
-            summary["telemetry_started"] = telemetry_started
-            summary["runtime_mode"] = "shared"
-            summary["preloaded_runtimes"] = ["shared-runtime"]
-            summary["background_tasks"] = [
-                "agent_runtime_dispatcher",
-                "otel_span_flush" if telemetry_started else "otel_span_flush_skipped",
-                "otel_metrics_flush" if telemetry_started else "otel_metrics_flush_skipped",
-                "health_checker",
-            ]
-            self._startup_summary = summary
+            # summary["telemetry_started"] = telemetry_started
+            # summary["runtime_mode"] = "shared"
+            # summary["preloaded_runtimes"] = ["shared-runtime"]
+            # summary["background_tasks"] = [
+            #     "agent_runtime_dispatcher",
+            #     "otel_span_flush" if telemetry_started else "otel_span_flush_skipped",
+            #     "otel_metrics_flush" if telemetry_started else "otel_metrics_flush_skipped",
+            #     "health_checker",
+            # ]
+            # self._startup_summary = summary
             self._started = True
-            return dict(summary)
+            # return dict(summary)
 
     async def shutdown(self) -> None:
         async with self._startup_lock:
@@ -148,83 +146,19 @@ class AgentAdapterService:
 
             self._started = False
 
-    def _build_turn_request(
-        self,
-        *,
-        app_id: int,
-        user_id: str | None,
-        session_id: str,
-        user_message: str,
-        trace_id: str,
-        request_id: str,
-        requested_code_gen_type: str | None,
-    ) -> RuntimeTurnRequest:
-        normalized_user_id = str(user_id or "").strip()
-        metadata = {
-            "request_id": request_id,
-            "trace_id": trace_id,
-        }
-        if requested_code_gen_type:
-            metadata["requested_code_gen_type"] = requested_code_gen_type
-        if normalized_user_id:
-            metadata["user_id"] = normalized_user_id
-        return RuntimeTurnRequest(
-            app_id=self._app_key(app_id),
-            user_id=normalized_user_id,
-            session_id=session_id,
-            turn_id=request_id,
-            trace_id=trace_id,
-            request_id=request_id,
-            user_input=user_message,
-            requested_code_gen_type=requested_code_gen_type,
-            client_version="ai-service",
-            metadata=metadata,
-        )
-
     async def stream_events(
         self,
-        *,
-        app_id: int,
-        user_id: str | None = None,
-        session_id: str,
-        user_message: str,
-        trace_id: str,
-        request_id: str,
-        requested_code_gen_type: str | None = None,
+        request: AiServiceGenerateRequest
     ) -> AsyncGenerator[AgentEvent, None]:
-        request = self._build_turn_request(
-            app_id=app_id,
-            user_id=user_id,
-            session_id=session_id,
-            user_message=user_message,
-            trace_id=trace_id,
-            request_id=request_id,
-            requested_code_gen_type=requested_code_gen_type,
-        )
         runtime = self._get_runtime()
-        async for event in runtime.submit_turn(request):
+        async for event in runtime.submit_request(request):
             yield event
 
     async def stream_message(
         self,
-        *,
-        app_id: int,
-        user_id: str | None = None,
-        session_id: str,
-        user_message: str,
-        trace_id: str,
-        request_id: str,
-        requested_code_gen_type: str | None = None,
+        request: AiServiceGenerateRequest
     ) -> AsyncGenerator[str, None]:
-        async for event in self.stream_events(
-            app_id=app_id,
-            user_id=user_id,
-            session_id=session_id,
-            user_message=user_message,
-            trace_id=trace_id,
-            request_id=request_id,
-            requested_code_gen_type=requested_code_gen_type,
-        ):
+        async for event in self.stream_events(request):
             if event.event_type == "LLM_Response_Chunk" and event.data:
                 yield str(event.data)
                 continue
@@ -248,13 +182,15 @@ class AgentAdapterService:
             return {
                 "accepted": False,
                 "sessionId": session_id,
-                "stoppedTurnCount": 0,
-                "droppedTurnCount": 0,
+                "stoppedRequestCount": 0,
+                "droppedRequestCount": 0,
+                "activeRequestIds": [],
+                "droppedRequestIds": [],
                 "activeTurnIds": [],
-                "droppedTurnIds": [],
             }
-        return await runtime.stop_session(
+        return await runtime.stop_request(
             session_id=session_id,
+            request_id=request_id,
             reason=str(reason or "user-stop"),
             grace_seconds=grace_seconds,
         )

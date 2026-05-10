@@ -156,9 +156,10 @@ class DataSearchConfig(Base):
 
 class ToolsConfig(Base):
     """Tools configuration."""
-    websearch: WebToolsConfig = Field(default_factory=WebToolsConfig)
-    kb_search: KBSearchConfig = Field(default_factory=KBSearchConfig)
-    db_search: DataSearchConfig = Field(default_factory=DataSearchConfig)
+    excluded:list = Field(default_factory=list)
+    # websearch: WebToolsConfig = Field(default_factory=WebToolsConfig)
+    # kb_search: KBSearchConfig = Field(default_factory=KBSearchConfig)
+    # db_search: DataSearchConfig = Field(default_factory=DataSearchConfig)
     # exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     # restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     # mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)

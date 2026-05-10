@@ -57,12 +57,13 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 	startup_summary = await agent_service.startup()
-	app.state.agent_runtime_startup = startup_summary
-	log.info("ai-service startup completed summary={}", startup_summary)
+	# app.state.agent_runtime_startup = startup_summary
+	log.info("ai-service startup completed ")
 	try:
 		yield
 	finally:
 		await agent_service.shutdown()
+		log.info("ai-service runtime shutdown completed")
 
 
 app = FastAPI(title="CodeGenX AI Service", version="1.0.0", lifespan=lifespan)
@@ -80,17 +81,19 @@ async def generate_code_stream(request: AiServiceGenerateRequest):
 		len(request.message),
 		_preview_text(request.message),
 	)
+	log.info(
+		"ai-service public stream request {} ",request.model_dump_json())
 	try:
-		stream = agent_service.stream_message(
-			app_id=request.app_id,
-			user_id=request.user_id,
-			session_id=session_id,
-			user_message=request.message,
-			trace_id=trace_id,
-			request_id=request_id,
-			requested_code_gen_type=request.code_gen_type,
-		)
-
+		# stream = agent_service.stream_message(
+		# 	app_id=request.app_id,
+		# 	user_id=request.user_id,
+		# 	session_id=session_id,
+		# 	user_message=request.message,
+		# 	trace_id=trace_id,
+		# 	request_id=request_id,
+		# 	requested_code_gen_type=request.code_gen_type,
+		# )
+		stream = agent_service.stream_message(request)
 		async def event_stream():
 			async for chunk in stream:
 				yield chunk
@@ -391,25 +394,9 @@ async def _build_internal_stream(request: AiServiceGenerateRequest, trace_id: st
 	if not request.message.strip():
 		raise BusinessException(ErrorCode.PARAMS_ERROR, "生成消息不能为空")
 	if hasattr(agent_service, "stream_events"):
-		stream = agent_service.stream_events(
-			app_id=request.app_id,
-			user_id=request.user_id,
-			session_id=session_id,
-			user_message=request.message,
-			trace_id=trace_id,
-			request_id=request_id,
-			requested_code_gen_type=request.code_gen_type,
-		)
+		stream = agent_service.stream_events(request)
 		return stream, request.code_gen_type or "agent-decided", True
-	stream = agent_service.stream_message(
-		app_id=request.app_id,
-		user_id=request.user_id,
-		session_id=session_id,
-		user_message=request.message,
-		trace_id=trace_id,
-		request_id=request_id,
-		requested_code_gen_type=request.code_gen_type,
-	)
+	stream = agent_service.stream_message(request)
 	return stream, request.code_gen_type or "agent-decided", False
 
 

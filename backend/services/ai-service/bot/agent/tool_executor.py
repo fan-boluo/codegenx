@@ -16,15 +16,15 @@ MEMORY_TOOL_NAMES = {
 }
 
 class ToolExecutor:
-    def __init__(self, tools_handler: ToolRegistry, safe_paths: Optional[List[str]] = None):
-        self.tools_handler = tools_handler
+    def __init__(self, tools_registry: ToolRegistry):
+        self.tools_registry = tools_registry
         # Resolve all safe paths to absolute paths
-        self.safe_paths = [Path(p).resolve() for p in (safe_paths or [])]
-        if not self.safe_paths:
-            # 如果没有配置 safe_path，可以将其限制为当前工作区或某个默认策略
-            # 这里先假设如果没有配置则默认当前文件夹是 safe_path，保护不跑出去
-            self.safe_paths = [Path(os.getcwd()).resolve()]
-            log.warning(f"No safe_paths configured, defaulting to current working directory: {self.safe_paths}")
+        # self.safe_paths = [Path(p).resolve() for p in (safe_paths or [])]
+        # if not self.safe_paths:
+        #     # 如果没有配置 safe_path，可以将其限制为当前工作区或某个默认策略
+        #     # 这里先假设如果没有配置则默认当前文件夹是 safe_path，保护不跑出去
+        #     self.safe_paths = [Path(os.getcwd()).resolve()]
+        #     log.warning(f"No safe_paths configured, defaulting to current working directory: {self.safe_paths}")
 
     @staticmethod
     def _get_session_state(context: Any, session: Any | None) -> Any | None:
@@ -32,7 +32,8 @@ class ToolExecutor:
             return session
         return getattr(context, "session_state", None)
 
-    async def execute(self, tool_call: Dict[str, Any], context: Any, session: Any | None = None) -> Any:
+    async def execute(self, tool_call: Dict[str, Any], context: Any,
+                      session: Any | None = None,safe_paths: Optional[List[str]] = None) -> Any:
         """
         统一执行工具的逻辑。包含安全检查。
         """
@@ -43,10 +44,10 @@ class ToolExecutor:
         app_id = getattr(session_state, "app_id", "main") if session_state is not None else "main"
         user_id = getattr(session_state, "user_id", "") if session_state is not None else ""
         session_id = getattr(session_state, "session_id", "default") if session_state is not None else "default"
-        turn_id = getattr(request, "turn_id", "") if request is not None else ""
+        turn_id = str(getattr(context, "turn_id", "") or getattr(request, "turn_id", "") or "")
         trace_id = getattr(request, "trace_id", "") if request is not None else ""
         stop_signal = getattr(session_state, "stop_signal", None) if session_state is not None else None
-        safe_paths = self._resolve_safe_paths(context, session_state)
+        safe_paths = self._resolve_safe_paths(context, session_state,safe_paths)
 
         if tool_name in MEMORY_TOOL_NAMES:
             tool_input.setdefault("app_id", app_id)
@@ -74,7 +75,7 @@ class ToolExecutor:
             tool_input.setdefault("parent_turn_id", turn_id)
         
         # 1. 查找工具并拉取验证
-        tool = next((t for t in self.tools_handler.tools if t.name == tool_name), None)
+        tool = next((t for t in self.tools_registry.tools if t.name == tool_name), None)
         if not tool:
             log.error(f"Unknown tool called: {tool_name}")
             return {"error": f"未知工具：{tool_name}"}
@@ -106,18 +107,18 @@ class ToolExecutor:
             log.error(f"Tool '{tool_name}' crashed: {e}")
             return {"error": f"工具执行异常: {str(e)}"}
 
-    def _resolve_safe_paths(self, context: Any, session_state: Any | None) -> List[Path]:
+    def _resolve_safe_paths(self, context: Any, session_state: Any | None,safe_paths: Optional[List[str]] = None) -> List[Path]:
         for candidate in (
             getattr(context, "safe_paths", None),
             getattr(session_state, "safe_paths", None) if session_state is not None else None,
-            self.safe_paths,
+            safe_paths,
         ):
             if not candidate:
                 continue
             resolved = [Path(path).resolve() for path in candidate if str(path).strip()]
             if resolved:
                 return resolved
-        return list(self.safe_paths)
+        return list(safe_paths)
 
     def _perform_safety_checks(self, tool_name: str, tool_input: Dict[str, Any], safe_paths: List[Path]) -> Optional[str]:
         """

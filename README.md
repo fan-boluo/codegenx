@@ -215,14 +215,32 @@ SessionStart / 上下文组装时调用：
 
 # 三、监控管线
 MonitorPipeline（门面）
-├── TraceManager         ← OTel Tracer，Span 发送到 OTLP Collector（使用MySQL替代）
-├── MetricsCollector     ← OTel Meter，Counter/Histogram/Gauge
-├── MetricsExporter      ← PrometheusExporter（/metrics 端点）
-├── MetricsStorage       ← SQLite 持久化（会话级 + Turn 级）
-├── AlertLogger          ← 阈值告警，写日志
-├── DebugAPI             ← 可选，调试查询接口
-└── HealthChecker        ← 连通性检查
+监控门面层（MonitorPipeline）
+Trace管理（TraceManager）
+指标采集器（MetricsCollector）
+数据持久化（MonitorStore）
 
+OpenTelemetry SDK
+TracerProvider + MeterProvider + OTLP Exporter
+
+TelemetrySDK
+初始化与关闭
+
+TraceManager
+分布式追踪
+创建/管理 Root Span 和 Child Span
+Span 属性、事件、异常
+
+MetricsCollector
+三类指标：
+计数 Counter：轮次计数、Token 使用、工具调用、错误、会话
+分布 Histogram：LLM 延迟、首 Token 延迟、工具延迟、记忆检索延迟
+瞬时 Gauge：上下文 Token 数、配额剩余、内存命中
+
+MonitorStore
+数据持久化：MySQL 存储 Session/Turn/Spans/Alerts
+
+## 功能描述
 功能	数据来源	存储	展示方式	用途
 Span追踪	LLM/Tool/Memory埋点	MySQL spans 表	SQL查询 / /session/{id}/spans	会话调用链调试
 指标采集	同上	MySQL session_metrics + turn_metrics	/metrics (Prometheus) + SQL	性能分析、成本统计
@@ -264,6 +282,41 @@ Qdrant 健康检查失败	单次	CRITICAL
 设计目标
 将所有监控数据对外暴露，供调试和外部系统消费
 
+## 结构设计
+otlp不做双写了，它没办法导入MySQL中，现在我需要自己写collector：
+1 TraceManager完全去掉，自己管理生命周期；
+SpanContext：自定义的，Span封装一层，这个也可以去掉了
+TelemetrySDK没有endpoint服务可以用，不做双写的话有没有必要保留，没有就去掉，仅留下有用的
+
+2 spanCollector：
+runtime过程中收集span的信息，缓存并在session结束后通过MonitorStore，flush到数据库的spans表
+需要写一个sqlalchemy的类对应这个表SpanRecorder
+
+on_session_start:
+根Span新建,SpanRecorder初始化,追加到spanCollector中，
+
+on_llm on_tool 等触发时点：
+子Span新建，SpanRecorder初始化，对应的操作名-OperationName，对应的指标TurnContextMetrics，（...），TurnMemoryMetrics四类，
+见telemetry_schema.py
+追加/更新到spanCollector中
+
+3 MetricCollector:
+这个还要保留，作为session级别的指标收集器
+runtime过程中收集metric的信息，放到MetricCollector里面缓存着
+session结束后通过MonitorStore，flush到数据库->session_metrics表
+
+4 turn_metrics表的指标怎么来
+在turn结束后，应该有多个spanRecord在SpanCollector缓存着，它们的attributes属性就是要组成的turn_metric表
+error_count可以使用is_error的个数汇总,tool_calls_satus也需要汇总
+
+5 去掉request_metrics表
+
+6 monoitor.sql的四张表都建sqlalchemy的类，MonitorStore的时候可以更方便操作
+
+7 重新整理这个monitor模块，去掉多余的，不再使用的类直接去掉
+
+
+
 # 四、runtime
 ## 初始化
 随服务启动完成初始化：
@@ -282,23 +335,22 @@ MetricsBuffer 定时 flush
 HealthChecker 定时检查
 
 ## 消息收发
-双层 Queue 架构：
-接收：
-第一层 (MessageBus)：
-全局队列，负责接收所有请求，通过message_bus管控
-支持并发消费，提高吞吐量
+采用双循环、双层 Queue 架构方式
+Runtime启动后进入 dispatch_loop 循环，等待消息接收，外层循环使用的是 message_bus 来做消息管线。
+内层循环是每个 Session 一个循环，用 session_state.queue 做消息对等。
 
-第二层 (Session Queue)：
-session级别队列，session_state管控每个session发送来的请求
-每个 Session 独立队列
-保证同一 Session 的请求按顺序执行
-也就是：
-session_states：各个session的state
-session_state：每个session的request
+具体方式：
+外层循环：
+用户消息发送后进入 message_bus，然后 dispatch_loop 消费消息，找到请求 request 所在的 session_state，没有就新建。
+session循环，每个session一个循环；
+session_state 新建：
+    将 request 放到 session_state.queue 中等待被消费
+    创建一个 session_worker 循环
+session_worker 循环：
+    取出 queue 中的 request 执行
 
-发送:
-request里面的response_queue
-message_bus推送消息
+消息返回：
+message_bus消息总线采用请求订阅的方式，每当有请求进来后
 
 ## 执行
 session开始后，执行on_session_start:

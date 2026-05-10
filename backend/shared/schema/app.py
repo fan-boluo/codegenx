@@ -47,10 +47,11 @@ class AppChatStopRequest(CamelBaseModel):
 class AppChatStopResponse(CamelBaseModel):
     accepted: bool
     session_id: str = Field(alias="sessionId")
-    stopped_turn_count: int = Field(alias="stoppedTurnCount")
-    dropped_turn_count: int = Field(alias="droppedTurnCount")
+    stopped_request_count: int = Field(alias="stoppedRequestCount")
+    dropped_request_count: int = Field(alias="droppedRequestCount")
+    active_request_ids: list[str] = Field(default_factory=list, alias="activeRequestIds")
+    dropped_request_ids: list[str] = Field(default_factory=list, alias="droppedRequestIds")
     active_turn_ids: list[str] = Field(default_factory=list, alias="activeTurnIds")
-    dropped_turn_ids: list[str] = Field(default_factory=list, alias="droppedTurnIds")
 
 
 class AppQueryRequest(PageRequest):

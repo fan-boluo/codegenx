@@ -64,3 +64,4 @@ class Planner:
 
     def note_round(self):
         self.state.rounds_since_update += 1
+

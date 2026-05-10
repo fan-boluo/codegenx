@@ -30,6 +30,7 @@ class MonitorMaintenanceService:
         self._retention_targets = [
             ("spans", "start_time"),
             ("turn_metrics", "created_at"),
+            ("request_metrics", "updated_at"),
             ("session_metrics", "updated_at"),
             ("monitor_alerts", "triggered_at"),
         ]

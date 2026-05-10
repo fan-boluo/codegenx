@@ -170,6 +170,10 @@ class SessionManager:
                 file.write(serialized)
         return history_file
 
+    def on_session_start(self):
+
+        pass
+
 if __name__ == '__main__':
     # 初始化管理器
     manager = SessionManager()

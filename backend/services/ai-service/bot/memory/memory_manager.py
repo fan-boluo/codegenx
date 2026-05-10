@@ -6,7 +6,7 @@ from bot.llm.llm import EmbeddingClient
 from bot.memory.memory_writer import MemoryWriter
 from bot.memory.retriver import MemoryRetriever
 from infra.qdrant.client import get_qdrant_memory_client
-
+from memory.schema import MemorySearchResult
 
 _MEMORY_MANAGER_SINGLETON: "MemoryManager | None" = None
 _MEMORY_MANAGER_LOCK = Lock()
@@ -26,21 +26,11 @@ class MemoryManager:
             self.qdrant.ensure_memory_collections()
         return self
 
-    async def on_session_start(self, user_id: str, project: str) -> list[dict]:
-        return await self.load_context_memories(user_id=user_id, project=project, current_query="")
-
-    async def load_context_memories(
-        self,
-        user_id: str,
-        project: str,
-        current_query: str,
-        top_k: int = 20,
-    ) -> list[dict]:
+    async def on_session_start(self, user_id: str, project: str,query:str) -> list[MemorySearchResult]:
         return await self.retriever.retrieve(
             user_id=user_id,
             app_id=project,
-            query=current_query,
-            top_k=top_k,
+            query=query
         )
 
     async def auto_remember(

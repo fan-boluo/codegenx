@@ -1,0 +1,36 @@
+receivers:
+  # 接收 Python 发来的 追踪(span) + 指标(metrics)
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 100
+    timeout: 10s
+
+exporters:
+  # ====================== MySQL 输出 ======================
+  mysql:
+    driver: mysql
+    dsn: "root:boluo123@tcp(127.0.0.1:3306)/codegenx?parseTime=true"
+    operation_timeout: 30s
+
+  # 控制台调试（可选，方便看有没有收到数据）
+  logging:
+    loglevel: info
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [mysql, logging]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [mysql, logging]

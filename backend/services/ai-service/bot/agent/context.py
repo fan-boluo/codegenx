@@ -2,23 +2,151 @@ from __future__ import annotations
 
 import json
 import platform
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from openai.types.beta.realtime import session
+from urllib3.contrib.emscripten import request
+
+from agent import runtime
+from agent.plan.planner import Planner
+from agent.runtime_schema import TurnContext, RuntimeSessionState
 from bot.memory.memory_manager import get_memory_manager
 from bot.skill.skill_loader import SkillLoader
 from bot.utils.context_utils import ensure_app_workdir
 from bot.utils.log_utils import log
+from prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE
+from shared.schema.ai_service import AiServiceGenerateRequest
 
 
 class ContextAssembler:
     """Assemble model messages from the slim TurnContext payload."""
 
-    DEFAULT_PROMPT_TEMPLATE = (
-        "You are a coding agent operating in {code_dir}.\n\n"
-        "Use the provided tools to inspect, edit, and validate work.\n\n"
-        "Prefer verification over guessing. Keep working until the task is resolved or blocked."
-    )
+    async def build_tool(self,tools:list,exclude_tools:list) -> list[dict[str, Any]]:
+        tool_catalog = [tool for tool in tools if tool.name not in exclude_tools]
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in tool_catalog or []
+        ]
+
+    async def build_skill(self,skills:list) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": skill.name,
+                "description": str(skill.metadata.get("description", "") or "").strip(),
+            }
+            for skill in skills
+            if getattr(skill, "name", None)
+        ]
+
+    async def build_memory(self,memory) -> str:
+        """
+            将 list[MemorySearchResult] 转为清晰可读的字符串（用于prompt）
+        """
+        if not memory:
+            return "无记忆检索结果"
+
+        lines = []
+        for idx, item in enumerate(memory, 1):
+            lines.append(f"===== 记忆片段 {idx} =====")
+            lines.append(f"ID: {item.id or '无'}")
+            lines.append(f"类型: {item.type}")
+            lines.append(f"分类(category): {item.category or '无'}")
+            lines.append(f"相关性得分: {item.score:.3f}")
+            lines.append(f"重要度: {item.importance or '无'}")
+            lines.append(f"完整内容: {item.text if item.text is not None else '无'}")
+            lines.append("")  # 空行分隔
+
+        return "\n".join(lines)
+
+    async def build_fix_context(self,session: RuntimeSessionState):
+        """
+        工作区、skill、tool这些是固定的
+        """
+        runtime = session.runtime
+        request = session.request
+        code_dir = ensure_app_workdir(session.request.app_id)
+        safe_paths = [str(code_dir)]
+        workspace_metadata = {
+            "code_dir": str(code_dir),
+            "safe_paths": list(safe_paths),
+            "allowed_rw_dirs": list(safe_paths),
+            "os_name": (platform.system() or "Windows").lower(),
+            "project_skeleton": self.build_directory_skeleton(code_dir),
+            "code_gen_type": str(session.request.code_gen_type or "")
+        }
+
+        # tool
+        build_tool = self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
+        # skill
+        build_skill=self.build_skill(runtime.skills)
+
+        session.workspace_metadata = workspace_metadata
+        session.tool = build_tool
+        session.skill = build_skill
+
+
+
+    async def prepare_turn_context(self, session: RuntimeSessionState, context: TurnContext) -> None:
+        """
+        每个turn要构建的
+        memory \ plann \ chat_message 都是随turn变化的
+        session 的skill tool workspace 都是固定的
+        """
+        runtime = session.runtime
+        request = session.request
+
+        workspace_metadata = session.workspace_metadata
+        prompt_template = DEFAULT_PROMPT_TEMPLATE.format("code_dir", workspace_metadata.get("code_dir"))
+
+        # 开头是提示词
+        parts = [prompt_template]
+
+        workspace_prompt = "## 项目工作区元数据\n"
+        workspace_prompt += f"- 代码根目录：{workspace_metadata['code_dir']}\n"
+        workspace_prompt += f"- 安全路径列表：{', '.join(workspace_metadata['safe_paths'])}\n"
+        workspace_prompt += f"- 允许读写的目录：{', '.join(workspace_metadata['allowed_rw_dirs'])}\n"
+        workspace_prompt += f"- 操作系统类型：{workspace_metadata['os_name']}\n"
+        workspace_prompt += f"- 代码生成类型：{workspace_metadata['code_gen_type']}\n"
+        workspace_prompt += "- 项目目录结构：\n" + workspace_metadata["project_skeleton"]
+        parts.append(workspace_prompt)
+
+        tool_prompt = json.dumps(session.tool, ensure_ascii=False, indent=2)
+        parts.append(f"以下是你可以使用的工具：\n{tool_prompt}")
+
+        skill_prompt = json.dumps(session.skill, ensure_ascii=False, indent=2)
+        parts.append(f"以下是你可以使用的技能：\n {skill_prompt}")
+
+        # memory
+        memory = runtime.memory_manager.on_session_start(request.user_id, str(request.app_id), request.message)
+        build_memory = self.build_memory(memory)
+        parts.append(f"以下是历史记忆：\n {build_memory}")
+
+        # planner
+        plan_state = runtime.planner.get_state()
+        parts.append(f"以下是计划状态：\n {plan_state}")
+
+        system_prompt = "\n\n".join(parts)
+        # 必要的信息
+        context.workspace_metadata = session.workspace_metadata
+        context.skill = session.skill
+        context.tool = session.tool
+        context.memory = memory
+        context.plan_summary = plan_state
+        context.system_prompt = system_prompt
+        context.chat_message = [
+            {"role": "system","content":system_prompt},
+            {"role": "user","content":request.message},
+        ]
+
 
     @staticmethod
     def _normalize_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -63,22 +191,11 @@ class ContextAssembler:
             return ""
         return "Available skills:\n" + "\n".join(lines)
 
-    @staticmethod
-    def build_tool_catalog(tool_catalog: list[Any]) -> list[dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                },
-            }
-            for tool in tool_catalog or []
-        ]
+
 
     @staticmethod
-    def build_directory_skeleton(root: Path, *, max_entries: int = 40, max_depth: int = 2) -> list[str]:
+    def build_directory_skeleton(root: Path, *, max_entries: int = 40, max_depth: int = 2) -> str:
+        """当前项目目录结构 """
         if not root.exists():
             return []
 
@@ -102,74 +219,49 @@ class ContextAssembler:
                     break
 
         walk(root, 0)
-        return lines
+        return "\n".join(lines)
 
-    @staticmethod
-    def load_chat_history(session: Any) -> list[dict[str, Any]]:
-        session_manager = getattr(session, "session_manager", None)
-        if session_manager is None:
-            return []
-        return list(session_manager.load_history(session.session_id) or [])
+    # @staticmethod
+    # def load_chat_history(session: Any) -> list[dict[str, Any]]:
+    #     session_manager = getattr(session, "session_manager", None)
+    #     if session_manager is None:
+    #         return []
+    #     return list(session_manager.load_history(session.session_id) or [])
 
-    @staticmethod
-    def load_skills() -> list[dict[str, str]]:
-        catalog = SkillLoader().load_all_skills() or []
-        return [
-            {
-                "name": skill.name,
-                "description": str(skill.metadata.get("description", "") or "").strip(),
-            }
-            for skill in catalog
-            if getattr(skill, "name", None)
-        ]
+    # @staticmethod
+    # def load_skills() -> list[dict[str, str]]:
+    #     catalog = SkillLoader().load_all_skills() or []
+    #     return [
+    #         {
+    #             "name": skill.name,
+    #             "description": str(skill.metadata.get("description", "") or "").strip(),
+    #         }
+    #         for skill in catalog
+    #         if getattr(skill, "name", None)
+    #     ]
 
-    async def load_turn_memory(self, session: Any, request: Any) -> list[str]:
-        try:
-            manager = get_memory_manager()
-            memories = await manager.load_context_memories(
-                user_id=session.user_id or session.session_id,
-                project=session.app_id,
-                current_query=request.user_input,
-            )
-        except Exception as exc:
-            log.warning("Failed to load memory for session {}: {}", session.session_id, exc)
-            return []
+    # async def load_turn_memory(self, session: Any, request: Any) -> list[str]:
+    #     try:
+    #         manager = get_memory_manager()
+    #         memories = await manager.load_context_memories(
+    #             user_id=session.user_id or session.session_id,
+    #             project=session.app_id,
+    #             current_query=str(getattr(request, "message", "") or getattr(request, "user_input", "") or ""),
+    #         )
+    #     except Exception as exc:
+    #         log.warning("Failed to load memory for session {}: {}", session.session_id, exc)
+    #         return []
+    #
+    #     rendered: list[str] = []
+    #     for item in memories or []:
+    #         snippet = getattr(item, "snippet", None)
+    #         if snippet:
+    #             rendered.append(str(snippet))
+    #         elif isinstance(item, dict):
+    #             rendered.append(str(item.get("snippet") or item.get("text") or "").strip())
+    #     return [item for item in rendered if item]
 
-        rendered: list[str] = []
-        for item in memories or []:
-            snippet = getattr(item, "snippet", None)
-            if snippet:
-                rendered.append(str(snippet))
-            elif isinstance(item, dict):
-                rendered.append(str(item.get("snippet") or item.get("text") or "").strip())
-        return [item for item in rendered if item]
 
-    @staticmethod
-    def build_system_prompt(session: Any, request: Any) -> str:
-        turn = request if hasattr(request, "workspace_metadata") else None
-        code_dir = str(getattr(turn, "code_dir", "") or ensure_app_workdir(session.app_id))
-        workspace_metadata = dict(getattr(turn, "workspace_metadata", {}) or {})
-        safe_paths = list(getattr(turn, "safe_paths", []) or workspace_metadata.get("safe_paths", []) or [code_dir])
-        knowledge_cache = dict(getattr(turn, "knowledge_cache", {}) or {})
-        prompt_template = str(getattr(turn, "prompt_template", "") or ContextAssembler.DEFAULT_PROMPT_TEMPLATE)
-        requested_code_gen_type = ""
-        if hasattr(request, "requested_code_gen_type"):
-            requested_code_gen_type = str(getattr(request, "requested_code_gen_type", "") or "")
-        elif turn is not None:
-            requested_code_gen_type = str(getattr(getattr(turn, "request", None), "requested_code_gen_type", "") or "")
-
-        parts = [prompt_template.format(code_dir=code_dir)]
-        if requested_code_gen_type:
-            parts.append(f"Requested code generation type: {requested_code_gen_type}")
-        parts.append(f"Operating system: {workspace_metadata.get('os_name', 'windows')}")
-        parts.append("Writable directories: " + ", ".join(str(path) for path in safe_paths if str(path).strip()))
-        project_skeleton = list(workspace_metadata.get("project_skeleton", []) or [])
-        if project_skeleton:
-            parts.append("Project skeleton:\n" + "\n".join(f"- {item}" for item in project_skeleton))
-        cached_templates = list(knowledge_cache.get("code_type_templates", []) or [])
-        if cached_templates:
-            parts.append("Cached code-type templates:\n" + "\n".join(f"- {item}" for item in cached_templates))
-        return "\n\n".join(parts)
 
     @staticmethod
     def ensure_user_message(context: Any) -> None:
@@ -185,36 +277,13 @@ class ContextAssembler:
         history.append({"role": "user", "content": user_input})
         context.chat_history = history
 
-    async def prepare_turn_context(self, session: Any, turn: Any, tool_catalog: list[Any]) -> None:
-        code_dir = ensure_app_workdir(session.app_id)
-        safe_paths = [str(code_dir)]
-        workspace_metadata = {
-            "code_dir": str(code_dir),
-            "safe_paths": list(safe_paths),
-            "allowed_rw_dirs": list(safe_paths),
-            "os_name": (platform.system() or "Windows").lower(),
-            "project_skeleton": self.build_directory_skeleton(code_dir),
-        }
-        knowledge_cache = {
-            "code_type_templates": [],
-            "template_source": "reserved",
-            "code_gen_type": str(turn.request.requested_code_gen_type or ""),
-        }
 
-        turn.code_dir = str(code_dir)
-        turn.safe_paths = list(safe_paths)
-        turn.workspace_metadata = workspace_metadata
-        turn.knowledge_cache = knowledge_cache
-        turn.prompt_template = self.DEFAULT_PROMPT_TEMPLATE
-        turn.plan_summary = str(turn.request.metadata.get("plan_summary", "") or "")
-        turn.context.build_tool = self.build_tool_catalog(tool_catalog)
-        turn.context.skill = self.load_skills()
-        turn.context.memory = await self.load_turn_memory(session, turn.request)
-        turn.context.system_prompt = self.build_system_prompt(session, turn)
-        turn.context.chat_history = self.load_chat_history(session)
-        turn.context.user_input = str(turn.request.user_input or "")
+
+
+
 
     async def assemble(self, context: Any) -> list[dict[str, Any]]:
+        """ 发送llm前最终的组装 """
         messages: list[dict[str, Any]] = []
 
         system_prompt = str(getattr(context, "system_prompt", "") or "").strip()
@@ -237,3 +306,7 @@ class TurnReducer:
 
     async def reduce(self, context: Any) -> None:
         log.debug("TurnReducer skipped for slim TurnContext")
+
+@lru_cache(maxsize=1)
+def get_context_assembler() -> ContextAssembler:
+    return ContextAssembler()

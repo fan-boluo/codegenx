@@ -3,11 +3,13 @@ from __future__ import annotations
 from threading import Lock
 from typing import Any
 
+from monitor.span_collector import SpanCollector
 from monitor.metrics_collector import MetricsCollector
 from monitor.monitor_store import get_monitor_store
 from monitor.span_context import SpanContext
+from monitor.telemetry_schema import TurnTelemetry
 from monitor.trace_manager import TraceManager
-
+from shared.schema.ai_service import AiServiceGenerateRequest
 
 _PIPELINE_SINGLETON: "MonitorPipeline | None" = None
 _PIPELINE_LOCK = Lock()
@@ -20,6 +22,7 @@ class MonitorPipeline:
         self.tracer = TraceManager()
         self.metrics = MetricsCollector()
         self.store = get_monitor_store()
+        self.span_collector = SpanCollector()
         self._active_root_spans: dict[str, SpanContext] = {}
         self._active_turn_spans: dict[tuple[str, str], SpanContext] = {}
 
@@ -33,15 +36,12 @@ class MonitorPipeline:
     # --- SessionStart ---
     def on_session_start(
         self,
-        session_id: str,
-        user_id: str,
-        client_version: str,
-        model: str,
-        tokens_remaining: int
+        request:AiServiceGenerateRequest
     ) -> SpanContext:
-        root = self.tracer.create_root_span(session_id, user_id, client_version, model)
+        root = self.tracer.create_root_span(request)
         self.metrics.record_quota_usage(session_id, tokens_remaining)
         self._active_root_spans[session_id] = root
+
         return root
 
     def on_turn_start(
@@ -249,11 +249,14 @@ class MonitorPipeline:
     async def persist_span(self, **kwargs: Any) -> bool:
         return await self.store.replace_span(**kwargs)
 
-    async def persist_session_metrics(self, *args: Any, **kwargs: Any) -> bool:
-        return await self.store.upsert_session_metrics(*args, **kwargs)
+    async def persist_session_metrics(self, session_telemetry: SessionTelemetry) -> bool:
+        return await self.store.upsert_session_metrics(session_telemetry)
 
-    async def persist_turn_metrics(self, *args: Any, **kwargs: Any) -> bool:
-        return await self.store.replace_turn_metrics(*args, **kwargs)
+    async def persist_request_metrics(self, request_telemetry: RequestTelemetry) -> bool:
+        return await self.store.upsert_request_metrics(request_telemetry)
+
+    async def persist_turn_metrics(self, turn_telemetry: TurnTelemetry) -> bool:
+        return await self.store.replace_turn_metrics(turn_telemetry)
 
 
 def get_monitor_pipeline() -> MonitorPipeline:

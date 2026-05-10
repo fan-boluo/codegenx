@@ -97,9 +97,6 @@ class ToolRegistry:
             return {"error": f"未知工具：{tool_name}"}
 
 
-    def tool_prompt(self):
-        """ TODO 发送给llm时的tool的信息 """
-        pass
 
 
 if __name__ == '__main__':

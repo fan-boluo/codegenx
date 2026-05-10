@@ -16,6 +16,7 @@ from shared.schema.monitor import (
     MonitorAlertQueryRequest,
     MonitorAlertRecordVO,
     MonitorOverviewStats,
+    MonitorRequestSummary,
     MonitorRuleCount,
     MonitorSessionDetail,
     MonitorSessionQueryRequest,
@@ -173,11 +174,30 @@ class MonitorQueryService:
             if session_row is None:
                 return None
 
+            request_rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT session_id, request_id, trace_id, app_id, user_id, model, status, total_turns,
+                               total_prompt_tokens, total_completion_tokens, token_budget,
+                               sum_llm_latency_ms, sum_first_token_ms, max_llm_latency_ms,
+                               min_llm_latency_ms, total_tool_calls, total_errors, recovery_count,
+                               last_recovery_kind, avg_memory_hits, total_memory_hits, end_reason,
+                               started_at, ended_at, duration_ms, updated_at
+                        FROM request_metrics
+                        WHERE session_id = :session_id
+                        ORDER BY updated_at DESC, started_at DESC
+                        LIMIT 100
+                        """
+                    ),
+                    {"session_id": normalized_session_id},
+                )
+            ).mappings().all()
             turn_rows = (
                 await session.execute(
                     text(
                         """
-                        SELECT trace_id, session_id, turn_id, turn_number, status, prompt_tokens,
+                        SELECT trace_id, session_id, request_id, turn_id, turn_number, status, prompt_tokens,
                                completion_tokens, llm_latency_ms, first_token_ms, llm_recovery_count,
                                llm_recovery_kind, tool_calls_count, tool_calls_detail, memory_hits,
                                memory_retrieval_ms, context_tokens, context_token_usage, error_count,
@@ -209,6 +229,7 @@ class MonitorQueryService:
 
         return MonitorSessionDetail(
             session=self._map_session_row(dict(session_row)),
+            requests=[self._map_request_row(dict(row)) for row in request_rows],
             turns=[self._map_turn_row(dict(row)) for row in turn_rows],
             alerts=[self._map_alert_row(dict(row)) for row in alert_rows],
         )
@@ -219,7 +240,7 @@ class MonitorQueryService:
                 await session.execute(
                     text(
                         """
-                        SELECT trace_id, session_id, turn_id, turn_number, status, prompt_tokens,
+                        SELECT trace_id, session_id, request_id, turn_id, turn_number, status, prompt_tokens,
                                completion_tokens, llm_latency_ms, first_token_ms, llm_recovery_count,
                                llm_recovery_kind, tool_calls_count, tool_calls_detail, memory_hits,
                                memory_retrieval_ms, context_tokens, context_token_usage, error_count,
@@ -357,11 +378,46 @@ class MonitorQueryService:
         )
 
     @staticmethod
+    def _map_request_row(row: dict[str, Any]) -> MonitorRequestSummary:
+        total_turns = int(row.get("total_turns") or 0)
+        avg_llm_latency_ms = float(row.get("sum_llm_latency_ms") or 0) / total_turns if total_turns else 0.0
+        avg_first_token_ms = float(row.get("sum_first_token_ms") or 0) / total_turns if total_turns else 0.0
+        return MonitorRequestSummary(
+            sessionId=str(row.get("session_id") or ""),
+            requestId=str(row.get("request_id") or ""),
+            traceId=str(row.get("trace_id") or ""),
+            appId=str(row.get("app_id") or "main"),
+            userId=str(row.get("user_id") or ""),
+            model=str(row.get("model") or ""),
+            status=str(row.get("status") or "running"),
+            totalTurns=total_turns,
+            totalPromptTokens=int(row.get("total_prompt_tokens") or 0),
+            totalCompletionTokens=int(row.get("total_completion_tokens") or 0),
+            tokenBudget=int(row.get("token_budget") or 0),
+            avgLlmLatencyMs=avg_llm_latency_ms,
+            avgFirstTokenMs=avg_first_token_ms,
+            maxLlmLatencyMs=int(row.get("max_llm_latency_ms") or 0),
+            minLlmLatencyMs=int(row.get("min_llm_latency_ms") or 0),
+            totalToolCalls=int(row.get("total_tool_calls") or 0),
+            totalErrors=int(row.get("total_errors") or 0),
+            recoveryCount=int(row.get("recovery_count") or 0),
+            lastRecoveryKind=str(row.get("last_recovery_kind") or ""),
+            avgMemoryHits=float(row.get("avg_memory_hits") or 0),
+            totalMemoryHits=int(row.get("total_memory_hits") or 0),
+            endReason=str(row.get("end_reason") or ""),
+            startedAt=row.get("started_at"),
+            endedAt=row.get("ended_at"),
+            durationMs=int(row.get("duration_ms") or 0),
+            updatedAt=row.get("updated_at"),
+        )
+
+    @staticmethod
     def _map_turn_row(row: dict[str, Any]) -> MonitorTurnSummary:
         tool_calls_detail = MonitorQueryService._parse_tool_calls_detail(row.get("tool_calls_detail"))
         return MonitorTurnSummary(
             traceId=str(row.get("trace_id") or ""),
             sessionId=str(row.get("session_id") or ""),
+            requestId=str(row.get("request_id") or ""),
             turnId=str(row.get("turn_id") or ""),
             turnNumber=int(row.get("turn_number") or 0),
             status=str(row.get("status") or "running"),

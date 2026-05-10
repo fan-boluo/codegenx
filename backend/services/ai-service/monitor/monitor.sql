@@ -51,12 +51,13 @@ CREATE TABLE session_metrics (
     INDEX idx_session_metrics_updated (updated_at)
 );
 
+
 CREATE TABLE turn_metrics (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     trace_id CHAR(32) NOT NULL,
     session_id VARCHAR(64) NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
     turn_id VARCHAR(64) NOT NULL,
-    turn_number INT NOT NULL,
     status VARCHAR(16) DEFAULT 'running',
     prompt_tokens INT,
     completion_tokens INT,
@@ -64,12 +65,15 @@ CREATE TABLE turn_metrics (
     first_token_ms INT,
     llm_recovery_count INT DEFAULT 0,
     llm_recovery_kind VARCHAR(32) DEFAULT '',
+    is_llm_error bool,
     tool_calls_count INT DEFAULT 0,
-    tool_calls_detail JSON,              -- [{"name":"read_file","latency":450}, ...]
+    tool_calls_status JSON,              -- [{"name":"read_file","status":"success"}, ...]
     memory_hits INT DEFAULT 0,
     memory_retrieval_ms INT,
+    is_memory_error bool,
     context_tokens INT,
     context_token_usage INT,
+    is_compress BOOL,
     error_count INT DEFAULT 0,
     started_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
     ended_at DATETIME(3),
@@ -77,6 +81,7 @@ CREATE TABLE turn_metrics (
     created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
     INDEX idx_turn_metrics_trace (trace_id),
     INDEX idx_session_turn (session_id, turn_number),
+    INDEX idx_request_turn (session_id, request_id, turn_number),
     INDEX idx_turn_metrics_status (status, created_at)
 );
 

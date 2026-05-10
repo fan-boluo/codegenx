@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from bot.agent.runtime import AgentRuntime, AgentState
-from bot.bus import RuntimeTurnRequest
 from bot.agent.tool_executor import ToolExecutor
 from bot.agent.tool_handler import ToolRegistry
 from bot.utils.log_utils import log
 from shared.constants import get_bot_code_dir
+from shared.schema.ai_service import AiServiceGenerateRequest
 
 
 DEFAULT_CHILD_EXCLUDED_TOOLS = {"task", "compact"}
@@ -50,14 +51,14 @@ class SubagentRunner:
         )
         runtime.max_tool_iterations = max(1, int(subagent_context.max_turns or 15))
 
-        request = RuntimeTurnRequest(
-            app_id=subagent_context.app_id,
-            user_id="",
-            session_id=subagent_context.parent_session_id,
-            turn_id=subagent_context.parent_turn_id,
-            trace_id=subagent_context.trace_id,
-            request_id=subagent_context.parent_turn_id,
-            user_input=subagent_context.prompt,
+        request = AiServiceGenerateRequest(
+            appId=int(subagent_context.app_id) if str(subagent_context.app_id).isdigit() else 0,
+            userId="",
+            sessionId=subagent_context.parent_session_id or f"subagent-session-{uuid4().hex[:8]}",
+            traceId=subagent_context.trace_id or uuid4().hex,
+            requestId=subagent_context.parent_turn_id or f"subagent-request-{uuid4().hex[:8]}",
+            message=subagent_context.prompt,
+            clientVersion="subagent",
             metadata={
                 "plan_state_locked": bool(subagent_context.plan_summary),
                 "plan_summary": subagent_context.plan_summary,
@@ -72,7 +73,7 @@ class SubagentRunner:
         last_error = ""
         final_state = AgentState.COMPLETED
 
-        async for event in runtime.submit_turn(request):
+        async for event in runtime.submit_request(request):
             final_state = event.state
             if event.event_type == "LLM_Response_Chunk" and event.data:
                 streamed_chunks.append(str(event.data))

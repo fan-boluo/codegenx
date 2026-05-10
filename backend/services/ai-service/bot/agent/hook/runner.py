@@ -26,7 +26,7 @@ class HookRunner:
         merged.setdefault("results", []).append(callback_result)
         return merged
 
-    async def dispatch(self, event_name: str, context: Any, **kwargs) -> dict[str, Any]:
+    async def dispatch(self, event_name: str, state: Any, **kwargs) -> dict[str, Any]:
         """
         分发事件，按顺序调用所有注册和该事件的回调函数。
         如果 hook 发生异常，将捕获异常并抛出，由调用的地方转换为 OnError 分支。
@@ -40,9 +40,9 @@ class HookRunner:
             log.debug(f"Dispatching hook '{event_name}', running callback '{callback.__name__}'")
             try:
                 if inspect.iscoroutinefunction(callback):
-                    callback_result = await callback(context, **kwargs)
+                    callback_result = await callback(state, **kwargs)
                 else:
-                    callback_result = callback(context, **kwargs)
+                    callback_result = callback(state, **kwargs)
                 merged_result = self._merge_result(merged_result, callback_result)
             except Exception as e:
                 log.error(f"Error executing hook '{event_name}' in '{callback.__name__}': {e}")

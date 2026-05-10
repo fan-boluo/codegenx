@@ -16,7 +16,7 @@ class MessageBus:
     def __init__(self):
         self.inbound: asyncio.Queue[Any] = asyncio.Queue()
         self.outbound: asyncio.Queue[Any] = asyncio.Queue()
-        self._turn_subscribers: dict[str, set[asyncio.Queue[Any]]] = defaultdict(set)
+        self._request_subscribers: dict[str, set[asyncio.Queue[Any]]] = defaultdict(set)
 
     async def publish_inbound(self, msg: Any) -> None:
         """Publish a message from a channel to the agent."""
@@ -29,11 +29,11 @@ class MessageBus:
     async def publish_outbound(self, msg: Any) -> None:
         """Publish a response from the agent to channels."""
         await self.outbound.put(msg)
-        turn_id = str(getattr(msg, "turn_id", "") or "").strip()
-        if not turn_id:
+        request_id = str(getattr(msg, "request_id", "") or "").strip()
+        if not request_id:
             return
 
-        subscribers = list(self._turn_subscribers.get(turn_id, ()))
+        subscribers = list(self._request_subscribers.get(request_id, ()))
         for queue in subscribers:
             await queue.put(msg)
 
@@ -51,15 +51,21 @@ class MessageBus:
         """Number of pending outbound messages."""
         return self.outbound.qsize()
 
-    def subscribe_turn(self, turn_id: str) -> asyncio.Queue[Any]:
+    def subscribe_request(self, request_id: str) -> asyncio.Queue[Any]:
         queue: asyncio.Queue[Any] = asyncio.Queue()
-        self._turn_subscribers[str(turn_id)].add(queue)
+        self._request_subscribers[str(request_id)].add(queue)
         return queue
 
-    def unsubscribe_turn(self, turn_id: str, queue: asyncio.Queue[Any]) -> None:
-        subscribers = self._turn_subscribers.get(str(turn_id))
+    def unsubscribe_request(self, request_id: str, queue: asyncio.Queue[Any]) -> None:
+        subscribers = self._request_subscribers.get(str(request_id))
         if not subscribers:
             return
         subscribers.discard(queue)
         if not subscribers:
-            self._turn_subscribers.pop(str(turn_id), None)
+            self._request_subscribers.pop(str(request_id), None)
+
+    def subscribe_turn(self, turn_id: str) -> asyncio.Queue[Any]:
+        return self.subscribe_request(turn_id)
+
+    def unsubscribe_turn(self, turn_id: str, queue: asyncio.Queue[Any]) -> None:
+        self.unsubscribe_request(turn_id, queue)
