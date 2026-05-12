@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Column, DateTime, Float, Integer, JSON, String
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, Integer, JSON, String
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -46,7 +46,7 @@ class SessionMetricsModel(Base):
     sum_llm_latency_ms = Column(BigInteger, default=0)
     sum_first_token_ms = Column(BigInteger, default=0)
     max_llm_latency_ms = Column(Integer, default=0)
-    min_llm_latency_ms = Column(Integer, default=0)
+    min_llm_latency_ms = Column(Integer, default=999999)
     total_tool_calls = Column(Integer, default=0)
     total_errors = Column(Integer, default=0)
     recovery_count = Column(Integer, default=0)
@@ -76,12 +76,15 @@ class TurnMetricsModel(Base):
     first_token_ms = Column(Integer)
     llm_recovery_count = Column(Integer, default=0)
     llm_recovery_kind = Column(String(32), default="")
+    is_llm_error = Column(Boolean)
     tool_calls_count = Column(Integer, default=0)
-    tool_calls_detail = Column(JSON)
+    tool_calls_status = Column(JSON)
     memory_hits = Column(Integer, default=0)
     memory_retrieval_ms = Column(Integer)
+    is_memory_error = Column(Boolean)
     context_tokens = Column(Integer)
     context_token_usage = Column(Integer)
+    is_compress = Column(Boolean)
     error_count = Column(Integer, default=0)
     started_at = Column(DateTime(3))
     ended_at = Column(DateTime(3))

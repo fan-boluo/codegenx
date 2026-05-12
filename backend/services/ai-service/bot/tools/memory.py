@@ -4,7 +4,7 @@
 import asyncio
 from typing import Any
 
-from bot.memory.memory_writer import SHORT_TERM_TYPES, get_memory_writer
+from bot.memory.memory_writer import LONG_TERM_TYPES, SHORT_TERM_TYPES, get_memory_writer
 from bot.memory.retriver import get_memory_retriever
 from bot.memory.schema import MemorySearchResult
 from bot.tools.base import BaseTool, ToolResult
@@ -204,6 +204,181 @@ class MemoryWriteShortTermTool(BaseTool):
                 success=False,
                 data=str(e)
             )
+
+
+class MemoryWriteLongTermTool(BaseTool):
+    """直接写入长期记忆，不经过短期暂存-提炼流程。
+    适合用户主动说「记住这个」时使用，适用于 s9 的 user/feedback/project/reference 类别。
+    """
+    name = "write_long_term"
+    label = "memory"
+    description = (
+        "将用户明确要求跨会话保留的信息直接写入长期记忆库。"
+        "适用场景：用户偏好（preference）、被验证有效的做法/纠正记录（feedback）、"
+        "非代码可直接推导出的项目约定（decision/fact/principle）、外部资源地址（reference）。"
+        "不适合存当前任务状态、代码结构、临时分支名等容易过时的内容。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "需要长期保留的内容"},
+            "memory_type": {
+                "type": "string",
+                "description": (
+                    "记忆类别："
+                    "preference 用户偏好 / "
+                    "feedback 纠正记录或被确认的正确做法 / "
+                    "decision 技术决策 / "
+                    "principle 架构原则 / "
+                    "fact 项目约束 / "
+                    "reference 外部资源指针（URL/看板/文档地址）。默认 preference"
+                ),
+            },
+            "importance": {
+                "type": "number",
+                "description": "重要度 0-1，长期记忆建议 >= 0.7，默认 0.8",
+            },
+        },
+        "required": ["content"],
+    }
+
+    @staticmethod
+    def _normalize_required_text(value: Any, field_name: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError(f"{field_name} is required")
+        return normalized
+
+    @staticmethod
+    def _normalize_long_term_type(value: Any) -> str:
+        normalized = str(value or "preference").strip().lower()
+        if normalized not in LONG_TERM_TYPES:
+            raise ValueError(f"Unsupported long-term memory type: {value}")
+        return normalized
+
+    async def execute(self, params: dict, signal=None) -> ToolResult:
+        try:
+            user_id = self._normalize_required_text(params.get("user_id"), "user_id")
+            app_id = self._normalize_required_text(params.get("app_id", "main"), "app_id")
+            content = self._normalize_required_text(params.get("content"), "content")
+            memory_type = self._normalize_long_term_type(params.get("memory_type", "preference"))
+            importance = float(params.get("importance", 0.8) or 0.8)
+
+            point_id = await get_memory_writer().add_long_term_memory(
+                user_id=user_id,
+                app_id=app_id,
+                content=content,
+                memory_type=memory_type,
+                importance=importance,
+            )
+            return ToolResult(
+                success=True,
+                data="长期记忆已保存",
+                details={"point_id": point_id, "memory_type": memory_type},
+            )
+        except Exception as e:
+            log.error(f"调用工具 write_long_term 失败: {e}")
+            return ToolResult(success=False, data=str(e))
+
+
+class MemoryGetTool(BaseTool):
+    """按 ID 精确获取单条记忆内容。"""
+    name = "memory_get"
+    label = "memory"
+    description = "按记忆 ID 精确查询一条记忆的完整内容，可指定 collection（long_term_memories 或 short_term_memories）。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "point_id": {"type": "string", "description": "记忆的向量库 ID"},
+            "collection": {
+                "type": "string",
+                "description": "指定集合：long_term_memories 或 short_term_memories。不填则两库都找。",
+            },
+        },
+        "required": ["point_id"],
+    }
+
+    async def execute(self, params: dict, signal=None) -> ToolResult:
+        try:
+            point_id = str(params.get("point_id") or "").strip()
+            if not point_id:
+                raise ValueError("point_id is required")
+            collection = str(params.get("collection") or "").strip() or None
+
+            result = get_memory_retriever().get_by_id(point_id, collection)
+            if result is None:
+                return ToolResult(success=False, data=f"未找到 ID={point_id} 的记忆")
+            return ToolResult(
+                success=True,
+                data=result.text or "",
+                details={
+                    "id": result.id,
+                    "type": result.type.value,
+                    "category": result.category,
+                    "importance": result.importance,
+                    "version": result.version,
+                    "access_count": result.access_count,
+                },
+            )
+        except Exception as e:
+            log.error(f"调用工具 memory_get 失败: {e}")
+            return ToolResult(success=False, data=str(e))
+
+
+class MemoryWriteIdentityTool(BaseTool):
+    """保存用户跨项目的身份/身份认知信息到长期记忆（identity 类型）。
+    例如：用户的工作角色、技术背景、长期使用习惯等不依赖特定项目的个人特征。
+    s9: 属于 user 作用域，private，只在该 user_id 下有效。
+    """
+    name = "write_identity_memory"
+    label = "memory"
+    description = (
+        "保存用户跨项目的身份信息（技术背景、角色、长期个人偏好）到长期记忆。"
+        "与 write_long_term 的区别：identity 不绑定具体项目，适用于所有会话。"
+        "只存非代码可直接推导的个人特征，不存当前任务状态。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "用户身份/特征信息"},
+            "importance": {
+                "type": "number",
+                "description": "重要度 0-1，默认 0.9",
+            },
+        },
+        "required": ["content"],
+    }
+
+    @staticmethod
+    def _normalize_required_text(value: Any, field_name: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError(f"{field_name} is required")
+        return normalized
+
+    async def execute(self, params: dict, signal=None) -> ToolResult:
+        try:
+            # identity 记忆使用特殊 app_id "__identity__" 标识跨项目
+            user_id = self._normalize_required_text(params.get("user_id"), "user_id")
+            content = self._normalize_required_text(params.get("content"), "content")
+            importance = float(params.get("importance", 0.9) or 0.9)
+
+            point_id = await get_memory_writer().add_long_term_memory(
+                user_id=user_id,
+                app_id="__identity__",
+                content=content,
+                memory_type="identity",
+                importance=importance,
+            )
+            return ToolResult(
+                success=True,
+                data="用户身份记忆已保存",
+                details={"point_id": point_id, "memory_type": "identity", "scope": "cross-project"},
+            )
+        except Exception as e:
+            log.error(f"调用工具 write_identity_memory 失败: {e}")
+            return ToolResult(success=False, data=str(e))
+
 
 if __name__ == '__main__':
     import asyncio

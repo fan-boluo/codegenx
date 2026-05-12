@@ -611,6 +611,45 @@ class MemoryRetriever:
             return normalized_text
         return normalized_text[:length] + "..."
 
+    def get_by_id(
+        self,
+        point_id: str,
+        collection: str | None = None,
+    ) -> MemorySearchResult | None:
+        """按 ID 精确获取单条记忆（长期库优先，未指定 collection 则两库都找）。"""
+        point_id = str(point_id or "").strip()
+        if not point_id:
+            return None
+        collections = [collection] if collection else [LONG_TERM_COLLECTION, SHORT_TERM_COLLECTION]
+        for cname in collections:
+            try:
+                results = self.client.retrieve(
+                    collection_name=cname,
+                    ids=[point_id],
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                if not results:
+                    continue
+                point = results[0]
+                payload = point.payload or {}
+                memory_type = self._collection_to_memory_type(cname)
+                text = str(payload.get("content", "") or "")
+                return MemorySearchResult(
+                    id=str(getattr(point, "id", "") or ""),
+                    text=text,
+                    snippet=self._build_snippet(text),
+                    score=1.0,
+                    type=memory_type,
+                    access_count=int(payload.get("access_count", 0) or 0),
+                    importance=float(payload.get("importance", 0.0) or 0.0),
+                    version=int(payload.get("version", 0) or 0) if payload.get("version") is not None else None,
+                    category=str(payload.get("memory_type", "") or "") or None,
+                )
+            except Exception:
+                continue
+        return None
+
 
 @lru_cache(maxsize=1)
 def get_memory_retriever() -> MemoryRetriever:

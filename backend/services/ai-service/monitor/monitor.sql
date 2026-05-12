@@ -58,6 +58,7 @@ CREATE TABLE turn_metrics (
     session_id VARCHAR(64) NOT NULL,
     request_id VARCHAR(64) NOT NULL,
     turn_id VARCHAR(64) NOT NULL,
+    turn_number INT DEFAULT 0,
     status VARCHAR(16) DEFAULT 'running',
     prompt_tokens INT,
     completion_tokens INT,

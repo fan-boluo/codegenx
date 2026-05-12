@@ -26,7 +26,7 @@ class MemoryManager:
             self.qdrant.ensure_memory_collections()
         return self
 
-    async def on_session_start(self, user_id: str, project: str,query:str) -> list[MemorySearchResult]:
+    async def retrieve_user_query(self, user_id: str, project: str,query:str) -> list[MemorySearchResult]:
         return await self.retriever.retrieve(
             user_id=user_id,
             app_id=project,

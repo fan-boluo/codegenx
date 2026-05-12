@@ -20,8 +20,8 @@ from infra.qdrant.client import (
 )
 
 
-SHORT_TERM_TYPES = {"preference", "decision", "fact", "todo"}
-LONG_TERM_TYPES = {"preference", "decision", "principle", "fact"}
+SHORT_TERM_TYPES = {"preference", "decision", "fact", "todo", "feedback", "reference"}
+LONG_TERM_TYPES = {"preference", "decision", "principle", "fact", "feedback", "reference", "identity"}
 CONFLICT_STRATEGIES = {"update", "keep_both", "skip"}
 
 
@@ -88,6 +88,42 @@ class MemoryWriter:
             wait=True,
         )
         return point_id
+
+    async def add_long_term_memory(
+        self,
+        user_id: str,
+        app_id: str,
+        content: str,
+        memory_type: str = "preference",
+        importance: float = 0.8,
+    ) -> str:
+        """直接写入长期记忆，不经过短期暂存-提炼流程。
+        适用于用户主动要求记住的信息（s9: user/feedback/project/reference 类别）。
+        identity 类型存用户跨项目身份信息时 app_id 传 '__identity__'。
+        """
+        normalized_type = self._map_to_long_term_type(memory_type)
+        normalized_content = self._normalize_content(content)
+        if not normalized_content:
+            raise ValueError("content is required")
+        embedding = await self.embedder.embed(normalized_content)
+        # 相似度去重：已存在相近长期记忆则直接返回
+        matches = self._search_long_term_matches(
+            user_id=user_id, app_id=app_id, vector=embedding, limit=1
+        )
+        if matches:
+            existing_id = str(matches[0].id)
+            log.info("长期记忆已存在相似内容，跳过写入，现有 id={}", existing_id)
+            return existing_id
+        target_id = self._create_long_term_memory(
+            user_id=user_id,
+            app_id=app_id,
+            content=normalized_content,
+            memory_type=normalized_type,
+            source_ids=[],
+            importance=self._clamp_importance(max(importance, self.long_direct_write_importance_threshold)),
+            embedding=embedding,
+        )
+        return target_id
 
     async def consolidate_to_long_term(
         self,
@@ -520,7 +556,7 @@ class MemoryWriter:
         if normalized in LONG_TERM_TYPES:
             return normalized
         if normalized == "todo":
-            return "fact"
+            return "fact"  # task state → fact，仅供提炼，不应直接存长期
         return "fact"
 
     def _clamp_importance(self, importance: float) -> float:

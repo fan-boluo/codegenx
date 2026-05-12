@@ -100,7 +100,13 @@ class SessionManager:
         return self.session_dir / f"turn_{turn_id}__snapshot.json"
 
     def _chat_history_file(self, session_id: str) -> Path:
-        return self.session_dir / f"chat_history_{session_id}.jsonal"
+        return self.session_dir / f"chat_history_{session_id}.jsonl"
+
+    def _tool_log_file(self, session_id: str) -> Path:
+        return self.session_dir / f"tool_log_{session_id}.jsonl"
+
+    def _memory_log_file(self, session_id: str) -> Path:
+        return self.session_dir / f"memory_log_{session_id}.jsonl"
 
     def _get_lock(self) -> threading.Lock:
         """✅ 获取真实锁对象（修复 PrivateAttr 包装问题）"""
@@ -169,6 +175,20 @@ class SessionManager:
             with open(history_file, "a", encoding="utf-8") as file:
                 file.write(serialized)
         return history_file
+
+    def append_tool_log(self, session_id: str, entry: dict[str, Any]) -> None:
+        """追加一条工具调用记录到 tool_log_{session_id}.jsonl。"""
+        serialized = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+        with self._lock:
+            with open(self._tool_log_file(session_id), "a", encoding="utf-8") as f:
+                f.write(serialized)
+
+    def append_memory_log(self, session_id: str, entry: dict[str, Any]) -> None:
+        """追加一条记忆检索/写入记录到 memory_log_{session_id}.jsonl。"""
+        serialized = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+        with self._lock:
+            with open(self._memory_log_file(session_id), "a", encoding="utf-8") as f:
+                f.write(serialized)
 
     def on_session_start(self):
 

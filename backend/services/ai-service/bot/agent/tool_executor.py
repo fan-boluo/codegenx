@@ -1,10 +1,12 @@
 import os
 import inspect
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from bot.utils.log_utils import log
 from bot.agent.tool_handler import ToolRegistry
+from bot.agent.context_compaction import ContextCompactor
 from shared.constants import get_bot_code_dir
 
 MEMORY_TOOL_NAMES = {
@@ -12,12 +14,15 @@ MEMORY_TOOL_NAMES = {
     "memory_get",
     "write_short_term",
     "write_long_term",
-    # "write_identity_memory",
+    "write_identity_memory",
 }
+
+TASK_TOOL_NAMES = {"task_create", "task_update", "task_get", "task_list"}
 
 class ToolExecutor:
     def __init__(self, tools_registry: ToolRegistry):
         self.tools_registry = tools_registry
+        self._context_compactor = ContextCompactor()
         # Resolve all safe paths to absolute paths
         # self.safe_paths = [Path(p).resolve() for p in (safe_paths or [])]
         # if not self.safe_paths:
@@ -73,6 +78,16 @@ class ToolExecutor:
             tool_input.setdefault("plan_summary", "")
             tool_input.setdefault("parent_session_id", session_id)
             tool_input.setdefault("parent_turn_id", turn_id)
+
+        if tool_name == "compact":
+            # inject TurnContext and compactor so the tool can drive compaction
+            tool_input.setdefault("context", getattr(context, "context", None))
+            tool_input.setdefault("context_compactor", self._context_compactor)
+
+        if tool_name in TASK_TOOL_NAMES:
+            # inject TaskManager (s12) — stored on session state per app_id
+            task_manager = getattr(session_state, "task_manager", None) if session_state is not None else None
+            tool_input.setdefault("task_manager", task_manager)
         
         # 1. 查找工具并拉取验证
         tool = next((t for t in self.tools_registry.tools if t.name == tool_name), None)
@@ -86,26 +101,34 @@ class ToolExecutor:
             log.warning(f"Safety check failed for tool '{tool_name}': {error_msg}")
             return {"error": f"拒绝执行: {error_msg}"}
 
-        # 3. 工具执行
-        try:
-            func = tool.executor
-            call_kwargs = {"params": tool_input}
-            if "signal" in inspect.signature(func).parameters:
-                call_kwargs["signal"] = stop_signal
-            if inspect.iscoroutinefunction(func):
-                result = await func(**call_kwargs)
-            else:
-                result = func(**call_kwargs)
+        # 3. 工具执行 在工具执行内部已经做了异常处理了
+        # try:
+        func = tool.executor
+        call_kwargs = {"params": tool_input}
+        if "signal" in inspect.signature(func).parameters:
+            call_kwargs["signal"] = stop_signal
+        if inspect.iscoroutinefunction(func):
+            result = await func(**call_kwargs)
+        else:
+            result = func(**call_kwargs)
 
-            if hasattr(result, "model_dump"):
-                result = result.model_dump()
-            elif hasattr(result, "dict"):
-                result = result.dict()
+        if hasattr(result, "model_dump"):
+            result = result.model_dump()
+        elif hasattr(result, "dict"):
+            result = result.dict()
 
+            # sm = getattr(session_state, "session_manager", None)
+            # if sm is not None:
+            #     self._log_tool_execution(sm, session_id, turn_id, tool_name, tool_input, result)
             return result
-        except Exception as e:
-            log.error(f"Tool '{tool_name}' crashed: {e}")
-            return {"error": f"工具执行异常: {str(e)}"}
+        # except Exception as e:
+        #     log.error(f"Tool '{tool_name}' crashed: {e}")
+        #     err_result = {"error": f"工具执行异常: {str(e)}"}
+        #     sm = getattr(session_state, "session_manager", None)
+        #     if sm is not None:
+        #         self._log_tool_execution(sm, session_id, turn_id, tool_name, tool_input, err_result)
+        #     return err_result
+
 
     def _resolve_safe_paths(self, context: Any, session_state: Any | None,safe_paths: Optional[List[str]] = None) -> List[Path]:
         for candidate in (
@@ -118,7 +141,7 @@ class ToolExecutor:
             resolved = [Path(path).resolve() for path in candidate if str(path).strip()]
             if resolved:
                 return resolved
-        return list(safe_paths)
+        return list(safe_paths) if safe_paths else []
 
     def _perform_safety_checks(self, tool_name: str, tool_input: Dict[str, Any], safe_paths: List[Path]) -> Optional[str]:
         """

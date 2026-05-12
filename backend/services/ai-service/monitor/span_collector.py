@@ -80,7 +80,7 @@ class SpanCollector:
         spans = self.get_turn_spans(turn_telemetry.turn_id)
         tool_spans = [s for s in spans if s.operation_name.startswith(OperationName.TOOL.value)]
         error_count = sum(1 for s in spans if s.status == "error")
-        tool_calls_detail = [
+        tool_calls_status = [
             {
                 "name": s.attributes.get("tool.name", ""),
                 "latency_ms": s.duration_ms or 0,
@@ -101,12 +101,15 @@ class SpanCollector:
             "first_token_ms": turn_telemetry.llm.first_token_ms,
             "llm_recovery_count": turn_telemetry.llm.recovery_count,
             "llm_recovery_kind": turn_telemetry.llm.recovery_kind,
+            "is_llm_error": turn_telemetry.llm.is_error,
             "tool_calls_count": len(turn_telemetry.tool),
-            "tool_calls_detail": tool_calls_detail,
+            "tool_calls_status": tool_calls_status,
             "memory_hits": turn_telemetry.memory.hits,
             "memory_retrieval_ms": turn_telemetry.memory.latency_ms,
+            "is_memory_error": turn_telemetry.memory.is_error,
             "context_tokens": turn_telemetry.context.token_count,
             "context_token_usage": int(turn_telemetry.context.token_usage),
+            "is_compress": turn_telemetry.context.is_compress,
             "error_count": error_count,
             "started_at": turn_telemetry.started_at,
             "ended_at": turn_telemetry.ended_at,

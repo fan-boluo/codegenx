@@ -81,7 +81,7 @@ class ContextCompactor:
             "user_input": getattr(context, "user_input", ""),
             "state": getattr(getattr(context, "state", None), "value", str(getattr(context, "state", ""))),
             "metadata": metadata,
-            "history": list(getattr(context, "history", [])),
+            "history": list(getattr(context, "chat_history", [])),
         }
 
     def persist_large_output(self, context: Any, tool_use_id: str, output: str) -> str:
@@ -111,7 +111,7 @@ class ContextCompactor:
 
     def _collect_tool_messages(self, context: Any) -> list[tuple[int, dict[str, Any]]]:
         results: list[tuple[int, dict[str, Any]]] = []
-        for index, message in enumerate(context.history):
+        for index, message in enumerate(context.chat_history):
             if message.get("role") == "tool":
                 results.append((index, message))
         return results
@@ -143,7 +143,7 @@ class ContextCompactor:
             self._get_state(context)["events"].append(
                 {
                     "reason": "micro-pre-llm",
-                    "history_size": self.estimate_context_size(context.history),
+                    "history_size": self.estimate_context_size(context.chat_history),
                     "timestamp": time.time(),
                 }
             )
@@ -171,7 +171,7 @@ class ContextCompactor:
         return transcript_path
 
     def _heuristic_summary(self, context: Any, focus: str | None = None) -> str:
-        recent_messages = context.history[-8:]
+        recent_messages = context.chat_history[-8:]
         summary_lines = [
             f"Current goal: {getattr(context, 'user_input', '').strip()}",
         ]
@@ -208,7 +208,7 @@ class ContextCompactor:
         if focus:
             prompt += f"Focus to preserve: {focus}\n\n"
 
-        conversation = json.dumps(context.history, ensure_ascii=False, default=str)[:80000]
+        conversation = json.dumps(context.chat_history, ensure_ascii=False, default=str)[:80000]
         prompt += conversation
 
         try:
@@ -230,7 +230,7 @@ class ContextCompactor:
 
     async def compact_history(self, context: Any, focus: str | None = None, reason: str = "threshold") -> None:
         state = self._get_state(context)
-        history_size_before = self.estimate_context_size(context.history)
+        history_size_before = self.estimate_context_size(context.chat_history)
         transcript_path = self._write_transcript(context)
         summary = await self.summarize_history(context, focus=focus)
 
@@ -249,14 +249,14 @@ class ContextCompactor:
         parts.append("Continue from where we left off without re-asking the user.")
         continuation = "\n\n".join(parts)
 
-        context.history = [{"role": "user", "content": continuation}]
+        context.chat_history = [{"role": "user", "content": continuation}]
         state["has_compacted"] = True
         state["last_summary"] = continuation
         state.setdefault("events", []).append(
             {
                 "reason": reason,
                 "history_size_before": history_size_before,
-                "history_size_after": self.estimate_context_size(context.history),
+                "history_size_after": self.estimate_context_size(context.chat_history),
                 "timestamp": time.time(),
                 "transcript_path": str(transcript_path),
             }
@@ -265,7 +265,7 @@ class ContextCompactor:
 
     async def prepare_for_llm(self, context: Any) -> None:
         self.micro_compact(context)
-        current_size = self.estimate_context_size(context.history)
+        current_size = self.estimate_context_size(context.chat_history)
         context.metadata["context_size_before_llm"] = current_size
         if current_size > CONTEXT_LIMIT:
             await self.compact_history(
@@ -277,7 +277,7 @@ class ContextCompactor:
     async def finalize_turn(self, context: Any) -> None:
         self.micro_compact(context)
         focus = context.metadata.get("turn_summary") or getattr(context, "user_input", "")
-        current_size = self.estimate_context_size(context.history)
+        current_size = self.estimate_context_size(context.chat_history)
         context.metadata["context_size_after_turn"] = current_size
         if current_size > CONTEXT_LIMIT:
             await self.compact_history(context, focus=focus, reason="final-post-turn")

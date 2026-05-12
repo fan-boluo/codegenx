@@ -6,11 +6,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from openai.types.beta.realtime import session
-from urllib3.contrib.emscripten import request
-
-from agent import runtime
-from agent.plan.planner import Planner
 from agent.runtime_schema import TurnContext, RuntimeSessionState
 from bot.memory.memory_manager import get_memory_manager
 from bot.skill.skill_loader import SkillLoader
@@ -47,24 +42,57 @@ class ContextAssembler:
             if getattr(skill, "name", None)
         ]
 
-    async def build_memory(self,memory) -> str:
-        """
-            将 list[MemorySearchResult] 转为清晰可读的字符串（用于prompt）
+    def build_memory(self, memory) -> str:
+        """将 list[MemorySearchResult] 按 s9 分组（user/feedback/project/reference）转为清晰可读的字符串。
+        过滤掉 todo（任务状态，不属于跨会话记忆）。
         """
         if not memory:
-            return "无记忆检索结果"
+            return "暂无跨会话记忆"
 
-        lines = []
-        for idx, item in enumerate(memory, 1):
-            lines.append(f"===== 记忆片段 {idx} =====")
-            lines.append(f"ID: {item.id or '无'}")
-            lines.append(f"类型: {item.type}")
-            lines.append(f"分类(category): {item.category or '无'}")
-            lines.append(f"相关性得分: {item.score:.3f}")
-            lines.append(f"重要度: {item.importance or '无'}")
-            lines.append(f"完整内容: {item.text if item.text is not None else '无'}")
-            lines.append("")  # 空行分隔
+        # s9 分组映射：语义类型 → 展示组别
+        _CATEGORY_GROUP = {
+            "preference": "user",
+            "identity": "user",
+            "feedback": "feedback",
+            "decision": "project",
+            "fact": "project",
+            "principle": "project",
+            "reference": "reference",
+        }
+        _GROUP_LABEL = {
+            "user": "用户偏好 / User",
+            "feedback": "反馈记录 / Feedback & Corrections",
+            "project": "项目约定 / Project Facts",
+            "reference": "外部资源 / References",
+        }
+        _GROUP_ORDER = ["user", "feedback", "project", "reference"]
 
+        groups: dict[str, list] = {g: [] for g in _GROUP_ORDER}
+        for item in memory:
+            category = str(item.category or "").lower()
+            if category == "todo":  # s9: task state 不进记忆 prompt
+                continue
+            group = _CATEGORY_GROUP.get(category, "project")
+            groups[group].append(item)
+
+        lines = [
+            "# 跨会话记忆（只包含无法从当前代码直接推导的信息）",
+            "",
+        ]
+        has_content = False
+        for group_key in _GROUP_ORDER:
+            items = groups[group_key]
+            if not items:
+                continue
+            has_content = True
+            lines.append(f"## [{_GROUP_LABEL[group_key]}]")
+            for item in items:
+                importance_str = f"{float(item.importance or 0):.2f}" if item.importance is not None else "无"
+                lines.append(f"- [{item.type.value}] 重要度={importance_str}  {item.text or item.snippet}")
+            lines.append("")
+
+        if not has_content:
+            return "暂无跨会话记忆"
         return "\n".join(lines)
 
     async def build_fix_context(self,session: RuntimeSessionState):
@@ -84,10 +112,10 @@ class ContextAssembler:
             "code_gen_type": str(session.request.code_gen_type or "")
         }
 
-        # tool
-        build_tool = self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
+        # tool — 使用 tool_executor 的工具列表（子任务时会过滤掉 task 等工具，保持和执行器一致）
+        build_tool = await self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
         # skill
-        build_skill=self.build_skill(runtime.skills)
+        build_skill = await self.build_skill(runtime.skills)
 
         session.workspace_metadata = workspace_metadata
         session.tool = build_tool
@@ -98,7 +126,7 @@ class ContextAssembler:
     async def prepare_turn_context(self, session: RuntimeSessionState, context: TurnContext) -> None:
         """
         每个turn要构建的
-        memory \ plann \ chat_message 都是随turn变化的
+        memory \ plann \ chat_history 都是随turn变化的
         session 的skill tool workspace 都是固定的
         """
         runtime = session.runtime
@@ -126,13 +154,22 @@ class ContextAssembler:
         parts.append(f"以下是你可以使用的技能：\n {skill_prompt}")
 
         # memory
-        memory = runtime.memory_manager.on_session_start(request.user_id, str(request.app_id), request.message)
-        build_memory = self.build_memory(memory)
-        parts.append(f"以下是历史记忆：\n {build_memory}")
+        # s9: 用户说忽略记忆时，按记忆为空处理
+        ignore_memory = bool(getattr(request, "ignore_memory", False))
+        if ignore_memory:
+            memory = []
+        else:
+            memory = await runtime.memory_manager.retrieve_user_query(request.user_id, str(request.app_id), request.message)
+        build_memory_text = self.build_memory(memory)
+        parts.append(f"以下是历史记忆：\n {build_memory_text}")
 
-        # planner
-        plan_state = runtime.planner.get_state()
-        parts.append(f"以下是计划状态：\n {plan_state}")
+        # task board (s12) — replaces planner (s03)
+        task_manager = getattr(runtime, "task_manager", None) or getattr(session, "task_manager", None)
+        if task_manager is not None:
+            plan_state = task_manager.get_board()
+        else:
+            plan_state = "No active tasks."
+        parts.append(f"以下是任务看板：\n {plan_state}")
 
         system_prompt = "\n\n".join(parts)
         # 必要的信息
@@ -142,9 +179,9 @@ class ContextAssembler:
         context.memory = memory
         context.plan_summary = plan_state
         context.system_prompt = system_prompt
-        context.chat_message = [
-            {"role": "system","content":system_prompt},
-            {"role": "user","content":request.message},
+        # TODO 聊天历史这里只是加了当前的请求
+        context.chat_history = [
+            {"role": "user", "content": str(request.message or "")},
         ]
 
 
@@ -194,6 +231,7 @@ class ContextAssembler:
 
 
     @staticmethod
+    
     def build_directory_skeleton(root: Path, *, max_entries: int = 40, max_depth: int = 2) -> str:
         """当前项目目录结构 """
         if not root.exists():
@@ -283,29 +321,35 @@ class ContextAssembler:
 
 
     async def assemble(self, context: Any) -> list[dict[str, Any]]:
-        """ 发送llm前最终的组装 """
+        """ 发送llm前最终的组装 prepare_turn_context已经组装到了system_prompt里面了
+        这里就只加上user_message即可
+        """
         messages: list[dict[str, Any]] = []
 
         system_prompt = str(getattr(context, "system_prompt", "") or "").strip()
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        memory_block = self._render_memory(list(getattr(context, "memory", []) or []))
-        if memory_block:
-            messages.append({"role": "system", "content": memory_block})
-
-        skill_block = self._render_skills(list(getattr(context, "skill", []) or []))
-        if skill_block:
-            messages.append({"role": "system", "content": skill_block})
+        # memory_block = self._render_memory(list(getattr(context, "memory", []) or []))
+        # if memory_block:
+        #     messages.append({"role": "system", "content": memory_block})
+        #
+        # skill_block = self._render_skills(list(getattr(context, "skill", []) or []))
+        # if skill_block:
+        #     messages.append({"role": "system", "content": skill_block})
 
         messages.extend(self._normalize_history(list(getattr(context, "chat_history", []) or [])))
 
         return messages
 class TurnReducer:
-    """Turn state is owned by the runtime session store, so reduction is intentionally empty."""
+    """Finalize turn context: micro-compact old tool results + full compact if over threshold."""
+
+    def __init__(self) -> None:
+        from bot.agent.context_compaction import ContextCompactor
+        self._compactor = ContextCompactor()
 
     async def reduce(self, context: Any) -> None:
-        log.debug("TurnReducer skipped for slim TurnContext")
+        await self._compactor.finalize_turn(context)
 
 @lru_cache(maxsize=1)
 def get_context_assembler() -> ContextAssembler:
