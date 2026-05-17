@@ -1,12 +1,11 @@
 @echo off
 rem Usage:
-rem   startup.bat                     -> start user-service, ai-service, app-service, chat-service, api-gateway
-rem   startup.bat user ai app chat    -> start selected services only
+rem   startup.bat                     -> start user-service, ai-service, app-service, api-gateway
+rem   startup.bat user ai app         -> start selected services only
 rem Service port mapping:
 rem   user    -> 50051
 rem   ai      -> 8002
-rem   app     -> 8004
-rem   chat    -> 8005
+rem   app     -> 8004  (includes chat endpoints)
 rem   gateway -> 8456
 setlocal EnableDelayedExpansion
 
@@ -17,7 +16,6 @@ set "PYTHON=%BACKEND%\.venv\Scripts\python.exe"
 set "RUN_USER=0"
 set "RUN_AI=0"
 set "RUN_APP=0"
-set "RUN_CHAT=0"
 set "RUN_GATEWAY=0"
 
 if not exist "%PYTHON%" (
@@ -29,7 +27,6 @@ if "%~1"=="" (
     set "RUN_USER=1"
     set "RUN_AI=1"
     set "RUN_APP=1"
-    set "RUN_CHAT=1"
     set "RUN_GATEWAY=1"
 ) else (
     call :parse_args %*
@@ -41,7 +38,6 @@ echo Starting selected services...
 if "%RUN_USER%"=="1" call :start_user_service
 if "%RUN_AI%"=="1" call :start_ai_service
 if "%RUN_APP%"=="1" call :start_app_service
-if "%RUN_CHAT%"=="1" call :start_chat_service
 if "%RUN_GATEWAY%"=="1" call :start_gateway_service
 
 echo Startup check completed.
@@ -61,13 +57,11 @@ if /I "%~1"=="user" (
     set "RUN_AI=1"
 ) else if /I "%~1"=="app" (
     set "RUN_APP=1"
-) else if /I "%~1"=="chat" (
-    set "RUN_CHAT=1"
 ) else if /I "%~1"=="gateway" (
     set "RUN_GATEWAY=1"
 ) else (
     echo Unknown service argument: %~1
-    echo Usage: startup.bat [user] [ai] [app] [chat] [gateway]
+    echo Usage: startup.bat [user] [ai] [app] [gateway]
     exit /b 1
 )
 
@@ -109,17 +103,6 @@ if %ERRORLEVEL% EQU 0 (
 
 start "app-service" powershell -NoExit -ExecutionPolicy Bypass -Command "$Host.UI.RawUI.WindowTitle = 'app-service'; $env:PYTHONPATH='%BACKEND%'; Set-Location '%BACKEND%\services\app-service'; & '%PYTHON%' -m uvicorn app:app --host 0.0.0.0 --port 8004"
 echo [START] app-service launch command sent on port 8004.
-exit /b 0
-
-:start_chat_service
-call :is_port_listening 8005
-if %ERRORLEVEL% EQU 0 (
-    echo [SKIP] chat-service is already listening on port 8005.
-    exit /b 0
-)
-
-start "chat-service" powershell -NoExit -ExecutionPolicy Bypass -Command "$Host.UI.RawUI.WindowTitle = 'chat-service'; $env:PYTHONPATH='%BACKEND%'; Set-Location '%BACKEND%\services\chat-service'; & '%PYTHON%' -m uvicorn app:app --host 0.0.0.0 --port 8005"
-echo [START] chat-service launch command sent on port 8005.
 exit /b 0
 
 :start_gateway_service

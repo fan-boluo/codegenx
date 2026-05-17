@@ -15,6 +15,12 @@
           应用详情
         </a-button>
 
+        <a-button type="default" @click="toggleSourceView" :loading="loadingSourceTree">
+          <template #icon>
+            <CodeOutlined />
+          </template>
+          {{ rightPanelMode === 'source' ? '返回预览' : '查看源码' }}
+        </a-button>
         <a-tooltip v-if="!canOperateApp" :title="readOnlyTooltip" placement="bottom">
           <span>
             <a-button type="primary" ghost :loading="downloading" disabled>
@@ -171,49 +177,88 @@
       </div>
 
       <div class="preview-section">
-        <div class="preview-header">
-          <h3>生成后的网页展示</h3>
-          <div class="preview-actions">
-            <a-button
-              v-if="canOperateApp && previewUrl"
-              type="link"
-              :danger="isEditMode"
-              @click="toggleEditMode"
-              :class="{ 'edit-mode-active': isEditMode }"
-              style="padding: 0; height: auto; margin-right: 12px"
-            >
-              <template #icon>
-                <EditOutlined />
-              </template>
-              {{ isEditMode ? '退出编辑' : '编辑模式' }}
-            </a-button>
-            <a-button v-if="previewUrl" type="link" @click="openInNewTab">
-              <template #icon>
-                <ExportOutlined />
-              </template>
-              新窗口打开
-            </a-button>
-          </div>
-        </div>
-        <div class="preview-content">
-          <div v-if="!previewUrl" class="preview-placeholder">
-            <div class="placeholder-icon">🌐</div>
-            <p>网站文件生成完成后将在这里展示</p>
-          </div>
-          <div v-else class="preview-frame-shell">
-            <div v-if="previewLoading" class="preview-loading preview-loading-overlay">
-              <a-spin size="large" />
-              <p>正在加载最新页面...</p>
+        <template v-if="rightPanelMode === 'source'">
+          <div class="preview-header">
+            <h3>源码文件</h3>
+            <div class="preview-actions">
+              <span v-if="selectedSourceFile" class="source-file-path">{{ selectedSourceFile }}</span>
             </div>
-            <iframe
-              :key="previewFrameUrl"
-              :src="previewFrameUrl"
-              class="preview-iframe"
-              frameborder="0"
-              @load="onIframeLoad"
-            ></iframe>
           </div>
-        </div>
+          <div class="source-content">
+            <div class="source-tree-panel">
+              <div v-if="loadingSourceTree" class="source-tree-loading">
+                <a-spin size="small" />
+              </div>
+              <div v-else-if="!sourceFileTree.length" class="source-tree-empty">
+                <p>暂无源码文件</p>
+              </div>
+              <a-tree
+                v-else
+                :tree-data="sourceFileTree"
+                :selected-keys="selectedSourceFile ? [selectedSourceFile] : []"
+                :default-expand-all="true"
+                @select="handleSourceFileSelect"
+              />
+            </div>
+            <div class="source-code-panel">
+              <div v-if="!selectedSourceFile" class="source-placeholder">
+                <div class="placeholder-icon">📄</div>
+                <p>点击左侧文件查看源码</p>
+              </div>
+              <div v-else-if="loadingSourceFile" class="source-loading">
+                <a-spin size="small" />
+                <span>加载中...</span>
+              </div>
+              <pre v-else class="source-code-pre"><code class="hljs" v-html="highlightedContent"></code></pre>
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="preview-header">
+            <h3>生成后的网页展示</h3>
+            <div class="preview-actions">
+              <a-button
+                v-if="canOperateApp && previewUrl"
+                type="link"
+                :danger="isEditMode"
+                @click="toggleEditMode"
+                :class="{ 'edit-mode-active': isEditMode }"
+                style="padding: 0; height: auto; margin-right: 12px"
+              >
+                <template #icon>
+                  <EditOutlined />
+                </template>
+                {{ isEditMode ? '退出编辑' : '编辑模式' }}
+              </a-button>
+              <a-button v-if="previewUrl" type="link" @click="openInNewTab">
+                <template #icon>
+                  <ExportOutlined />
+                </template>
+                新窗口打开
+              </a-button>
+            </div>
+          </div>
+          <div class="preview-content">
+            <div v-if="!previewUrl" class="preview-placeholder">
+              <div class="placeholder-icon">🌐</div>
+              <p>网站文件生成完成后将在这里展示</p>
+            </div>
+            <div v-else class="preview-frame-shell">
+              <div v-if="previewLoading" class="preview-loading preview-loading-overlay">
+                <a-spin size="large" />
+                <p>正在加载最新页面...</p>
+              </div>
+              <iframe
+                :key="previewFrameUrl"
+                :src="previewFrameUrl"
+                class="preview-iframe"
+                frameborder="0"
+                @load="onIframeLoad"
+              ></iframe>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -254,9 +299,12 @@ import DeploySuccessModal from '@/components/DeploySuccessModal.vue'
 import aiAvatar from '@/assets/aiAvatar.png'
 import { API_BASE_URL, getGeneratedPreviewUrl, getStaticPreviewUrl } from '@/config/env'
 import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
+import hljs from 'highlight.js'
+import 'highlight.js/styles/github.css'
 
 import {
   CloudUploadOutlined,
+  CodeOutlined,
   DownloadOutlined,
   EditOutlined,
   ExportOutlined,
@@ -341,6 +389,102 @@ const visualEditor = new VisualEditor({
 
 const appDetailVisible = ref(false)
 const readOnlyTooltip = '无法在别人的作品下操作哦~'
+
+// Source code view
+const rightPanelMode = ref<'preview' | 'source'>('preview')
+const sourceFileTree = ref<any[]>([])
+const selectedSourceFile = ref('')
+const sourceFileContent = ref('')
+const loadingSourceTree = ref(false)
+const loadingSourceFile = ref(false)
+
+const highlightedContent = computed(() => {
+  if (!sourceFileContent.value) return ''
+  const ext = selectedSourceFile.value.split('.').pop() ?? ''
+  const langMap: Record<string, string> = {
+    js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
+    vue: 'xml', html: 'html', css: 'css', scss: 'scss', less: 'less',
+    json: 'json', py: 'python', md: 'markdown', yaml: 'yaml', yml: 'yaml',
+    sh: 'bash', sql: 'sql', java: 'java', go: 'go', rs: 'rust',
+    xml: 'xml', txt: 'plaintext',
+  }
+  const lang = langMap[ext.toLowerCase()]
+  try {
+    if (lang && hljs.getLanguage(lang)) {
+      return hljs.highlight(sourceFileContent.value, { language: lang, ignoreIllegals: true }).value
+    }
+    return hljs.highlightAuto(sourceFileContent.value).value
+  } catch {
+    return sourceFileContent.value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  }
+})
+
+const buildSourceTree = (nodes: any[]): any[] => {
+  return nodes.map((node) => ({
+    key: node.path,
+    title: node.name,
+    isLeaf: node.type === 'file',
+    children: node.children ? buildSourceTree(node.children) : undefined,
+  }))
+}
+
+const loadSourceTree = async () => {
+  if (!appId.value) return
+  loadingSourceTree.value = true
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const res = await request.get(`${baseURL}/api/app/code/tree/${appId.value}`)
+    if (res.data.code === 0) {
+      sourceFileTree.value = buildSourceTree(res.data.data || [])
+    } else {
+      message.error('获取源码目录失败：' + res.data.message)
+    }
+  } catch (error) {
+    console.error('获取源码目录失败:', error)
+    message.error('获取源码目录失败')
+  } finally {
+    loadingSourceTree.value = false
+  }
+}
+
+const handleSourceFileSelect = async (_keys: string[], { node }: any) => {
+  if (!node.isLeaf) return
+  const filePath: string = node.key
+  if (filePath === selectedSourceFile.value) return
+  selectedSourceFile.value = filePath
+  sourceFileContent.value = ''
+  loadingSourceFile.value = true
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const res = await request.get(`${baseURL}/api/app/code/file/${appId.value}`, {
+      params: { path: filePath },
+    })
+    if (res.data.code === 0) {
+      sourceFileContent.value = res.data.data ?? ''
+    } else {
+      message.error('读取文件失败：' + res.data.message)
+    }
+  } catch (error) {
+    console.error('读取文件失败:', error)
+    message.error('读取文件失败')
+  } finally {
+    loadingSourceFile.value = false
+  }
+}
+
+const toggleSourceView = async () => {
+  if (rightPanelMode.value === 'source') {
+    rightPanelMode.value = 'preview'
+    return
+  }
+  rightPanelMode.value = 'source'
+  selectedSourceFile.value = ''
+  sourceFileContent.value = ''
+  await loadSourceTree()
+}
 
 const normalizeUserId = (userId?: string | number | null) => {
   if (userId === undefined || userId === null || userId === '') {
@@ -1400,6 +1544,91 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   border: none;
+}
+
+.source-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.source-tree-panel {
+  width: 260px;
+  min-width: 160px;
+  border-right: 1px solid #e8e8e8;
+  overflow-y: auto;
+  padding: 8px 0;
+  flex-shrink: 0;
+}
+
+.source-tree-loading,
+.source-tree-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  color: #999;
+}
+
+.source-tree-empty p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.source-code-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.source-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #999;
+}
+
+.source-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  color: #666;
+}
+
+.source-code-pre {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  height: 100%;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: #f6f8fa;
+  border: none;
+}
+
+.source-code-pre code {
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+  border: none;
+  white-space: pre;
+}
+
+.source-file-path {
+  font-size: 12px;
+  color: #666;
+  font-family: 'Monaco', 'Menlo', monospace;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .selected-element-alert {

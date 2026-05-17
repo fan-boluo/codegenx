@@ -32,10 +32,14 @@ from shared.schema.common import BaseResponse, DeleteRequest, PageData
 from shared.schema.code import GeneratedCodeSaveRequest
 from shared.utils.result_utils import success
 from app_service import AppService
+from chat_api import router as chat_router
+from chat_history_api import router as chat_history_router
 
 app = FastAPI(title="CodeGenX App Service", version="1.0.0")
 static_resource_service = StaticResourceService()
 service_registry = AppServiceRegistry()
+app.include_router(chat_router)
+app.include_router(chat_history_router)
 
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
@@ -282,6 +286,39 @@ async def download_app_code(
         return FileResponse(path=str(zip_path), filename=f"{app_id}.zip", media_type="application/zip", background=background)
     except Exception as exc:
         log.exception("download app code failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/app/code/tree/{app_id}", response_model=BaseResponse[list])
+async def get_app_code_tree(
+    app_id: int,
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[list]:
+    try:
+        tree = await AppService(db).get_code_tree(app_id, current_user)
+        return success(tree)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("get app code tree failed appId={}", app_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/app/code/file/{app_id}", response_model=BaseResponse[str])
+async def get_app_code_file(
+    app_id: int,
+    path: str = Query(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[str]:
+    try:
+        content = await AppService(db).get_code_file(app_id, path, current_user)
+        return success(content)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("get app code file failed appId={} path={}", app_id, path)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

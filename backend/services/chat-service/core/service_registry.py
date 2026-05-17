@@ -19,15 +19,18 @@ class ChatServiceRegistry:
         self._heartbeat_task: asyncio.Task | None = None
 
     async def startup(self) -> None:
-        await nacos_client.register_instance(self.service_name, self.host, self.port)
+        try:
+            await nacos_client.register_instance(self.service_name, self.host, self.port)
+            log.info(
+                "chat-service registered to nacos service={} instance={}:{} namespace={}",
+                self.service_name,
+                self.host,
+                self.port,
+                settings.nacos_namespace,
+            )
+        except Exception as exc:
+            log.warning("chat-service nacos registration failed (non-fatal): {}", exc)
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        log.info(
-            "chat-service registered to nacos service={} instance={}:{} namespace={}",
-            self.service_name,
-            self.host,
-            self.port,
-            settings.nacos_namespace,
-        )
 
     async def shutdown(self) -> None:
         if self._heartbeat_task is not None:

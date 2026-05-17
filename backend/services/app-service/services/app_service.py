@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from math import ceil
+import os
 from pathlib import Path
 import secrets
 import shutil
@@ -24,8 +25,8 @@ from shared.schema.code import GeneratedCodeSaveRequest
 
 from core.ai_client import AiServiceClient
 from core.auth_proxy import JWTUser
-from core.chat_client import ChatServiceClient
 from core.code_generator_facade import CodePersistenceFacade
+from chat_history import ChatHistoryService
 from core.saver import CodeFileSaverExecutor
 from core.screenshot_service import ScreenshotService
 
@@ -37,7 +38,6 @@ class AppService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self.ai_service_client = AiServiceClient()
-        self.chat_service_client = ChatServiceClient()
         self.code_persistence_facade = CodePersistenceFacade()
         self.screenshot_service = ScreenshotService()
 
@@ -148,7 +148,7 @@ class AppService:
     async def delete_app(self, app_id: int, login_user: JWTUser) -> bool:
         await self._get_owned_app(app_id, login_user)
         await self.db.execute(delete(App).where(App.id == app_id))
-        await self.chat_service_client.delete_chat_history_by_app_id(app_id)
+        await ChatHistoryService(self.db).delete_by_app_id(app_id)
         await self.db.commit()
         return True
 
@@ -206,6 +206,50 @@ class AppService:
         archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=source_dir)
         return Path(archive_path)
 
+    async def get_code_tree(self, app_id: int, login_user: JWTUser) -> list:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_bot_code_dir(app.id)
+        if not code_dir.exists():
+            return []
+        return AppService._build_file_tree(code_dir, code_dir)
+
+    async def get_code_file(self, app_id: int, file_path: str, login_user: JWTUser) -> str:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_bot_code_dir(app.id).resolve()
+        target = (code_dir / file_path).resolve()
+        code_dir_str = str(code_dir)
+        target_str = str(target)
+        if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        ThrowUtils.throw_if(not target.exists() or not target.is_file(), ErrorCode.NOT_FOUND_ERROR, "文件不存在")
+        if target.stat().st_size > 500 * 1024:
+            return "[文件过大，无法预览（超过 500 KB）]"
+        return target.read_text(encoding="utf-8", errors="replace")
+
+    @staticmethod
+    def _build_file_tree(base_dir: Path, current_dir: Path) -> list:
+        result = []
+        try:
+            items = sorted(current_dir.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+            for item in items:
+                rel = str(item.relative_to(base_dir)).replace("\\", "/")
+                if item.is_dir():
+                    result.append({
+                        "name": item.name,
+                        "path": rel,
+                        "type": "dir",
+                        "children": AppService._build_file_tree(base_dir, item),
+                    })
+                else:
+                    result.append({
+                        "name": item.name,
+                        "path": rel,
+                        "type": "file",
+                    })
+        except PermissionError:
+            pass
+        return result
+
     async def _get_owned_app(self, app_id: int, login_user: JWTUser) -> App:
         ThrowUtils.throw_if(app_id <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 错误")
         app = await self.db.get(App, app_id)
@@ -228,7 +272,7 @@ class AppService:
     async def _delete_app_by_id(self, app_id: int) -> None:
         await self._get_existing_app(app_id)
         await self.db.execute(delete(App).where(App.id == app_id))
-        await self.chat_service_client.delete_chat_history_by_app_id(app_id)
+        await ChatHistoryService(self.db).delete_by_app_id(app_id)
         await self.db.commit()
 
     async def _list_app_vo_by_page(self, query_request: AppQueryRequest) -> PageData[AppVO]:
@@ -294,17 +338,14 @@ class AppService:
         ThrowUtils.throw_if(login_user.user_role != "admin", ErrorCode.NO_AUTH_ERROR, "仅管理员可执行该操作")
 
     def _build_deploy_url(self, deploy_key: str) -> str:
-        # return f"{CODE_DEPLOY_HOST.rstrip('/')}/api/static/{deploy_key}/"
-        return f"{CODE_DEPLOY_HOST.rstrip('/')}/{deploy_key}/"
+        return f"{CODE_DEPLOY_HOST.rstrip('/')}/api/app/static/{deploy_key}/"
 
     def _build_internal_deploy_url(self, deploy_key: str) -> str:
-        # return f"http://127.0.0.1:{settings.app_service_http_port}/api/static/{deploy_key}/"
-        return f"http://127.0.0.1:{settings.app_service_http_port}/{deploy_key}/"
+        return f"http://127.0.0.1:{settings.app_service_http_port}/api/static/{deploy_key}/"
 
     def _build_cover_url(self, deploy_key: str, resource_name: str) -> str:
         base_path = settings.app_base_path.rstrip("/")
-        # return f"http://{settings.app_host}:{settings.app_port}{base_path}/app/static/{deploy_key}/{resource_name}"
-        return f"http://{settings.app_host}:{settings.app_port}{base_path}/{deploy_key}/{resource_name}"
+        return f"http://{settings.app_host}:{settings.app_port}{base_path}/app/static/{deploy_key}/{resource_name}"
 
 
 def _preview_text(text: str, limit: int = 100) -> str:

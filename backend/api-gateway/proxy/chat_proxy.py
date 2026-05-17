@@ -30,11 +30,11 @@ def _build_forward_headers(authorization: str | None, trace_id: str | None) -> d
 
 
 class ChatProxy:
-    """Proxy class that forwards requests to chat-service HTTP endpoints."""
+    """Proxy class that forwards chat requests to app-service HTTP endpoints."""
 
     def __init__(self) -> None:
-        self.service_name = settings.chat_service_name
-        self.base_url = f"http://{settings.chat_service_host}:{settings.chat_service_http_port}"
+        self.service_name = settings.app_service_name
+        self.base_url = f"http://{settings.app_service_host}:{settings.app_service_http_port}"
         self._timeout = httpx.Timeout(120.0)
 
     async def resolve_base_url(self) -> str:
