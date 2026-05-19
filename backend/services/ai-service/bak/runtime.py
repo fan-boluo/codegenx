@@ -79,7 +79,7 @@ class AgentRuntime(LLMRecoveryMixin):
 
         try:
             self.memory_manager = get_memory_manager()
-            # self.memory_manager.warm_up()
+            self.memory_manager.warm_up()
             log.info("启动 warm_up_memory_manager ready")
         except Exception as exc:
             log.warning("AgentRuntime startup failed to warm MemoryManager: {}", exc)
@@ -87,7 +87,6 @@ class AgentRuntime(LLMRecoveryMixin):
         self.hook_runner = hook_runner or HookRunner()
         if hook_runner is None:
             register_all_hooks(self.hook_runner)
-        self._dispatcher_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
         self._session_states: dict[str, RuntimeSessionState] = {}
         self._session_lock = asyncio.Lock()
@@ -103,21 +102,11 @@ class AgentRuntime(LLMRecoveryMixin):
     # ------------------------------------------------------------------ lifecycle
 
     async def start(self) -> None:
-        if self._dispatcher_task is not None and not self._dispatcher_task.done():
-            return
         self._shutdown_event.clear()
-        self._dispatcher_task = asyncio.create_task(
-            self._dispatch_loop(), name="agent-runtime-dispatcher"
-        )
-        log.info("启动完成 dispatch_loop,等待消息。。。")
+        log.info("Agent runtime 已启动，准备处理请求。")
 
     async def stop(self) -> None:
         self._shutdown_event.set()
-        if self._dispatcher_task is not None:
-            self._dispatcher_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._dispatcher_task
-            self._dispatcher_task = None
 
         async with self._session_lock:
             sessions = list(self._session_states.values())
@@ -138,8 +127,9 @@ class AgentRuntime(LLMRecoveryMixin):
         request_id = self._request_id(request)
         subscriber = self.message_bus.subscribe_request(request_id)
         try:
-            await self.message_bus.publish_inbound(request)
-            log.info("message_bus 输送请求：{}", request_id)
+            session_state = await self._get_or_create_session_state(request)
+            await session_state.queue.put(request)
+            log.info("session queue 输送请求：{}", request_id)
             while True:
                 item = await subscriber.get()
                 if not isinstance(item, RuntimeTurnEvent):
@@ -243,22 +233,6 @@ class AgentRuntime(LLMRecoveryMixin):
             "droppedRequestIds": [str(r.request_id or "") for r in dropped_requests],
             "activeTurnIds": active_turn_ids,
         }
-
-    # ------------------------------------------------------------------ dispatch loop
-
-    async def _dispatch_loop(self) -> None:
-        while not self._shutdown_event.is_set():
-            request = await self.message_bus.consume_inbound()
-            log.info(
-                "dispatcher loop 接收到请求：{} {}",
-                request.request_id,
-                str(getattr(request, "message", "") or "")[:10],
-            )
-            if not isinstance(request, AiServiceGenerateRequest):
-                continue
-            session_state = await self._get_or_create_session_state(request)
-            await session_state.queue.put(request)
-            log.debug("{} 加入到session的消息队列", request.request_id)
 
     async def _get_or_create_session_state(
         self, request: AiServiceGenerateRequest
@@ -410,7 +384,13 @@ class AgentRuntime(LLMRecoveryMixin):
             turn_id=turn_id,
             turn_number=turn_number,
             request_id=session_state.request_id,
-            context=context
+            context=context,
+            code_dir=session_state.code_dir,
+            safe_paths=list(session_state.safe_paths),
+            workspace_metadata=deepcopy(session_state.workspace_metadata or {}),
+            knowledge_cache=deepcopy(session_state.knowledge_cache or {}),
+            prompt_template=session_state.prompt_template,
+            plan_summary=session_state.plan_summary,
         )
 
     # ------------------------------------------------------------------ request execution
@@ -783,6 +763,20 @@ class AgentRuntime(LLMRecoveryMixin):
             parts.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
         return self._estimate_text_tokens("\n".join(p for p in parts if p))
 
+    @staticmethod
+    def _estimate_text_tokens(text: str) -> int:
+        normalized = str(text or "")
+        return max(1, len(normalized) // 4) if normalized else 0
+
+    def _estimate_message_tokens(self, messages: list[dict[str, Any]]) -> int:
+        return self._estimate_text_tokens(json.dumps(messages, ensure_ascii=False, default=str))
+
+    def _estimate_completion_tokens(self, llm_response: dict[str, Any]) -> int:
+        parts = [str(llm_response.get("content", "") or "")]
+        tool_calls = llm_response.get("tool_calls", []) or []
+        if tool_calls:
+            parts.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
+        return self._estimate_text_tokens("\n".join(p for p in parts if p))
 
     @staticmethod
     def _request_id(request: AiServiceGenerateRequest) -> str:

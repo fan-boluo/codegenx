@@ -126,7 +126,7 @@ class ContextAssembler:
     async def prepare_turn_context(self, session: RuntimeSessionState, context: TurnContext) -> None:
         """
         每个turn要构建的
-        memory \ plann \ chat_history 都是随turn变化的
+        memory plann  chat_history 都是随turn变化的
         session 的skill tool workspace 都是固定的
         """
         runtime = session.runtime
@@ -159,9 +159,10 @@ class ContextAssembler:
         if ignore_memory:
             memory = []
         else:
-            memory = await runtime.memory_manager.retrieve_user_query(request.user_id, str(request.app_id), request.message)
-        build_memory_text = self.build_memory(memory)
-        parts.append(f"以下是历史记忆：\n {build_memory_text}")
+            # memory = await runtime.memory_manager.retrieve_user_query(request.user_id, str(request.app_id), request.message)
+            memory = await runtime.memory_manager.load(request.message)
+        # build_memory_text = self.build_memory(memory)
+        parts.append(f"以下是历史记忆：\n {memory}")
 
         # task board (s12) — replaces planner (s03)
         task_manager = getattr(runtime, "task_manager", None) or getattr(session, "task_manager", None)
@@ -231,7 +232,6 @@ class ContextAssembler:
 
 
     @staticmethod
-    
     def build_directory_skeleton(root: Path, *, max_entries: int = 40, max_depth: int = 2) -> str:
         """当前项目目录结构 """
         if not root.exists():

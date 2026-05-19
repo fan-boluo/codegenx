@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from bot.utils.config import load_config
 from infra.mysql.session import session_maker
 from shared.config.log_config import log
 from shared.constants import DEFAULT_PAGE_NUM, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
@@ -24,6 +23,7 @@ from shared.schema.monitor import (
     MonitorToolCallDetail,
     MonitorTurnSummary,
 )
+from utils.config import load_config
 
 
 _MONITOR_QUERY_SERVICE_SINGLETON: "MonitorQueryService | None" = None

@@ -10,12 +10,12 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from bot.utils.config import load_config
 from infra.mysql.session import session_maker
 from infra.qdrant.client import get_qdrant_memory_client
 from infra.redis.redis_client import redis_client
 from monitor.monitor_store import MonitorStore, get_monitor_store
 from shared.schema.monitor import MonitorComponentHealth, MonitorHealthStatus
+from utils.config import load_config
 
 
 _HEALTH_CHECKER_SINGLETON: "HealthChecker | None" = None

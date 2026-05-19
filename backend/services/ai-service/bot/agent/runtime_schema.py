@@ -56,7 +56,7 @@ class RuntimeTurnState:
     request_id: str
 
     context: TurnContext
-    telemetry: TurnTelemetry
+    telemetry: TurnTelemetry|None = None
 
     # code_dir: str = ""
     # safe_paths: list[str] = field(default_factory=list)
@@ -116,7 +116,7 @@ class RuntimeSessionState:
     # Per-request fields (reset per request)
 
     # request_id: str = ""
-    # context: TurnContext | None = None
+    context: TurnContext | None = None
     # code_dir: str = ""
     # safe_paths: list[str] = field(default_factory=list)
     # knowledge_cache: dict[str, Any] = field(default_factory=dict)
@@ -141,6 +141,10 @@ class RuntimeSessionState:
     @property
     def user_id(self) -> str:
         return str(getattr(self.request, "user_id", "") or "")
+
+    @property
+    def request_id(self) -> str:
+        return str(getattr(self.request, "request_id", "") or "")
 
     @property
     def client_version(self) -> str:

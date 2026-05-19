@@ -9,11 +9,11 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from bot.utils.config import load_config
 from infra.mysql.session import session_maker
 from infra.redis.redis_client import redis_client
 from monitor.telemetry_schema import AlertLevel, MonitorAlertRecord, SessionTelemetry, TelemetryStatus, TurnTelemetry
 from shared.config.log_config import log
+from utils.config import load_config
 
 
 _ALERT_EVALUATOR_SINGLETON: "MonitorAlertEvaluator | None" = None
