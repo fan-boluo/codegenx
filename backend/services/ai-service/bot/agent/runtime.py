@@ -19,6 +19,7 @@ from agent.runtime_schema import (
     TurnContext,
     TurnStoppedError,
 )
+from agent.session_pool import SessionPool
 from bot.agent.context import ContextAssembler, TurnReducer, get_context_assembler
 from bot.agent.context_compaction import ContextCompactor
 from bot.agent.llm_recovery import LLMRecoveryMixin
@@ -89,8 +90,15 @@ class AgentRuntime(LLMRecoveryMixin):
             register_all_hooks(self.hook_runner)
         self._dispatcher_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
-        self._session_states: dict[str, RuntimeSessionState] = {}
-        self._session_lock = asyncio.Lock()
+        
+        # Session pool with intelligent cleanup
+        # Default: max 1000 sessions, idle timeout 1 hour, cleanup every 5 minutes
+        self.session_pool = SessionPool(
+            max_sessions=int(self.agent_config.max_sessions or 1000),
+            idle_timeout_seconds=int(self.agent_config.session_idle_timeout_seconds or 3600),
+            cleanup_interval_seconds=int(self.agent_config.session_cleanup_interval_seconds or 300),
+        )
+        
         self.startup_backup_service()
 
     def _resolve_agent_config(self) -> AgentConfig:
@@ -106,6 +114,10 @@ class AgentRuntime(LLMRecoveryMixin):
         if self._dispatcher_task is not None and not self._dispatcher_task.done():
             return
         self._shutdown_event.clear()
+        
+        # Start session pool cleanup task
+        await self.session_pool.start()
+        
         self._dispatcher_task = asyncio.create_task(
             self._dispatch_loop(), name="agent-runtime-dispatcher"
         )
@@ -119,15 +131,8 @@ class AgentRuntime(LLMRecoveryMixin):
                 await self._dispatcher_task
             self._dispatcher_task = None
 
-        async with self._session_lock:
-            sessions = list(self._session_states.values())
-            self._session_states.clear()
-
-        for session_state in sessions:
-            if session_state.worker_task is not None:
-                session_state.worker_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await session_state.worker_task
+        # Stop session pool (gracefully closes all sessions)
+        await self.session_pool.stop()
 
     # ------------------------------------------------------------------ public API
 
@@ -170,43 +175,40 @@ class AgentRuntime(LLMRecoveryMixin):
         stop_reason = str(reason or "user-stop")
         target_request_id = str(request_id or "").strip()
 
-        async with self._session_lock:
-            session_state = self._session_states.get(session_id)
-            if session_state is None or session_state.closed:
-                return {
-                    "accepted": False,
-                    "sessionId": session_id,
-                    "stoppedRequestCount": 0,
-                    "droppedRequestCount": 0,
-                    "activeRequestIds": [],
-                    "droppedRequestIds": [],
-                    "activeTurnIds": [],
-                }
+        # Get session from pool
+        session_state = await self.session_pool.get(session_id)
+        if session_state is None or session_state.closed:
+            return {
+                "accepted": False,
+                "sessionId": session_id,
+                "stoppedRequestCount": 0,
+                "droppedRequestCount": 0,
+                "activeRequestIds": [],
+                "droppedRequestIds": [],
+                "activeTurnIds": [],
+            }
 
-            session_state.touch()
-            if target_request_id in session_state.active_tasks:
-                session_state.stop_signal.set()
-                session_state.stop_reason = stop_reason
-                active_tasks = [
-                    (target_request_id, session_state.active_tasks[target_request_id])
-                ]
-            while True:
-                try:
-                    queued_request = session_state.queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if isinstance(queued_request, AiServiceGenerateRequest):
-                    if self._request_id(queued_request) == target_request_id:
-                        dropped_requests.append(queued_request)
-                    else:
-                        remaining_requests.append(queued_request)
+        session_state.touch()
+        if target_request_id in session_state.active_tasks:
+            session_state.stop_signal.set()
+            session_state.stop_reason = stop_reason
+            active_tasks = [
+                (target_request_id, session_state.active_tasks[target_request_id])
+            ]
 
-            for queued_request in remaining_requests:
-                await session_state.queue.put(queued_request)
+        async with session_state.request_lock:
+            for queued_request in list(session_state.pending_requests):
+                if self._request_id(queued_request) == target_request_id:
+                    dropped_requests.append(queued_request)
+                else:
+                    remaining_requests.append(queued_request)
+            session_state.pending_requests = remaining_requests
 
+        # Publish stopped events for dropped requests
         for queued_request in dropped_requests:
             await self._publish_stopped_request(queued_request, reason=stop_reason)
 
+        # Wait for active tasks with timeout
         timeout_seconds = (
             self.stop_grace_seconds if grace_seconds is None else max(0.0, float(grace_seconds))
         )
@@ -219,18 +221,19 @@ class AgentRuntime(LLMRecoveryMixin):
                     pending_task.cancel()
                 await asyncio.gather(*pending, return_exceptions=True)
 
-        async with self._session_lock:
-            current = self._session_states.get(session_id)
-            if current is not None and not current.closed:
-                current.stop_signal.clear()
-                current.stop_reason = ""
+        # Clear stop signal
+        session_state = await self.session_pool.get(session_id)
+        if session_state is not None and not session_state.closed:
+            session_state.stop_signal.clear()
+            session_state.stop_reason = ""
 
-        current = self._session_states.get(session_id)
+        # Get active turn IDs
         active_turn_ids: list[str] = []
-        if current is not None and active_tasks:
+        session_state = await self.session_pool.get(session_id)
+        if session_state is not None and active_tasks:
             active_turn_ids = [
                 t.turn_id
-                for t in current.active_turns.values()
+                for t in session_state.active_turns.values()
                 if t.request_id == target_request_id
             ]
 
@@ -247,6 +250,7 @@ class AgentRuntime(LLMRecoveryMixin):
     # ------------------------------------------------------------------ dispatch loop
 
     async def _dispatch_loop(self) -> None:
+        """Consume inbound requests and route to session workers."""
         while not self._shutdown_event.is_set():
             request = await self.message_bus.consume_inbound()
             log.info(
@@ -256,104 +260,145 @@ class AgentRuntime(LLMRecoveryMixin):
             )
             if not isinstance(request, AiServiceGenerateRequest):
                 continue
+            
+            # Get or create session using pool (no lock needed)
             session_state = await self._get_or_create_session_state(request)
-            await session_state.queue.put(request)
-            log.debug("{} 加入到session的消息队列", request.request_id)
+            
+            # Add request to session pending queue and trigger processing
+            await self._enqueue_session_request(session_state, request)
+            log.debug("{} 已加入 session pending_requests", request.request_id)
 
     async def _get_or_create_session_state(
         self, request: AiServiceGenerateRequest
     ) -> RuntimeSessionState:
-        async with self._session_lock:
-            session_id = str(request.session_id or "")
-            session_state = self._session_states.get(session_id)
-            if session_state is not None and not session_state.closed:
-                session_state.request = request
-                session_state.touch()
-                return session_state
-
-            session_state = RuntimeSessionState(session_id=session_id, request=request, runtime=self)
+        """Get existing session or create new one using pool."""
+        session_id = str(request.session_id or "")
+        
+        # Factory function to create new sessions
+        def create_session():
+            return RuntimeSessionState(session_id=session_id, request=request, runtime=self)
+        
+        # Get or create from pool
+        session_state, is_new = await self.session_pool.get_or_create(session_id, create_session)
+        
+        # Initialize new sessions
+        if is_new:
+            session_state.request = request
+            session_state.touch()
+            
             # Attach per-app task board (s12) — shared across sessions for the same app_id
             try:
                 session_state.task_manager = TaskManager(session_state.app_id)
             except Exception as exc:
-                log.warning("[TaskManager] Failed to initialise for app_id {}: {}", session_state.app_id, exc)
+                log.warning(
+                    "[TaskManager] Failed to initialise for app_id {}: {}",
+                    session_state.app_id,
+                    exc,
+                )
+            
+            # Dispatch OnSessionStart hook
             await self.hook_runner.dispatch("OnSessionStart", session_state)
-
-            session_state.worker_task = asyncio.create_task(
-                self._session_worker(session_state), name=f"agent-session-{session_id}"
-            )
-            log.info("创建session 循环：{}", session_id)
-            self._session_states[session_id] = session_state
-            return session_state
+        else:
+            # Existing session: update request and touch
+            session_state.request = request
+            session_state.touch()
+        
+        return session_state
 
     async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
+        """Wait for request cleanup (simplified with pool)."""
         while True:
-            async with self._session_lock:
-                session_state = self._session_states.get(session_id)
-                if session_state is None or request_id not in session_state.active_tasks:
-                    return
-            await asyncio.sleep(0)
+            session_state = await self.session_pool.get(session_id)
+            if session_state is None or request_id not in session_state.active_tasks:
+                return
+            await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------ session worker
 
-    async def _session_worker(self, session_state: RuntimeSessionState) -> None:
+    async def _process_session_requests(self, session_state: RuntimeSessionState) -> None:
+        """Process session requests in an event-driven way."""
         session_state.state = AgentState.RUNNING
-        while not self._shutdown_event.is_set() and not session_state.closed:
-            log.debug("进入session 循环：{}", session_state.session_id)
-            try:
-                request = await asyncio.wait_for(
-                    session_state.queue.get(),
-                    timeout=max(1, int(self.agent_config.session_worker_idle_seconds or 1800)),
-                )
-                log.debug("session loop 获取到请求：{}", request.request_id)
-            except asyncio.TimeoutError:
-                await self._close_session_state(session_state, end_reason="idle-timeout")
-                return
-            except asyncio.CancelledError:
-                await self._close_session_state(session_state, end_reason="runtime-stop")
-                raise
+        # Ensure worker_task references the running task and mark processing
+        session_state.worker_task = asyncio.current_task()
+        session_state.processing = True
+        try:
+            while not self._shutdown_event.is_set() and not session_state.closed:
+                async with session_state.request_lock:
+                    if not session_state.pending_requests:
+                        session_state.processing = False
+                        return
+                    request = session_state.pending_requests.pop(0)
 
-            await self._reset_request_state(session_state, request)
-            request_task = asyncio.create_task(
-                self._execute_request(session_state),
-                name=f"agent-request-{session_state.request_id}",
-            )
-            log.debug("请求任务开始执行:{}", session_state.request_id)
-            session_state.active_tasks[session_state.request_id] = request_task
-            try:
-                await request_task
-            except asyncio.CancelledError:
-                request_task.cancel()
-                with suppress(asyncio.CancelledError):
+                log.debug("session event triggered, processing request: {}", request.request_id)
+                await self._reset_request_state(session_state, request)
+                request_task = asyncio.create_task(
+                    self._execute_request(session_state),
+                    name=f"agent-request-{session_state.request_id}",
+                )
+                log.debug("请求任务开始执行:{}", session_state.request_id)
+                session_state.active_tasks[session_state.request_id] = request_task
+                try:
                     await request_task
-                await self._close_session_state(session_state, end_reason="runtime-stop")
-                raise
-            finally:
-                session_state.active_tasks.pop(session_state.request_id, None)
-                if not session_state.closed:
-                    session_state.stop_signal.clear()
-                    session_state.stop_reason = ""
-                session_state.touch()
-                if session_state.session_manager is not None and session_state.context is not None:
-                    session_state.session_manager.save_history(
-                        session_state.session_id, session_state.context.chat_history
-                    )
+                except asyncio.CancelledError:
+                    request_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await request_task
+                    await self._close_session_state(session_state, end_reason="runtime-stop")
+                    raise
+                finally:
+                    session_state.active_tasks.pop(session_state.request_id, None)
+                    if not session_state.closed:
+                        session_state.stop_signal.clear()
+                        session_state.stop_reason = ""
+                    session_state.touch()
+                    if session_state.session_manager is not None and session_state.context is not None:
+                        session_state.session_manager.save_history(
+                            session_state.session_id, session_state.context.chat_history
+                        )
+        finally:
+            async with session_state.request_lock:
+                # Only clear processing/worker_task if this is the task that set them.
+                current_task = asyncio.current_task()
+                if session_state.worker_task is current_task:
+                    session_state.processing = False
+                    session_state.worker_task = None
+
+    async def _enqueue_session_request(
+        self, session_state: RuntimeSessionState, request: AiServiceGenerateRequest
+    ) -> None:
+        """Add request to session pending list and trigger processing."""
+        async with session_state.request_lock:
+            session_state.pending_requests.append(request)
+            session_state.touch()
+            if session_state.processing:
+                return
+            session_state.processing = True
+            session_state.worker_task = asyncio.create_task(
+                self._process_session_requests(session_state),
+                name=f"agent-session-{session_state.session_id}",
+            )
+
 
     async def _close_session_state(
         self, session_state: RuntimeSessionState, *, end_reason: str
     ) -> None:
+        """Close session and cleanup resources (pool handles removal)."""
         if session_state.closed:
             return
+        
         session_state.closed = True
         if end_reason == "runtime-stop" and session_state.active_turns:
             session_state.state = AgentState.STOPPED
         elif session_state.state != AgentState.FAILED:
             session_state.state = AgentState.COMPLETED
+        
         if session_state.worker_task is not None and session_state.worker_task.cancelled():
             session_state.worker_task = None
+        
         await self.hook_runner.dispatch("OnSessionEnd", session_state, end_reason=end_reason)
-        async with self._session_lock:
-            self._session_states.pop(session_state.session_id, None)
+        
+        # Pool will automatically remove closed sessions during cleanup
+        log.info("Session {} closed: end_reason={}", session_state.session_id, end_reason)
 
     # ------------------------------------------------------------------ request state
 
@@ -788,32 +833,43 @@ class AgentRuntime(LLMRecoveryMixin):
     def _request_id(request: AiServiceGenerateRequest) -> str:
         return str(getattr(request, "request_id", "") or "")
 
+    # ------------------------------------------------------------------ monitoring
+
+    async def get_runtime_stats(self) -> dict[str, Any]:
+        """Get runtime statistics for monitoring and debugging."""
+        pool_stats = self.session_pool.stats()
+        return {
+            "session_pool": pool_stats,
+            "dispatcher_active": self._dispatcher_task is not None
+            and not self._dispatcher_task.done(),
+        }
+
     # ------------------------------------------------------------------ startup warmup
 
-    async def startup_backup_service(self) -> None:
-        try:
-            await warm_up_mysql_pool()
-        except Exception as exc:
-            log.warning("AgentRuntime startup failed to warm MySQL pool: {}", exc)
-
-        try:
-            await warm_up_qdrant_client()
-            log.info("启动 warm_up_qdrant_client ready")
-        except Exception as exc:
-            log.warning("AgentRuntime startup failed to warm Qdrant client: {}", exc)
-
-        for initializer_name, initializer in (
-            ("monitor_pipeline", get_monitor_pipeline),
-            ("monitor_store", get_monitor_store),
-            ("monitor_alert_evaluator", get_monitor_alert_evaluator),
-            ("health_checker", get_health_checker),
-            ("monitor_query_service", get_monitor_query_service),
-            ("monitor_maintenance_service", get_monitor_maintenance_service),
-        ):
-            try:
-                initializer()
-                log.info(f"启动 {initializer_name} ready")
-            except Exception as exc:
-                log.warning(
-                    "AgentRuntime startup failed to initialize {}: {}", initializer_name, exc
-                )
+    # async def startup_backup_service(self) -> None:
+    #     try:
+    #         await warm_up_mysql_pool()
+    #     except Exception as exc:
+    #         log.warning("AgentRuntime startup failed to warm MySQL pool: {}", exc)
+    #
+    #     try:
+    #         await warm_up_qdrant_client()
+    #         log.info("启动 warm_up_qdrant_client ready")
+    #     except Exception as exc:
+    #         log.warning("AgentRuntime startup failed to warm Qdrant client: {}", exc)
+    #
+    #     for initializer_name, initializer in (
+    #         ("monitor_pipeline", get_monitor_pipeline),
+    #         ("monitor_store", get_monitor_store),
+    #         ("monitor_alert_evaluator", get_monitor_alert_evaluator),
+    #         ("health_checker", get_health_checker),
+    #         ("monitor_query_service", get_monitor_query_service),
+    #         ("monitor_maintenance_service", get_monitor_maintenance_service),
+    #     ):
+    #         try:
+    #             initializer()
+    #             log.info(f"启动 {initializer_name} ready")
+    #         except Exception as exc:
+    #             log.warning(
+    #                 "AgentRuntime startup failed to initialize {}: {}", initializer_name, exc
+    #             )

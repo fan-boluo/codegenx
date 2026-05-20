@@ -105,7 +105,9 @@ class RuntimeSessionState:
     active_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
     active_turns: dict[str, RuntimeTurnState] = field(default_factory=dict)
     worker_task: asyncio.Task | None = None
-    queue: asyncio.Queue[AiServiceGenerateRequest] = field(default_factory=asyncio.Queue)
+    pending_requests: list[AiServiceGenerateRequest] = field(default_factory=list)
+    request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    processing: bool = False
     stop_signal: asyncio.Event = field(default_factory=asyncio.Event)
     stop_reason: str = ""
     closed: bool = False
