@@ -18,7 +18,7 @@ from shared.constants import (
     CHAT_HISTORY_FILE_NAME,
     CHAT_HISTORY_MAX_BYTES,
     UserRole,
-    get_bot_session_dir,
+    get_session_dir,
 )
 from shared.enums.chat_history_message_type import ChatHistoryMessageTypeEnum
 from shared.exceptions.error_code import ErrorCode
@@ -49,7 +49,7 @@ class ChatHistoryService:
         self.db = db
 
     def _session_dir(self, app_id: int) -> Path:
-        session_dir = get_bot_session_dir(app_id)
+        session_dir = get_session_dir(app_id)
         session_dir.mkdir(parents=True, exist_ok=True)
         return session_dir
 
@@ -129,7 +129,7 @@ class ChatHistoryService:
         return records
 
     def _read_all_records(self) -> list[ChatHistoryRecord]:
-        runtime_root = get_bot_session_dir("main").parent.parent
+        runtime_root = get_session_dir("main").parent.parent
         if not runtime_root.exists():
             return []
 

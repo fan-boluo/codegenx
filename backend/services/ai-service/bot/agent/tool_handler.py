@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import json
 import sys
 from abc import ABC
 from pathlib import Path
@@ -95,6 +96,27 @@ class ToolRegistry:
             return func(**tool_input)
         else:
             return {"error": f"未知工具：{tool_name}"}
+
+    async def build_tool(self, tools: list, exclude_tools: list=None) -> list:
+        # build_tool = await self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
+
+        tool_catalog = [tool for tool in tools if tool.name not in exclude_tools]
+
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in tool_catalog or []
+        ]
+
+        # tool_prompt = json.dumps(tool_list, ensure_ascii=False, indent=2)
+        # self.too_prompt = ""
+        # return f"以下是你可以使用的工具：\n{tool_prompt}"
 
 
 

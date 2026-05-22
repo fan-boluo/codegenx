@@ -57,6 +57,10 @@ class AgentConfig(Base):
     max_transport_attempts: ClassVar[int] = 3
     transport_backoff_base_seconds: ClassVar[float] = 1.0
     transport_backoff_max_seconds: ClassVar[float] = 8.0
+    max_steps :ClassVar[int] = 50  # 一次turn的最大llm推理步数
+    session_cleanup_interval_seconds: ClassVar[int] = 300 # 每隔5分钟就进行闲置sessioni清理一次
+    session_idle_timeout_seconds : ClassVar[int] = 1800 # session空闲时间 30分钟就清除
+    max_sessions : ClassVar[int] = 100  # sessoion pool的session的最多个数
 
     @property
     def context_window_tokens(self) -> int:
@@ -175,19 +179,6 @@ class MemorySearchConfig(Base):
     hybrid_vector_weight:float = Field(default=0.7)
     long_term_weight:float = Field(default=0.7)
     merge_result_similarity:float = Field(default=0.8)
-    # sources: list[Literal["memory", "sessions"]] = Field(default=["memory"])
-    # extraPaths: list[str] = Field(default_factory=list)
-    # provider: Literal["openai", "local", "gemini", "voyage", "mistral", "ollama", "auto"] = Field(default="auto")
-    # remote: MemorySearchRemoteConfig | None = Field(default=None)
-    # experimental: MemorySearchExperimentalConfig = Field(default_factory=MemorySearchExperimentalConfig)
-    # fallback: Literal["openai", "gemini", "local", "voyage", "mistral", "ollama", "none"] = Field(default="none")
-    # model: str = Field(default="")
-    # local: dict[str, Any] | None = Field(default=None)
-    # store: MemorySearchStoreConfig = Field(default_factory=MemorySearchStoreConfig)
-    # sync: MemorySearchSyncConfig = Field(default_factory=MemorySearchSyncConfig)
-    # query: MemorySearchQueryConfig = Field(default_factory=MemorySearchQueryConfig)
-    # chunking: MemorySearchChunkingConfig = Field(default_factory=MemorySearchChunkingConfig)
-    # cache: MemorySearchCacheConfig = Field(default_factory=MemorySearchCacheConfig)
 
 
 class MemoryFlushConfig(Base):

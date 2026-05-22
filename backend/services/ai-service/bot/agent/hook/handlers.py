@@ -3,12 +3,13 @@
 from datetime import datetime, UTC
 from typing import TYPE_CHECKING, Any
 
-from agent.context import get_context_assembler
+# from agent.assembler import get_context_assembler
 from agent.runtime_schema import AgentState
 from agent.tool_executor import MEMORY_TOOL_NAMES
 from monitor.monitor_pipeline import get_monitor_pipeline
 from bot.session.manager import SessionManager
 from shared.config.log_config import log
+from context.session_context import SessionContext
 
 if TYPE_CHECKING:
     from bot.agent.runtime import RuntimeSessionState
@@ -36,8 +37,10 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
 
     session_manager = SessionManager(str(req.app_id))
     session.session_manager = session_manager
+    session.context_manager = SessionContext(session_id=session.session_id,app_id=session.app_id)
 
-    await get_context_assembler().build_fix_context(session)
+    # await get_context_assembler().build_fix_context(session)
+    # await session.context_manager.build_system_prompt(session.request.message)
 
     now = _utcnow()
     # request_dict = req.model_dump()

@@ -85,14 +85,14 @@ def _parse_frontmatter(lines: list[str]) -> tuple[str, str]:
 
 # ── Directory scan ────────────────────────────────────────────────────────────
 
-def scan_topic_files(topics_dir: Path | None = None) -> list[TopicFile]:
+def scan_topic_files(app_id:str,topics_dir: Path | None = None) -> list[TopicFile]:
     """
     Scan the warm topics directory. Mirrors memoryScan.ts scanMemoryFiles().
 
     Reads only the first FRONTMATTER_SCAN_LINES per file (cheap).
     Returns up to MAX_TOPIC_FILES files sorted by mtime descending.
     """
-    topics_dir = topics_dir or get_topics_dir()
+    topics_dir = topics_dir or get_topics_dir(app_id)
     if not topics_dir.exists():
         return []
 
@@ -144,6 +144,7 @@ def _keyword_overlap(query: str, description: str) -> int:
 # ── Public recall API ─────────────────────────────────────────────────────────
 
 def find_relevant_topics(
+        app_id:str,
     query: str,
     already_surfaced: set[str] | None = None,
     session_bytes_used: int = 0,
@@ -164,7 +165,7 @@ def find_relevant_topics(
         List of (filename, content) for the selected files.
     """
     already_surfaced = already_surfaced or set()
-    topics = scan_topic_files(topics_dir)
+    topics = scan_topic_files(app_id,topics_dir)
 
     # Exclude already-surfaced files
     topics = [t for t in topics if t.name not in already_surfaced]

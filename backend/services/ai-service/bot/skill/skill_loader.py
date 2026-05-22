@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 from threading import Lock
@@ -84,6 +85,20 @@ class SkillLoader:
 
     def _parse_content(self, content) -> str | None:
         return re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL).strip()
+
+    async def build_skill(self) -> str:
+        # tool — 使用 tool_executor 的工具列表（子任务时会过滤掉 task 等工具，保持和执行器一致）
+        if self._skills_cache is None:
+            return ""
+        skill_list = [
+            {
+                "name": skill.name,
+                "description": str(skill.metadata.get("description", "") or "").strip(),
+            }
+            for skill in self._skills_cache
+            if getattr(skill, "name", None)
+        ]
+        return json.dumps(skill_list, ensure_ascii=False, indent=2)
 
 
 

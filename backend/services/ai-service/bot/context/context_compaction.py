@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from shared.constants import BOT_WORKSPACE_DIR, get_bot_context_dir
+from shared.constants import BOT_WORKSPACE_DIR, get_context_dir
 from bot.utils.log_utils import log
 from constant import (
     CONTEXT_LIMIT,
@@ -41,7 +41,7 @@ class ContextCompactor:
 
     def _app_agent_dir(self, context: Any) -> Path:
         app_id = getattr(context, "app_id", "main") or "main"
-        return get_bot_context_dir(app_id)
+        return get_context_dir(app_id)
 
     def _track_recent_file(self, context: Any, path: Path) -> None:
         state = self._get_state(context)
@@ -109,7 +109,7 @@ class ContextCompactor:
             "</persisted-output>"
         )
 
-    def _collect_tool_messages(self, context: Any) -> list[tuple[int, dict[str, Any]]]:
+    def _collect_tool_messages(self, chat_history: list) -> list[tuple[int, dict[str, Any]]]:
         results: list[tuple[int, dict[str, Any]]] = []
         for index, message in enumerate(context.chat_history):
             if message.get("role") == "tool":

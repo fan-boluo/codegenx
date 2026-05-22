@@ -7,7 +7,7 @@ import shutil
 import traceback
 
 from shared.config.log_config import log
-from shared.constants import CODE_DEPLOY_ROOT_DIR, get_bot_code_dir, get_bot_deploy_dir
+from shared.constants import CODE_DEPLOY_ROOT_DIR, get_code_dir, get_deploy_dir
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
 from shared.enums.code_gen_type import CodeGenTypeEnum
@@ -27,7 +27,7 @@ class CodeFileSaverExecutor:
 
     @staticmethod
     def deploy_saved_code(source_dir: Path, deploy_key: str) -> Path:
-        deploy_dir = get_bot_deploy_dir(deploy_key)
+        deploy_dir = get_deploy_dir(deploy_key)
         if deploy_dir.exists():
             shutil.rmtree(deploy_dir)
         shutil.copytree(source_dir, deploy_dir)
@@ -64,7 +64,7 @@ class CodeFileSaverTemplate:
         return base_dir
 
     def build_unique_dir(self, app_id: int) -> Path:
-        path = get_bot_code_dir(app_id)
+        path = get_code_dir(app_id)
         if path.exists():
             shutil.rmtree(path)
         path.mkdir(parents=True, exist_ok=True)

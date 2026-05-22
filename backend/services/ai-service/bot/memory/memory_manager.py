@@ -22,6 +22,7 @@ class MemoryManager:
     """
 
     session_id: str = ""
+    app_id:str = ""
 
     # Per-session warm-memory dedup state
     _surfaced: set[str] = field(default_factory=set)
@@ -35,10 +36,13 @@ class MemoryManager:
             query: User query for warm-memory keyword matching.
                    Pass "" to skip warm-tier lookup (e.g. first turn).
         """
+        ignore_memory = bool(getattr(query, "ignore_memory", False))
+        if ignore_memory:
+            return ""
         parts: list[str] = []
 
         # ── Hot tier ──────────────────────────────────────────────────────────
-        hot_content = load_hot_memory()
+        hot_content = load_hot_memory(self.app_id)
         hot_prompt = format_hot_memory_prompt(hot_content)
         if hot_prompt:
             parts.append(hot_prompt)
@@ -46,6 +50,7 @@ class MemoryManager:
         # ── Warm tier ─────────────────────────────────────────────────────────
         if query:
             relevant = find_relevant_topics(
+                app_id=self.app_id,
                 query=query,
                 already_surfaced=self._surfaced,
                 session_bytes_used=self._session_bytes,
@@ -71,9 +76,63 @@ class MemoryManager:
         self._surfaced.clear()
         self._session_bytes = 0
 
-def get_memory_manager() -> MemoryManager:
+def get_memory_manager() -> MemoryManager | None:
     global _MEMORY_MANAGER_SINGLETON
-    if _MEMORY_MANAGER_SINGLETON is  None:
+    if _MEMORY_MANAGER_SINGLETON is None:
         _MEMORY_MANAGER_SINGLETON = MemoryManager()
 
     return _MEMORY_MANAGER_SINGLETON
+
+
+def build_memory(self, memory) -> str:
+    """将 list[MemorySearchResult] 按 s9 分组（user/feedback/project/reference）转为清晰可读的字符串。
+    过滤掉 todo（任务状态，不属于跨会话记忆）。
+    """
+    if not memory:
+        return "暂无跨会话记忆"
+
+    # s9 分组映射：语义类型 → 展示组别
+    _CATEGORY_GROUP = {
+        "preference": "user",
+        "identity": "user",
+        "feedback": "feedback",
+        "decision": "project",
+        "fact": "project",
+        "principle": "project",
+        "reference": "reference",
+    }
+    _GROUP_LABEL = {
+        "user": "用户偏好 / User",
+        "feedback": "反馈记录 / Feedback & Corrections",
+        "project": "项目约定 / Project Facts",
+        "reference": "外部资源 / References",
+    }
+    _GROUP_ORDER = ["user", "feedback", "project", "reference"]
+
+    groups: dict[str, list] = {g: [] for g in _GROUP_ORDER}
+    for item in memory:
+        category = str(item.category or "").lower()
+        if category == "todo":  # s9: task state 不进记忆 prompt
+            continue
+        group = _CATEGORY_GROUP.get(category, "project")
+        groups[group].append(item)
+
+    lines = [
+        "# 跨会话记忆（只包含无法从当前代码直接推导的信息）",
+        "",
+    ]
+    has_content = False
+    for group_key in _GROUP_ORDER:
+        items = groups[group_key]
+        if not items:
+            continue
+        has_content = True
+        lines.append(f"## [{_GROUP_LABEL[group_key]}]")
+        for item in items:
+            importance_str = f"{float(item.importance or 0):.2f}" if item.importance is not None else "无"
+            lines.append(f"- [{item.type.value}] 重要度={importance_str}  {item.text or item.snippet}")
+        lines.append("")
+
+    if not has_content:
+        return "暂无跨会话记忆"
+    return "\n".join(lines)

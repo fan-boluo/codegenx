@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from shared.constants import get_bot_code_dir
+from shared.constants import get_code_dir
 
 
 def ensure_app_workdir(app_id: str | int) -> Path:
-    workdir = get_bot_code_dir(app_id)
+    workdir = get_code_dir(app_id)
     workdir.mkdir(parents=True, exist_ok=True)
     return workdir
 

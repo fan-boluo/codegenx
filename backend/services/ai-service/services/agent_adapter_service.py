@@ -21,32 +21,31 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-def _ensure_local_constant_module() -> None:
-    existing = sys.modules.get("constant")
-    expected_path = AI_SERVICE_ROOT / "constant.py"
-    if existing is not None and Path(getattr(existing, "__file__", "")).resolve() == expected_path.resolve():
-        return
-
-    spec = importlib.util.spec_from_file_location("constant", expected_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load ai-service constant module from {expected_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["constant"] = module
-    spec.loader.exec_module(module)
-
-
-_ensure_local_constant_module()
+# def _ensure_local_constant_module() -> None:
+#     existing = sys.modules.get("constant")
+#     expected_path = AI_SERVICE_ROOT / "constant.py"
+#     if existing is not None and Path(getattr(existing, "__file__", "")).resolve() == expected_path.resolve():
+#         return
+#
+#     spec = importlib.util.spec_from_file_location("constant", expected_path)
+#     if spec is None or spec.loader is None:
+#         raise ImportError(f"Cannot load ai-service constant module from {expected_path}")
+#
+#     module = importlib.util.module_from_spec(spec)
+#     sys.modules["constant"] = module
+#     spec.loader.exec_module(module)
+#
+#
+# _ensure_local_constant_module()
 
 from bot.agent.runtime import AgentEvent, AgentRuntime
 from bot.utils.config import load_config
 from infra.mysql.session import shutdown_mysql_engine
-from infra.qdrant.client import shutdown_qdrant_client
-from infra.redis.redis_client import redis_client
+from infra.redis.redis_client import get_redis_client
 from monitor.health_checker import get_health_checker
 from shared.config.log_config import log
 
-
+redis_client = get_redis_client()
 class AgentAdapterService:
     def __init__(self) -> None:
         self._runtime: AgentRuntime | None = None
@@ -78,34 +77,25 @@ class AgentAdapterService:
                 log.warning("ai-service background health check failed: {}", exc)
             await asyncio.sleep(60)
 
-    async def startup(self) -> dict[str, object]:
+    async def startup(self) -> None:
         async with self._startup_lock:
             if self._started:
-                return dict(self._startup_summary)
-
+                return
+            # TODO 后台任务在哪里启动，现在有的是健康检查和session poll
+            # 开启监控
             telemetry_started = self._init_telemetry()
             runtime = self._get_runtime()
+            # runtime.start 启动runtime需要的任务
             await runtime.start()
             log.info("启动runtime完毕")
+            # runtime主流程用不到的后台任务在这里启动
             if self._health_task is None:
                 self._health_task = asyncio.create_task(
                     self._health_check_loop(),
                     name="ai-service-health-check",
                 )
                 log.info("启动健康检查")
-
-            # summary["telemetry_started"] = telemetry_started
-            # summary["runtime_mode"] = "shared"
-            # summary["preloaded_runtimes"] = ["shared-runtime"]
-            # summary["background_tasks"] = [
-            #     "agent_runtime_dispatcher",
-            #     "otel_span_flush" if telemetry_started else "otel_span_flush_skipped",
-            #     "otel_metrics_flush" if telemetry_started else "otel_metrics_flush_skipped",
-            #     "health_checker",
-            # ]
-            # self._startup_summary = summary
             self._started = True
-            # return dict(summary)
 
     async def shutdown(self) -> None:
         async with self._startup_lock:
@@ -120,35 +110,30 @@ class AgentAdapterService:
                     await self._runtime.stop()
                 self._runtime = None
 
-
+            # TODO 同下面的关闭，是整个redis都关了，还是只关了一个client
             with suppress(Exception):
                 await redis_client.aclose()
-            with suppress(Exception):
-                await shutdown_qdrant_client()
+
+            # TODO 这个mysql_engine在多个微服务使用了，这个shutdown的动作是整个关闭了，还是只关闭了一处？
             with suppress(Exception):
                 await shutdown_mysql_engine()
 
             self._started = False
 
-    async def stream_events(
-        self,
-        request: AiServiceGenerateRequest
-    ) -> AsyncGenerator[AgentEvent, None]:
-        runtime = self._get_runtime()
-        async for event in runtime.submit_request(request):
-            yield event
-
     async def stream_message(
         self,
         request: AiServiceGenerateRequest
     ) -> AsyncGenerator[str, None]:
-        async for event in self.stream_events(request):
-            if event.event_type == "LLM_Response_Chunk" and event.data:
-                yield str(event.data)
-                continue
-            if event.event_type == "Error":
-                message = str(event.data or "agent execution failed")
-                raise RuntimeError(message)
+        runtime = self._get_runtime()
+        async for event in runtime.submit_request(request):
+            log.info("stream message",event.model_dump())
+            yield event.model_dump()
+            # if event.event_type == "LLM_Response_Chunk" and event.data:
+            #     yield str(event.data)
+            #     continue
+            # if event.event_type == "Error":
+            #     message = str(event.data or "agent execution failed")
+            #     raise RuntimeError(message)
 
     async def stop_session(
         self,
@@ -178,6 +163,3 @@ class AgentAdapterService:
             reason=str(reason or "user-stop"),
             grace_seconds=grace_seconds,
         )
-
-    def get_session_id(self, app_id: int, session_id: str) -> str:
-        return session_id

@@ -77,11 +77,13 @@ class SessionMemory:
 
     def __init__(
         self,
+            app_id:str,
         session_id: str,
         memory_path: Path | None = None,
     ) -> None:
+        self.app_id = app_id
         self.session_id = session_id
-        self._path = memory_path or get_session_memory_path(session_id)
+        self._path = memory_path or get_session_memory_path(app_id,session_id)
 
         # Thresholds state
         self._initialized = False

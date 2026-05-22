@@ -9,7 +9,7 @@ from bot.agent.runtime import AgentRuntime, AgentState
 from bot.agent.tool_executor import ToolExecutor
 from bot.agent.tool_handler import ToolRegistry
 from bot.utils.log_utils import log
-from shared.constants import get_bot_code_dir
+from shared.constants import get_code_dir
 from shared.schema.ai_service import AiServiceGenerateRequest
 
 
@@ -43,7 +43,7 @@ class SubagentRunner:
         tools_handler = ToolRegistry()
         tools_handler.tools = subagent_context.get_tools(tools_handler)
 
-        app_code_dir = get_bot_code_dir(subagent_context.app_id)
+        app_code_dir = get_code_dir(subagent_context.app_id)
         app_code_dir.mkdir(parents=True, exist_ok=True)
 
         runtime = AgentRuntime(

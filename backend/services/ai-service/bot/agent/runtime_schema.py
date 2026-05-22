@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from adapter.session_context import SessionContext
 from monitor.telemetry_schema import SessionTelemetry, TurnTelemetry, SpanRecord
 from session.manager import SessionManager
 from shared.schema.ai_service import AiServiceGenerateRequest
@@ -84,8 +85,8 @@ class RuntimeSessionState:
     session_id: str
     request: AiServiceGenerateRequest | None
     runtime: AgentRuntime
-
-    session_manager: SessionManager | None = None
+    context_manager:SessionContext | None
+    session_manager: SessionManager | None = None  # TODO 转移到后台监控模块，负责落盘的
     workspace_metadata: dict[str, Any] = field(default_factory=dict)
     skill: list[Any] = field(default_factory=list)
     tool: list[Any] = field(default_factory=list)
@@ -98,12 +99,12 @@ class RuntimeSessionState:
     root_span_started_at: datetime | None = None
 
     # Session lifecycle
-    turn_counter: int = 0
+    step_counter: int = 0
     started_at: datetime = ""
     last_activity_at: float = 0.0
     state: AgentState = AgentState.IDLE
     active_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
-    active_turns: dict[str, RuntimeTurnState] = field(default_factory=dict)
+    active_steps: dict[str, RuntimeTurnState] = field(default_factory=dict)
     worker_task: asyncio.Task | None = None
     pending_requests: list[AiServiceGenerateRequest] = field(default_factory=list)
     request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -127,7 +128,7 @@ class RuntimeSessionState:
     tool_iterations: int = 0
     last_tool_signature: str | None = None
     consecutive_same_tool_calls: int = 0
-    active_turn_id: str = ""
+    active_step_id: str = ""
 
     def touch(self) -> None:
         self.last_activity_at = time.time()

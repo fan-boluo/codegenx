@@ -12,7 +12,7 @@ from bot.llm.llm import EmbeddingClient
 from bot.memory_bak.hybrid import normalize_scores, merge_hybrid_results, apply_mmr
 from bot.memory_bak.schema import MemoryType, MemorySource, MemorySearchResult
 from bot.utils.log_utils import log
-from shared.constants import get_bot_context_dir, get_bot_memory_dir, get_bot_runtime_app_dir, get_bot_session_dir
+from shared.constants import get_context_dir, get_memory_dir, get_runtime_app_dir, get_session_dir
 
 
 def _sanitize_app_id(app_id: str) -> str:
@@ -37,10 +37,10 @@ class MemoryManager:
 
         self._initialized = True
         self.app_id = _sanitize_app_id(app_id)
-        self.workspace_dir = get_bot_runtime_app_dir(self.app_id)
-        self.context_dir = get_bot_context_dir(self.app_id)
-        self.memory_dir = get_bot_memory_dir(self.app_id)
-        self.session_dir = get_bot_session_dir(self.app_id)
+        self.workspace_dir = get_runtime_app_dir(self.app_id)
+        self.context_dir = get_context_dir(self.app_id)
+        self.memory_dir = get_memory_dir(self.app_id)
+        self.session_dir = get_session_dir(self.app_id)
         self.user_memory_path = self.memory_dir / "USER.md"
         self.soul_memory_path = self.memory_dir / "SOUL.md"
         self.identity_memory_path = self.memory_dir / "IDENTITY.md"

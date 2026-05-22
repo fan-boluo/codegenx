@@ -20,7 +20,6 @@ from agent.runtime_schema import (
     TurnStoppedError,
 )
 from agent.session_pool import SessionPool
-from bot.agent.context import ContextAssembler, TurnReducer, get_context_assembler
 from bot.agent.context_compaction import ContextCompactor
 from bot.agent.llm_recovery import LLMRecoveryMixin
 from bot.agent.task.task_manager import TaskManager
@@ -29,17 +28,7 @@ from bot.agent.hook.runner import HookRunner
 from bot.agent.tool_executor import ToolExecutor
 from bot.agent.tool_handler import get_tool_registry
 from bot.bus import MessageBus, RuntimeTurnEvent
-from bot.memory.memory_manager import get_memory_manager
-from bot.skill.skill_loader import SkillLoader
 from bot.utils.config import AgentConfig, load_config
-from infra.mysql.session import warm_up_mysql_pool
-from infra.qdrant.client import warm_up_qdrant_client
-from monitor.alert_evaluator import get_monitor_alert_evaluator
-from monitor.health_checker import get_health_checker
-from monitor.maintenance_service import get_monitor_maintenance_service
-from monitor.monitor_pipeline import get_monitor_pipeline
-from monitor.monitor_query_service import get_monitor_query_service
-from monitor.monitor_store import get_monitor_store
 from monitor.telemetry_schema import TelemetryStatus, TurnTelemetry
 from shared.config.log_config import log
 from shared.schema.ai_service import AiServiceGenerateRequest
@@ -55,35 +44,26 @@ class AgentRuntime(LLMRecoveryMixin):
     def __init__(
         self,
         hook_runner: HookRunner | None = None,
-        context_assembler: ContextAssembler | None = None,
         tool_executor: ToolExecutor | None = None,
-        turn_reducer: TurnReducer | None = None,
         message_bus: MessageBus | None = None,
     ):
         self.config = load_config()
-        self.agent_config = self._resolve_agent_config()
+        self.agent_config = self.config.get_default_agent() or AgentConfig()
         self.max_tool_iterations = max(1, int(self.agent_config.max_tool_iterations or 40))
         self.max_same_tool_calls = 3
         self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
-
+        self.max_steps = self.agent_config.max_steps or 50
+        
         self.message_bus = message_bus or MessageBus()
-        self.context_assembler = context_assembler or get_context_assembler()
-        self.turn_reducer = turn_reducer or TurnReducer()
         self.context_compactor = ContextCompactor()
         self.tool_registry = get_tool_registry()
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
-        self.skill_loader = SkillLoader()
-        self.skills = self.skill_loader.load_all_skills()
+        # self.skill_loader = SkillLoader()
+        # self.skills = self.skill_loader.load_all_skills()
 
         log.info("共加载{}个工具", len(self.tool_registry.tools))
-        log.info("共加载{}个skill", len(self.skills) if self.skills else 0)
+        # log.info("共加载{}个skill", len(self.skills) if self.skills else 0)
 
-        try:
-            self.memory_manager = get_memory_manager()
-            # self.memory_manager.warm_up()
-            log.info("启动 warm_up_memory_manager ready")
-        except Exception as exc:
-            log.warning("AgentRuntime startup failed to warm MemoryManager: {}", exc)
 
         self.hook_runner = hook_runner or HookRunner()
         if hook_runner is None:
@@ -99,14 +79,7 @@ class AgentRuntime(LLMRecoveryMixin):
             cleanup_interval_seconds=int(self.agent_config.session_cleanup_interval_seconds or 300),
         )
         
-        self.startup_backup_service()
-
-    def _resolve_agent_config(self) -> AgentConfig:
-        try:
-            return self.config.get_default_agent()
-        except Exception as exc:
-            log.warning("Failed to load runtime config, using defaults: {}", exc)
-            return AgentConfig()
+        # self.startup_backup_service()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -228,12 +201,12 @@ class AgentRuntime(LLMRecoveryMixin):
             session_state.stop_reason = ""
 
         # Get active turn IDs
-        active_turn_ids: list[str] = []
+        active_step_ids: list[str] = []
         session_state = await self.session_pool.get(session_id)
         if session_state is not None and active_tasks:
-            active_turn_ids = [
+            active_step_ids = [
                 t.turn_id
-                for t in session_state.active_turns.values()
+                for t in session_state.active_steps.values()
                 if t.request_id == target_request_id
             ]
 
@@ -244,7 +217,7 @@ class AgentRuntime(LLMRecoveryMixin):
             "droppedRequestCount": len(dropped_requests),
             "activeRequestIds": [rid for rid, _ in active_tasks],
             "droppedRequestIds": [str(r.request_id or "") for r in dropped_requests],
-            "activeTurnIds": active_turn_ids,
+            "activeTurnIds": active_step_ids,
         }
 
     # ------------------------------------------------------------------ dispatch loop
@@ -287,14 +260,15 @@ class AgentRuntime(LLMRecoveryMixin):
             session_state.touch()
             
             # Attach per-app task board (s12) — shared across sessions for the same app_id
-            try:
-                session_state.task_manager = TaskManager(session_state.app_id)
-            except Exception as exc:
-                log.warning(
-                    "[TaskManager] Failed to initialise for app_id {}: {}",
-                    session_state.app_id,
-                    exc,
-                )
+            # task 在上下文管理
+            # try:
+            #     session_state.task_manager = TaskManager(session_state.app_id)
+            # except Exception as exc:
+            #     log.warning(
+            #         "[TaskManager] Failed to initialise for app_id {}: {}",
+            #         session_state.app_id,
+            #         exc,
+            #     )
             
             # Dispatch OnSessionStart hook
             await self.hook_runner.dispatch("OnSessionStart", session_state)
@@ -387,7 +361,7 @@ class AgentRuntime(LLMRecoveryMixin):
             return
         
         session_state.closed = True
-        if end_reason == "runtime-stop" and session_state.active_turns:
+        if end_reason == "runtime-stop" and session_state.active_steps:
             session_state.state = AgentState.STOPPED
         elif session_state.state != AgentState.FAILED:
             session_state.state = AgentState.COMPLETED
@@ -407,8 +381,8 @@ class AgentRuntime(LLMRecoveryMixin):
     ) -> None:
         """Reset per-request fields and build the initial turn context (once per request)."""
         session_state.request = request
-        session_state.turn_counter = 0
-        session_state.active_turn_id = ""
+        session_state.step_counter = 0
+        session_state.active_step_id = ""
         # session_state.request_id = self._request_id(request)
         # session_state.context = TurnContext(user_input=str(request.message or ""))
         # session_state.tool_iterations = 0
@@ -422,40 +396,19 @@ class AgentRuntime(LLMRecoveryMixin):
         session_state.session_manager.append_chat_history_message(session_state.session_id, request_dict)
 
 
-        # try:
-        #     await get_context_assembler().prepare_turn_context(session_state, session_state.context)
-        # except Exception as exc:
-        #     log.warning(
-        #         "Failed to prepare turn context for request {}: {}",
-        #         session_state.request_id,
-        #         exc,
-        #     )
-
     # ------------------------------------------------------------------ turn building
 
     async def _build_turn_state(self, session_state: RuntimeSessionState) -> RuntimeTurnState:
         # turn_id的处理
-        session_state.turn_counter += 1
-        turn_number = session_state.turn_counter
-        turn_id = f"{session_state.request_id}-turn-{turn_number:04d}"
-
-        # turn开始build上下文
-        context = TurnContext(user_input=str(session_state.request.message or ""))
-        try:
-            await get_context_assembler().prepare_turn_context(session_state, context)
-        except Exception as exc:
-            log.warning(
-                "Failed to prepare turn context for request {}: {}",
-                session_state.request_id,
-                exc,
-            )
-
-
+        session_state.step_counter += 1
+        turn_number = session_state.step_counter
+        turn_id = f"{session_state.request_id}"
+        
         return RuntimeTurnState(
             turn_id=turn_id,
             turn_number=turn_number,
             request_id=session_state.request_id,
-            context=context
+            context=TurnContext(user_input=str(session_state.request.message or ""))
         )
 
     # ------------------------------------------------------------------ request execution
@@ -463,21 +416,29 @@ class AgentRuntime(LLMRecoveryMixin):
     async def _execute_request(self, session_state: RuntimeSessionState) -> None:
         """Process all turns. Always publishes a terminal event; re-raises CancelledError."""
         request_id = session_state.request_id
+        # 加入聊天历史
+        user_message = session_state.request.message
+        context_manager = session_state.context_manager
+        context_manager.add_user_message(user_message)
+        # 聊天历史微压，清除工具执行结果
+        context_manager.microcompact()
         try:
+            # 执行turn的任务
             while True:
                 self._raise_if_stop_requested(session_state)
                 turn_state = await self._build_turn_state(session_state)
-                session_state.active_turns[turn_state.turn_id] = turn_state
-                session_state.active_turn_id = turn_state.turn_id
+                session_state.active_steps[turn_state.turn_id] = turn_state
+                session_state.active_step_id = turn_state.turn_id
+
                 try:
-                    await self._execute_turn(session_state, turn_state)
+                    await self._execute_step(session_state, turn_state)
                 finally:
                     if session_state.context is not None:
                         session_state.context.chat_history = deepcopy(
                             turn_state.context.chat_history
                         )
-                    session_state.active_turns.pop(turn_state.turn_id, None)
-                    session_state.active_turn_id = ""
+                    session_state.active_steps.pop(turn_state.turn_id, None)
+                    session_state.active_step_id = ""
 
                 if turn_state.state == AgentState.STOPPED:
                     raise TurnStoppedError(turn_state.transition_reason or "stopped")
@@ -495,6 +456,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     state=AgentState.COMPLETED,
                 ),
             )
+
         except TurnStoppedError:
             await self._publish_request_event(
                 session_state,
@@ -523,7 +485,7 @@ class AgentRuntime(LLMRecoveryMixin):
 
     # ------------------------------------------------------------------ turn execution
 
-    async def _execute_turn(
+    async def _execute_step(
         self, session_state: RuntimeSessionState, turn_state: RuntimeTurnState
     ) -> None:
         turn_state.state = AgentState.RUNNING
@@ -543,10 +505,9 @@ class AgentRuntime(LLMRecoveryMixin):
                 ),
             )
 
-            self.context_assembler.ensure_user_message(turn_state.context)
             self._raise_if_stop_requested(session_state)
             await self.context_compactor.prepare_for_llm(turn_state.context)
-            messages = await self.context_assembler.assemble(turn_state.context)
+            messages = await session_state.context_manager.assemble()
             prompt_tokens = self._estimate_message_tokens(messages)
             session_telemetry = session_state.telemetry
             projected_total_tokens = prompt_tokens
@@ -682,7 +643,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     ),
                 )
 
-            await self.turn_reducer.reduce(turn_state.context)
+            await self.context_compactor.finalize_turn(turn_state.context)
             turn_state.finished_at = time.time()
             await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             turn_state.state = AgentState.COMPLETED
@@ -781,7 +742,7 @@ class AgentRuntime(LLMRecoveryMixin):
             RuntimeTurnEvent(
                 session_id=session_state.session_id,
                 request_id=session_state.request_id,
-                turn_id=session_state.active_turn_id,
+                turn_id=session_state.active_step_id,
                 event_type=event.event_type,
                 state=event.state.value,
                 data=event.data,

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config.config import get_settings
 from shared.config.log_config import log
-from shared.constants import CODE_DEPLOY_HOST, DEFAULT_APP_PRIORITY, get_bot_code_dir
+from shared.constants import CODE_DEPLOY_HOST, DEFAULT_APP_PRIORITY, get_code_dir
 from shared.enums.code_gen_type import CodeGenTypeEnum
 from shared.exceptions.error_code import ErrorCode
 from shared.exceptions.throw_utils import ThrowUtils
@@ -102,7 +102,7 @@ class AppService:
     async def deploy_app(self, request: AppDeployRequest, login_user: JWTUser) -> dict[str, str | None]:
         app = await self._get_owned_app(request.app_id, login_user)
         deploy_key = app.deploy_key or secrets.token_urlsafe(6)[:6]
-        source_dir = get_bot_code_dir(app.id)
+        source_dir = get_code_dir(app.id)
         ThrowUtils.throw_if(not source_dir.exists(), ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码")
         deploy_source = source_dir
         if app.code_gen_type == CodeGenTypeEnum.VUE_PROJECT.value:
@@ -199,7 +199,7 @@ class AppService:
 
     async def download_app_code(self, app_id: int, login_user: JWTUser) -> Path:
         app = await self._get_owned_app(app_id, login_user)
-        source_dir = get_bot_code_dir(app.id)
+        source_dir = get_code_dir(app.id)
         ThrowUtils.throw_if(not source_dir.exists(), ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码")
         temp_dir = Path(tempfile.mkdtemp(prefix=f"app-download-{app.id}-"))
         archive_base = temp_dir / str(app.id)
@@ -208,14 +208,14 @@ class AppService:
 
     async def get_code_tree(self, app_id: int, login_user: JWTUser) -> list:
         app = await self._get_owned_app(app_id, login_user)
-        code_dir = get_bot_code_dir(app.id)
+        code_dir = get_code_dir(app.id)
         if not code_dir.exists():
             return []
         return AppService._build_file_tree(code_dir, code_dir)
 
     async def get_code_file(self, app_id: int, file_path: str, login_user: JWTUser) -> str:
         app = await self._get_owned_app(app_id, login_user)
-        code_dir = get_bot_code_dir(app.id).resolve()
+        code_dir = get_code_dir(app.id).resolve()
         target = (code_dir / file_path).resolve()
         code_dir_str = str(code_dir)
         target_str = str(target)

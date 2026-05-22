@@ -18,14 +18,14 @@ MAX_LINES = 200
 MAX_BYTES = 25 * 1024
 
 
-def load_hot_memory(path: Path | None = None) -> str:
+def load_hot_memory(app_id,path: Path | None = None) -> str:
     """
     Read MEMORY.md (hot tier).
 
     Returns the content as a plain string, or "" if the file does not exist.
     Enforces MAX_LINES and MAX_BYTES caps (same as Claude Code).
     """
-    path = path or get_hot_memory_path()
+    path = path or get_hot_memory_path(app_id)
     if not path.exists():
         return ""
     try:

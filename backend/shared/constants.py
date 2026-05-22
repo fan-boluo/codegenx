@@ -84,8 +84,6 @@ SCORE_LATENCY_WEIGHT = 0.3
 SCORE_SUCCESS_RATE_WEIGHT = 0.2
 SCORE_PRIORITY_WEIGHT = 0.2
 
-DEFAULT_AI_MODEL = "qwen-plus"
-DEFAULT_AI_PROVIDER = "dashscope"
 
 # Code generation types
 CODE_GEN_TYPE_HTML = 0
@@ -104,49 +102,61 @@ MAX_CODE_LENGTH = 50000
 STREAM_CHUNK_SIZE = 1024
 STREAM_TIMEOUT_SECONDS = 300
 
-OUTPUT_DIR = Path(__file__).resolve().parents[2] / "output"
+"""
+这是一个远程服务，不是本地部署的，不在用户根目录下，而是和应用代码放在一处的
+-- frontend
+-- backend
+-- data
+   -- apps
+      -- app1
+          -- code  源代码
+          -- deploy 部署安装包
+      -- app2
+   -- workspace
+     -- app1
+        -- session
+        -- memory
+        -- context
+     -- app2
 
-BOT_ROOT_DIR = Path.home() / ".bot"
-BOT_WORKSPACE_DIR = BOT_ROOT_DIR / "workspace"
-BOT_APPS_ROOT = BOT_ROOT_DIR / "apps"
-BOT_APP_RUNTIME_ROOT = BOT_WORKSPACE_DIR
-BOT_APP_CODE_ROOT = BOT_APPS_ROOT / "code"
-BOT_APP_DEPLOY_ROOT = BOT_APPS_ROOT / "deploy"
-BOT_DEFAULT_SESSION_DIR = BOT_WORKSPACE_DIR / "session"
-BOT_DEFAULT_MEMORY_DIR = BOT_WORKSPACE_DIR / "memory_bak"
-CHAT_HISTORY_ROOT = BOT_APP_RUNTIME_ROOT
+""" 
+
+ROOT_DIR = Path(__file__).resolve().parents[3] / ".data"
+
+APPS_DIR = ROOT_DIR / "apps"
+APPS_CODE_DIR = APPS_DIR / "code"
+APPS_DEPLOY_DIR = APPS_DIR / "deploy"
+
+WORKSPACE_DIR = ROOT_DIR / "workspace"
+
 CHAT_HISTORY_FILE_NAME = "chat_history.jsonl"
 CHAT_HISTORY_ARCHIVE_PREFIX = "chat_"
 CHAT_HISTORY_MAX_BYTES = 10 * 1024 * 1024
 CHAT_HISTORY_CACHE_TURNS = 20
 
-GOOD_APP_PRIORITY = 99
-DEFAULT_APP_PRIORITY = 0
-
-CODE_OUTPUT_ROOT_DIR = BOT_APP_CODE_ROOT
-CODE_DEPLOY_ROOT_DIR = BOT_APP_DEPLOY_ROOT
-CODE_DEPLOY_HOST = "http://localhost"
+# GOOD_APP_PRIORITY = 99
+# DEFAULT_APP_PRIORITY = 0
 
 
-def get_bot_runtime_app_dir(app_id: str | int) -> Path:
-    return BOT_APP_RUNTIME_ROOT / str(app_id)
+def get_runtime_app_dir(app_id: str | int) -> Path:
+    return WORKSPACE_DIR / str(app_id)
 
 
-def get_bot_context_dir(app_id: str | int) -> Path:
-    return get_bot_runtime_app_dir(app_id) / "context"
+def get_context_dir(app_id: str | int) -> Path:
+    return get_runtime_app_dir(app_id) / "context"
 
 
-def get_bot_memory_dir(app_id: str | int) -> Path:
-    return get_bot_runtime_app_dir(app_id) / "memory_bak"
+def get_memory_dir(app_id: str | int) -> Path:
+    return get_runtime_app_dir(app_id) / "memory"
 
 
-def get_bot_session_dir(app_id: str | int) -> Path:
-    return get_bot_runtime_app_dir(app_id) / "session"
+def get_session_dir(app_id: str | int) -> Path:
+    return get_runtime_app_dir(app_id) / "session"
 
 
-def get_bot_code_dir(app_id: str | int) -> Path:
-    return BOT_APP_CODE_ROOT / str(app_id)
+def get_code_dir(app_id: str | int) -> Path:
+    return APPS_CODE_DIR / str(app_id)
 
 
-def get_bot_deploy_dir(deploy_key: str) -> Path:
-    return BOT_APP_DEPLOY_ROOT / deploy_key
+def get_deploy_dir(deploy_key: str) -> Path:
+    return APPS_DEPLOY_DIR / deploy_key

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from bot.tools.base import BaseTool, ToolResult
 from bot.utils.log_utils import log
-from shared.constants import get_bot_code_dir
+from shared.constants import get_code_dir
 
 DEFAULT_MAX_LINES = 2000
 DEFAULT_MAX_BYTES = 50 * 1024  # 50KB
@@ -84,7 +84,7 @@ def format_size(num_bytes: int) -> str:
 def resolve_read_path(path: str, app_id: str | int = "main"):
     expanded = Path(path).expanduser()
     if not expanded.is_absolute():
-        expanded = get_bot_code_dir(app_id) / expanded
+        expanded = get_code_dir(app_id) / expanded
     resolved = expanded.resolve()
 
     return resolved

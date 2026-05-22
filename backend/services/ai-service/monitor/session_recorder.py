@@ -8,7 +8,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field
 
 from bot.utils.log_utils import log
-from shared.constants import get_bot_session_dir
+from shared.constants import get_session_dir
 
 
 def _sanitize_app_id(app_id: str) -> str:
@@ -94,7 +94,7 @@ class SessionRecorder:
     def __init__(self, app_id: str = "main", /, **data: Any):
         super().__init__(**data)
         self.app_id = _sanitize_app_id(app_id)
-        self.session_dir = get_bot_session_dir(self.app_id)
+        self.session_dir = get_session_dir(self.app_id)
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, Session] = {}
         self._lock = threading.Lock()

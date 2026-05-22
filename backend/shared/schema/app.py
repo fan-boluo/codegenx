@@ -51,7 +51,7 @@ class AppChatStopResponse(CamelBaseModel):
     dropped_request_count: int = Field(alias="droppedRequestCount")
     active_request_ids: list[str] = Field(default_factory=list, alias="activeRequestIds")
     dropped_request_ids: list[str] = Field(default_factory=list, alias="droppedRequestIds")
-    active_turn_ids: list[str] = Field(default_factory=list, alias="activeTurnIds")
+    active_step_ids: list[str] = Field(default_factory=list, alias="activeTurnIds")
 
 
 class AppQueryRequest(PageRequest):

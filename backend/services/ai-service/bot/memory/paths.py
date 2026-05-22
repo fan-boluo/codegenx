@@ -10,38 +10,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
-def get_bot_home() -> Path:
-    """Root directory for bot persistent data: ~/.bot"""
-    return Path.home() / ".bot"
+from shared.constants import get_memory_dir, get_session_dir
 
 
-def get_memory_dir() -> Path:
-    """Hot + warm parent directory: ~/.bot/memory/  (created on demand)"""
-    d = get_bot_home() / "memory"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def get_hot_memory_path() -> Path:
+def get_hot_memory_path(app_id:str) -> Path:
     """Global persistent memory: ~/.bot/memory/MEMORY.md"""
-    return get_memory_dir() / "MEMORY.md"
+    return get_memory_dir(app_id) / "MEMORY.md"
 
 
-def get_topics_dir() -> Path:
+def get_topics_dir(app_id:str) -> Path:
     """Warm topic files: ~/.bot/memory/topics/  (created on demand)"""
-    d = get_memory_dir() / "topics"
+    d = get_memory_dir(app_id) / "topics"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def get_session_dir(session_id: str) -> Path:
-    """Per-session directory: ~/.bot/sessions/<session_id>/  (created on demand)"""
-    d = get_bot_home() / "sessions" / session_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
-
-def get_session_memory_path(session_id: str) -> Path:
+def get_session_memory_path(app_id:str,session_id: str) -> Path:
     """Session memory file: ~/.bot/sessions/<session_id>/MEMORY.md"""
-    return get_session_dir(session_id) / "MEMORY.md"
+    return get_session_dir(app_id) / session_id / "MEMORY.md"

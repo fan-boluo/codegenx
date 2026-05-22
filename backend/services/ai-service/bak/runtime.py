@@ -19,7 +19,7 @@ from agent.runtime_schema import (
     TurnContext,
     TurnStoppedError,
 )
-from bot.agent.context import ContextAssembler, TurnReducer, get_context_assembler
+from bot.agent.assembler import ContextAssembler, TurnReducer, get_context_assembler
 from bot.agent.context_compaction import ContextCompactor
 from bot.agent.llm_recovery import LLMRecoveryMixin
 from bot.agent.task.task_manager import TaskManager

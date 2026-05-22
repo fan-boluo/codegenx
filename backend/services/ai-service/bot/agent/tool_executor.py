@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from bot.utils.log_utils import log
 from bot.agent.tool_handler import ToolRegistry
 from bot.agent.context_compaction import ContextCompactor
-from shared.constants import get_bot_code_dir
+from shared.constants import get_code_dir
 
 MEMORY_TOOL_NAMES = {
     "memory_search",
@@ -120,7 +120,7 @@ class ToolExecutor:
             # sm = getattr(session_state, "session_manager", None)
             # if sm is not None:
             #     self._log_tool_execution(sm, session_id, turn_id, tool_name, tool_input, result)
-            return result
+        return result
         # except Exception as e:
         #     log.error(f"Tool '{tool_name}' crashed: {e}")
         #     err_result = {"error": f"工具执行异常: {str(e)}"}
@@ -190,5 +190,5 @@ class ToolExecutor:
     def _resolve_candidate_path(self, value: str, app_id: str | int) -> Path:
         candidate = Path(value).expanduser()
         if not candidate.is_absolute():
-            candidate = get_bot_code_dir(app_id) / candidate
+            candidate = get_code_dir(app_id) / candidate
         return candidate.resolve()
