@@ -13,7 +13,7 @@ from bot.utils.log_utils import log
 
 class MemorySearchTool(BaseTool):
     """
-    搜索记忆向量库
+    搜索记忆文本
     """
 
     @property

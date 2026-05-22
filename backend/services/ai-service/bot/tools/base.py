@@ -17,8 +17,8 @@ class Tool(BaseModel):
 
 class ToolResult(BaseModel):
     success: bool  # 工具执行成果的标志
-    data: Any  # 返回给llm的数据
-    details :Any = None  # 其它执行的细节
+    data: str=""  # 返回给llm的数据
+    message:str = ""  # 失败原因
 
 
 class BaseTool(ABC):

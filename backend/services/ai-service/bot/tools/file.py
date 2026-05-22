@@ -285,11 +285,10 @@ class ReadFileTool(BaseTool):
 
             return ToolResult(
                 success=True,
-                data=[
-                    TextContent(text=text_note),
-                    ImageContent(data=base64_data, mime_type=mime_type),
-                ],
-                details=None
+                data=
+                    TextContent(text=text_note).model_dump() +
+                    ImageContent(data=base64_data, mime_type=mime_type).model_dump()
+
             )
         else:
             # Read as text file
@@ -376,8 +375,7 @@ class ReadFileTool(BaseTool):
 
             return ToolResult(
                 success=True,
-                data=[TextContent(text=output_text)],
-                details=details
+                data=output_text + "\n 以下是执行的details:"+str(details)
             )
 
 
@@ -446,11 +444,7 @@ class WriteFileTool(BaseTool):
 
         return ToolResult(
             success=True,
-            data=[
-                TextContent(
-                    text=f"Successfully wrote {len(content)} bytes to {path}"
-                )
-            ]
+            data=f"Successfully wrote {len(content)} bytes to {path}"
         )
 
 class EditFileTool(BaseTool):
@@ -510,7 +504,7 @@ class EditFileTool(BaseTool):
         if old_text not in content:
             return ToolResult(
                 success=False,
-                data=[TextContent(text=f"Error: Exact text not found in {path}")],
+                message=f"Error: Exact text not found in {path}"
             )
             
         new_content = content.replace(old_text, new_text, 1)
@@ -523,5 +517,5 @@ class EditFileTool(BaseTool):
             
         return ToolResult(
             success=True,
-            data=[TextContent(text=f"Successfully edited {path}")],
+            data=f"Successfully edited {path}",
         )

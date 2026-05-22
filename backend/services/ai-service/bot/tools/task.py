@@ -67,7 +67,7 @@ class TaskCreateTool(BaseTool):
             return ToolResult(success=True, data=task)
         except Exception as exc:
             log.error("[task_create] {}", exc)
-            return ToolResult(success=False, data=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}")
 
 
 class TaskUpdateTool(BaseTool):
@@ -123,7 +123,7 @@ class TaskUpdateTool(BaseTool):
             return ToolResult(success=True, data=task)
         except Exception as exc:
             log.error("[task_update] {}", exc)
-            return ToolResult(success=False, data=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}")
 
 
 class TaskGetTool(BaseTool):
@@ -163,7 +163,7 @@ class TaskGetTool(BaseTool):
             return ToolResult(success=True, data=task)
         except Exception as exc:
             log.error("[task_get] {}", exc)
-            return ToolResult(success=False, data=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}")
 
 
 class TaskListTool(BaseTool):
@@ -205,9 +205,8 @@ class TaskListTool(BaseTool):
             board = task_manager.get_board()
             return ToolResult(
                 success=True,
-                data={"tasks": tasks, "board": board},
-                details={"count": len(tasks)},
+                data=str({"tasks": tasks, "board": board})
             )
         except Exception as exc:
             log.error("[task_list] {}", exc)
-            return ToolResult(success=False, data=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}")

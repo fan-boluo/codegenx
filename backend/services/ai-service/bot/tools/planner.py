@@ -56,8 +56,8 @@ class TodoTool(BaseTool):
             return ToolResult(
                 success=True,
                 data=plan_state,
-                details={"itemCount": len(items)},
+
             )
         except Exception as exc:
             log.error(f"Todo update failed: {exc}")
-            return ToolResult(success=False, data=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}")

@@ -107,17 +107,14 @@ STREAM_TIMEOUT_SECONDS = 300
 -- frontend
 -- backend
 -- data
-   -- apps
-      -- app1
-          -- code  源代码
-          -- deploy 部署安装包
-      -- app2
-   -- workspace
-     -- app1
-        -- session
-        -- memory
-        -- context
-     -- app2
+  app1
+    -- code  源代码
+    -- deploy 部署安装包
+    -- memory
+    -- context
+    -- session
+  
+  app2
 
 """ 
 
@@ -127,7 +124,7 @@ APPS_DIR = ROOT_DIR / "apps"
 APPS_CODE_DIR = APPS_DIR / "code"
 APPS_DEPLOY_DIR = APPS_DIR / "deploy"
 
-WORKSPACE_DIR = ROOT_DIR / "workspace"
+# WORKSPACE_DIR = ROOT_DIR / "workspace"
 
 CHAT_HISTORY_FILE_NAME = "chat_history.jsonl"
 CHAT_HISTORY_ARCHIVE_PREFIX = "chat_"
@@ -139,8 +136,14 @@ CHAT_HISTORY_CACHE_TURNS = 20
 
 
 def get_runtime_app_dir(app_id: str | int) -> Path:
-    return WORKSPACE_DIR / str(app_id)
+    return ROOT_DIR / str(app_id)
 
+def get_code_dir(app_id: str | int) -> Path:
+    return get_runtime_app_dir(app_id) / "code"
+
+
+def get_deploy_dir(app_id:str) -> Path:
+    return get_runtime_app_dir(app_id) / "deploy"
 
 def get_context_dir(app_id: str | int) -> Path:
     return get_runtime_app_dir(app_id) / "context"
@@ -153,10 +156,11 @@ def get_memory_dir(app_id: str | int) -> Path:
 def get_session_dir(app_id: str | int) -> Path:
     return get_runtime_app_dir(app_id) / "session"
 
+def get_current_session_dir(app_id: str | int,session_id:str) -> Path:
+    return get_session_dir(app_id) / session_id
 
-def get_code_dir(app_id: str | int) -> Path:
-    return APPS_CODE_DIR / str(app_id)
 
 
-def get_deploy_dir(deploy_key: str) -> Path:
-    return APPS_DEPLOY_DIR / deploy_key
+# 压缩
+PERSIST_THRESHOLD = 30000  # 压缩阈值
+PREVIEW_CHARS = 2000  # 展示的长度

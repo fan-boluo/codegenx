@@ -122,6 +122,11 @@ async def pre_tool_use(turn: Any, **kwargs):
 
 
 async def post_tool_use(turn: Any, **kwargs):
+    """
+    工具执行结果落盘
+    工具执行结果加入监控
+
+    """
     session = kwargs["session"]
     tool_call = kwargs.get("tool_call") or {}
     result = kwargs.get("result")

@@ -61,6 +61,7 @@ def _rough_tokens(text: str) -> int:
 
 def microcompact_messages(messages: list[dict]) -> list[dict]:
     """
+    将工具执行结果超长的压缩
     Return a shallow-copied message list with oversized tool results cleared.
 
     Mirrors the legacy microcompactMessages() path (non-cached).
@@ -149,3 +150,5 @@ def microcompact_stats(
         if isinstance(item, dict) and item.get("content") == CLEARED_MARKER
     )
     return {"cleared_results": cleared, "message_count": len(after)}
+
+

@@ -20,9 +20,7 @@ from agent.runtime_schema import (
     TurnStoppedError,
 )
 from agent.session_pool import SessionPool
-from bot.agent.context_compaction import ContextCompactor
 from bot.agent.llm_recovery import LLMRecoveryMixin
-from bot.agent.task.task_manager import TaskManager
 from bot.agent.hook.registry import register_all_hooks
 from bot.agent.hook.runner import HookRunner
 from bot.agent.tool_executor import ToolExecutor
@@ -55,15 +53,9 @@ class AgentRuntime(LLMRecoveryMixin):
         self.max_steps = self.agent_config.max_steps or 50
         
         self.message_bus = message_bus or MessageBus()
-        self.context_compactor = ContextCompactor()
         self.tool_registry = get_tool_registry()
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
-        # self.skill_loader = SkillLoader()
-        # self.skills = self.skill_loader.load_all_skills()
-
         log.info("共加载{}个工具", len(self.tool_registry.tools))
-        # log.info("共加载{}个skill", len(self.skills) if self.skills else 0)
-
 
         self.hook_runner = hook_runner or HookRunner()
         if hook_runner is None:
@@ -259,17 +251,6 @@ class AgentRuntime(LLMRecoveryMixin):
             session_state.request = request
             session_state.touch()
             
-            # Attach per-app task board (s12) — shared across sessions for the same app_id
-            # task 在上下文管理
-            # try:
-            #     session_state.task_manager = TaskManager(session_state.app_id)
-            # except Exception as exc:
-            #     log.warning(
-            #         "[TaskManager] Failed to initialise for app_id {}: {}",
-            #         session_state.app_id,
-            #         exc,
-            #     )
-            
             # Dispatch OnSessionStart hook
             await self.hook_runner.dispatch("OnSessionStart", session_state)
         else:
@@ -420,12 +401,14 @@ class AgentRuntime(LLMRecoveryMixin):
         user_message = session_state.request.message
         context_manager = session_state.context_manager
         context_manager.add_user_message(user_message)
-        # 聊天历史微压，清除工具执行结果
-        context_manager.microcompact()
+        error_msg = ""
+
         try:
             # 执行turn的任务
             while True:
                 self._raise_if_stop_requested(session_state)
+                # 聊天历史微压，清除工具执行结果
+                context_manager.microcompact()
                 turn_state = await self._build_turn_state(session_state)
                 session_state.active_steps[turn_state.turn_id] = turn_state
                 session_state.active_step_id = turn_state.turn_id
@@ -440,6 +423,10 @@ class AgentRuntime(LLMRecoveryMixin):
                     session_state.active_steps.pop(turn_state.turn_id, None)
                     session_state.active_step_id = ""
 
+                    # 执行完一次迭代后的
+                    async for compact_event in context_manager.compact_after_turn():
+                        yield compact_event
+
                 if turn_state.state == AgentState.STOPPED:
                     raise TurnStoppedError(turn_state.transition_reason or "stopped")
                 if turn_state.state == AgentState.FAILED:
@@ -447,6 +434,10 @@ class AgentRuntime(LLMRecoveryMixin):
                     raise RuntimeError(turn_state.error_text or "turn failed")
                 if not turn_state.requires_followup:
                     break
+
+
+
+
 
             await self._publish_request_event(
                 session_state,
@@ -456,6 +447,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     state=AgentState.COMPLETED,
                 ),
             )
+
 
         except TurnStoppedError:
             await self._publish_request_event(
@@ -483,6 +475,8 @@ class AgentRuntime(LLMRecoveryMixin):
                 AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
             )
 
+
+
     # ------------------------------------------------------------------ turn execution
 
     async def _execute_step(
@@ -506,7 +500,8 @@ class AgentRuntime(LLMRecoveryMixin):
             )
 
             self._raise_if_stop_requested(session_state)
-            await self.context_compactor.prepare_for_llm(turn_state.context)
+
+            # 整合message
             messages = await session_state.context_manager.assemble()
             prompt_tokens = self._estimate_message_tokens(messages)
             session_telemetry = session_state.telemetry
@@ -626,11 +621,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     "role": "tool",
                     "tool_call_id": tool_call.get("id", ""),
                     "name": tool_call.get("name", ""),
-                    "content": self.context_compactor.persist_large_output(
-                        turn_state.context,
-                        tool_call.get("id", ""),
-                        self._build_tool_history_result(result),
-                    ),
+                    "content": result ,
                 }
                 turn_state.context.chat_history.append(tool_message)
                 await self._publish_runtime_event(
@@ -643,7 +634,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     ),
                 )
 
-            await self.context_compactor.finalize_turn(turn_state.context)
+
             turn_state.finished_at = time.time()
             await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             turn_state.state = AgentState.COMPLETED
@@ -758,13 +749,7 @@ class AgentRuntime(LLMRecoveryMixin):
         if session_state.stop_signal.is_set():
             raise TurnStoppedError(self._stop_reason(session_state))
 
-    def _build_tool_history_result(self, result: Any) -> str:
-        if isinstance(result, dict):
-            if result.get("error"):
-                return str(result["error"])
-            if isinstance(result.get("data"), str):
-                return result.get("data") or ""
-        return str(result)
+
 
     def _tool_call_signature(self, tool_call: dict[str, Any]) -> str:
         return json.dumps(

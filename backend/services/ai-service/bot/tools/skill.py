@@ -36,8 +36,7 @@ class LoadSkillTool(BaseTool):
             return ToolResult(
                 success=True,
                 data=skill_text,
-                details={"name": name},
             )
         except Exception as exc:
             log.error(f"Failed to load skill {name}: {exc}")
-            return ToolResult(success=False, data=f"Error loading skill: {exc}")
+            return ToolResult(success=False, message=f"Error loading skill: {exc}")

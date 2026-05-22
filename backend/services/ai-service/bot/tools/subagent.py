@@ -61,4 +61,6 @@ class SubagentTaskTool(BaseTool):
 
         runner = SubagentRunner()
         result = await runner.run(subagent_context)
-        return ToolResult(success=result["success"], data=result["data"], details=result.get("details"))
+        return ToolResult(success=result["success"],
+                          data=result["data"]+result.get("details"),
+                          message=str(result))
