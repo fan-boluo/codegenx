@@ -8,10 +8,8 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, AsyncGenerator
-
+from agent.agent_schema import     AgentEvent,AgentState
 from agent.runtime_schema import (
-    AgentEvent,
-    AgentState,
     RuntimeSessionState,
     TurnStoppedError, ActivateTurn,
 )
@@ -28,11 +26,6 @@ from shared.schema.ai_service import AiServiceGenerateRequest
 
 
 class AgentRuntime(LLMRecoveryMixin):
-    CONTINUATION_MESSAGE = (
-        "Output limit hit. Continue directly from where you stopped. "
-        "Do not restart, recap, or repeat prior content."
-    )
-    EXCLUDED_TOOL_NAMES = {"compact"}
 
     def __init__(
         self,
@@ -50,8 +43,6 @@ class AgentRuntime(LLMRecoveryMixin):
         self.message_bus = message_bus or MessageBus()
         self.tool_registry = get_tool_registry()
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
-        self.tools = self.tool_registry.build_tool(self.config.tools.excluded)
-
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
         self.hook_runner = hook_runner or HookRunner()
@@ -67,8 +58,6 @@ class AgentRuntime(LLMRecoveryMixin):
             idle_timeout_seconds=int(self.agent_config.session_idle_timeout_seconds or 3600),
             cleanup_interval_seconds=int(self.agent_config.session_cleanup_interval_seconds or 300),
         )
-        
-        # self.startup_backup_service()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -79,7 +68,11 @@ class AgentRuntime(LLMRecoveryMixin):
         
         # Start session pool cleanup task
         await self.session_pool.start()
-        
+
+        # Build tool catalog (async — must be awaited)
+        self.tools = await self.tool_registry.build_tool(self.config.tools.excluded)
+        log.info("工具目录构建完成,共{}个工具", len(self.tools))
+
         self._dispatcher_task = asyncio.create_task(
             self._dispatch_loop(), name="agent-runtime-dispatcher"
         )
@@ -289,9 +282,6 @@ class AgentRuntime(LLMRecoveryMixin):
                 try:
                     await request_task
                 except asyncio.CancelledError:
-                    request_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await request_task
                     await self._close_session_state(session_state, end_reason="runtime-stop")
                     raise
                 finally:
@@ -398,9 +388,8 @@ class AgentRuntime(LLMRecoveryMixin):
                     # TODO 这样pop对吗，取出最后面的，有必要维护这样一个activate_steps吗
                     activate_turn.active_steps.pop()
                     activate_turn.active_step_id = ""
-                    # 执行完一次迭代后的压缩，到底放到哪里？？？ TODO
                     async for compact_event in context_manager.compact_after_turn():
-                        yield compact_event
+                        await self._publish_runtime_event(session_state, compact_event)
                 if not activate_turn.requires_followup:
                     break
 
@@ -682,33 +671,3 @@ class AgentRuntime(LLMRecoveryMixin):
             "dispatcher_active": self._dispatcher_task is not None
             and not self._dispatcher_task.done(),
         }
-
-    # ------------------------------------------------------------------ startup warmup
-
-    # async def startup_backup_service(self) -> None:
-    #     try:
-    #         await warm_up_mysql_pool()
-    #     except Exception as exc:
-    #         log.warning("AgentRuntime startup failed to warm MySQL pool: {}", exc)
-    #
-    #     try:
-    #         await warm_up_qdrant_client()
-    #         log.info("启动 warm_up_qdrant_client ready")
-    #     except Exception as exc:
-    #         log.warning("AgentRuntime startup failed to warm Qdrant client: {}", exc)
-    #
-    #     for initializer_name, initializer in (
-    #         ("monitor_pipeline", get_monitor_pipeline),
-    #         ("monitor_store", get_monitor_store),
-    #         ("monitor_alert_evaluator", get_monitor_alert_evaluator),
-    #         ("health_checker", get_health_checker),
-    #         ("monitor_query_service", get_monitor_query_service),
-    #         ("monitor_maintenance_service", get_monitor_maintenance_service),
-    #     ):
-    #         try:
-    #             initializer()
-    #             log.info(f"启动 {initializer_name} ready")
-    #         except Exception as exc:
-    #             log.warning(
-    #                 "AgentRuntime startup failed to initialize {}: {}", initializer_name, exc
-    #             )

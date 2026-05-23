@@ -4,11 +4,12 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from agent.agent_schema import AgentState
 from context.session_context import SessionContext
 from monitor.telemetry_schema import SessionTelemetry, TurnTelemetry, SpanRecord
 from session.manager import SessionManager
@@ -16,15 +17,6 @@ from shared.schema.ai_service import AiServiceGenerateRequest
 
 if TYPE_CHECKING:
     from agent.runtime import AgentRuntime
-
-
-class AgentState(str, Enum):
-    IDLE = "idle"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    STOPPED = "stopped"
-
 
 class TurnContext(BaseModel):
     """LLM-call context for a single turn."""
@@ -39,10 +31,6 @@ class TurnContext(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class AgentEvent(BaseModel):
-    event_type: str
-    data: Any = None
-    state: AgentState
 
 
 class TurnStoppedError(Exception):

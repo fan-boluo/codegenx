@@ -11,7 +11,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.mysql.session import session_maker
-from infra.qdrant.client import get_qdrant_memory_client
 from infra.redis.redis_client import redis_client
 from monitor.monitor_store import MonitorStore, get_monitor_store
 from shared.schema.monitor import MonitorComponentHealth, MonitorHealthStatus
@@ -38,14 +37,6 @@ class HealthChecker:
         provider = config.get_provider(agent.provider)
         return bool((provider.api_base or config.providers.custom.api_base) and agent.resolved_model_name)
 
-    async def check_qdrant_connectivity(self) -> bool:
-        try:
-            client = get_qdrant_memory_client().client
-            await asyncio.to_thread(client.get_collections)
-            return True
-        except Exception:
-            return False
-
     async def check_tool_availability(self, tool_name: str) -> bool:
         return bool(tool_name and tool_name.strip())
 
@@ -54,7 +45,6 @@ class HealthChecker:
         components = [
             await self._check_mysql(),
             await self._check_redis(),
-            await self._check_qdrant(),
             self._check_store_runtime(),
             self._check_llm_runtime(),
         ]
@@ -118,20 +108,8 @@ class HealthChecker:
                 message=str(exc),
             )
 
-    async def _check_qdrant(self) -> MonitorComponentHealth:
-        started = time.perf_counter()
-        ok = await self.check_qdrant_connectivity()
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        return MonitorComponentHealth(
-            name="qdrant",
-            status="up" if ok else "down",
-            checkedAt=datetime.utcnow(),
-            latencyMs=latency_ms,
-            message="ok" if ok else "qdrant unavailable",
-        )
-
     def _check_store_runtime(self) -> MonitorComponentHealth:
-        runtime_state = self._monitor_store.get_runtime_status()
+        runtime_state = self._monitor_store.get_status()
         degraded = bool(runtime_state.get("degraded"))
         return MonitorComponentHealth(
             name="monitor_store",

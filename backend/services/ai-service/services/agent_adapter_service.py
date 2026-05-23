@@ -38,14 +38,13 @@ if str(REPO_ROOT) not in sys.path:
 #
 # _ensure_local_constant_module()
 
-from bot.agent.runtime import AgentEvent, AgentRuntime
-from bot.utils.config import load_config
+from bot.agent.runtime import AgentRuntime
 from infra.mysql.session import shutdown_mysql_engine
-from infra.redis.redis_client import get_redis_client
+from infra.redis.redis_client import redis_client
 from monitor.health_checker import get_health_checker
 from shared.config.log_config import log
 
-redis_client = get_redis_client()
+
 class AgentAdapterService:
     def __init__(self) -> None:
         self._runtime: AgentRuntime | None = None
@@ -109,12 +108,10 @@ class AgentAdapterService:
                 with suppress(Exception):
                     await self._runtime.stop()
                 self._runtime = None
-
-            # TODO 同下面的关闭，是整个redis都关了，还是只关了一个client
+            # 关闭本服务的实例
             with suppress(Exception):
                 await redis_client.aclose()
 
-            # TODO 这个mysql_engine在多个微服务使用了，这个shutdown的动作是整个关闭了，还是只关闭了一处？
             with suppress(Exception):
                 await shutdown_mysql_engine()
 
@@ -128,12 +125,6 @@ class AgentAdapterService:
         async for event in runtime.submit_request(request):
             log.info("stream message",event.model_dump())
             yield event.model_dump()
-            # if event.event_type == "LLM_Response_Chunk" and event.data:
-            #     yield str(event.data)
-            #     continue
-            # if event.event_type == "Error":
-            #     message = str(event.data or "agent execution failed")
-            #     raise RuntimeError(message)
 
     async def stop_session(
         self,

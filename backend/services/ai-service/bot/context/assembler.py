@@ -6,15 +6,10 @@ import platform
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
-from agent.runtime_schema import TurnContext, RuntimeSessionState
-from bot.memory.memory_manager import get_memory_manager
-from bot.skill.skill_loader import SkillLoader
 from bot.utils.context_utils import ensure_app_workdir
 from bot.utils.log_utils import log
 from constants import get_memory_dir, get_code_dir
 from prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE, AUTO_MEMORY_PROMPT
-from shared.schema.ai_service import AiServiceGenerateRequest
 
 
 class ContextAssembler:

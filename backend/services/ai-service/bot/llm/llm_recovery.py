@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import random
 from typing import TYPE_CHECKING, Any
-
-from agent.runtime_schema import AgentEvent, AgentState, RuntimeSessionState, TurnStoppedError, \
+from agent.agent_schema import AgentEvent, AgentState
+from agent.runtime_schema import  RuntimeSessionState, TurnStoppedError, \
     ActivateTurn
 from shared.config.log_config import log
 

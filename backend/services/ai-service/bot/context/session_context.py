@@ -1,9 +1,9 @@
 from dataclasses import field
 from typing import Any, Dict
 
-from agent.runtime_schema import AgentEvent, AgentState
+from agent.agent_schema import AgentEvent, AgentState
 from agent.task.task_manager import TaskManager
-from assembler import ContextAssembler
+from context.assembler import ContextAssembler
 from compact import microcompact_messages
 from compact.compact import CompactionEngine
 from compact.large_output import persist_large_output

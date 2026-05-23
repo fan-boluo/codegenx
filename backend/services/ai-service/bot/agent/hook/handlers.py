@@ -4,7 +4,7 @@ from datetime import datetime, UTC
 from typing import TYPE_CHECKING, Any
 
 # from agent.assembler import get_context_assembler
-from agent.runtime_schema import AgentState
+from agent.agent_schema import AgentState
 from agent.tool_executor import MEMORY_TOOL_NAMES
 from monitor.monitor_pipeline import get_monitor_pipeline
 from bot.session.manager import SessionManager

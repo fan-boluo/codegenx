@@ -15,7 +15,7 @@ class MessageBus:
 
     def __init__(self):
         self.inbound: asyncio.Queue[Any] = asyncio.Queue()
-        self.outbound: asyncio.Queue[Any] = asyncio.Queue()
+        # self.outbound: asyncio.Queue[Any] = asyncio.Queue()
         self._request_subscribers: dict[str, set[asyncio.Queue[Any]]] = defaultdict(set)
 
     async def publish_inbound(self, msg: Any) -> None:
@@ -27,8 +27,7 @@ class MessageBus:
         return await self.inbound.get()
 
     async def publish_outbound(self, msg: Any) -> None:
-        """Publish a response from the agent to channels."""
-        await self.outbound.put(msg)
+        """Publish a response from the agent to request subscribers."""
         request_id = str(getattr(msg, "request_id", "") or "").strip()
         if not request_id:
             return
@@ -37,19 +36,19 @@ class MessageBus:
         for queue in subscribers:
             await queue.put(msg)
 
-    async def consume_outbound(self) -> Any:
-        """Consume the next outbound message (blocks until available)."""
-        return await self.outbound.get()
+    # async def consume_outbound(self) -> Any:
+    #     """Consume the next outbound message (blocks until available)."""
+    #     return await self.outbound.get()
 
     @property
     def inbound_size(self) -> int:
         """Number of pending inbound messages."""
         return self.inbound.qsize()
 
-    @property
-    def outbound_size(self) -> int:
-        """Number of pending outbound messages."""
-        return self.outbound.qsize()
+    # @property
+    # def outbound_size(self) -> int:
+    #     """Number of pending outbound messages."""
+    #     return self.outbound.qsize()
 
     def subscribe_request(self, request_id: str) -> asyncio.Queue[Any]:
         queue: asyncio.Queue[Any] = asyncio.Queue()
