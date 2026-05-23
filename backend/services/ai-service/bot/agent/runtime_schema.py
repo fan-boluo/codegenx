@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from adapter.session_context import SessionContext
+from context.session_context import SessionContext
 from monitor.telemetry_schema import SessionTelemetry, TurnTelemetry, SpanRecord
 from session.manager import SessionManager
 from shared.schema.ai_service import AiServiceGenerateRequest
@@ -47,36 +47,6 @@ class AgentEvent(BaseModel):
 
 class TurnStoppedError(Exception):
     pass
-
-
-@dataclass
-class RuntimeTurnState:
-    """State for one LLM turn. No back-reference to request object."""
-    turn_id: str
-    turn_number: int
-    request_id: str
-
-    context: TurnContext
-    telemetry: TurnTelemetry|None = None
-
-    # code_dir: str = ""
-    # safe_paths: list[str] = field(default_factory=list)
-    # workspace_metadata: dict[str, Any] = field(default_factory=dict)
-    # knowledge_cache: dict[str, Any] = field(default_factory=dict)
-    # prompt_template: str = ""
-    # plan_summary: str = ""
-
-    snapshot_path: str = ""
-    state: AgentState = AgentState.IDLE
-    transition_reason: str = ""
-    error_text: str = ""
-    started_at: float = 0.0
-    finished_at: float = 0.0
-    # 记录各个span的状态
-    active_span_refs: dict[str, Any] = field(default_factory=dict)
-    # 是否调用工具
-    requires_followup: bool = False
-    turn_record:SpanRecord =  None
 
 @dataclass
 class ActivateTurn:
@@ -128,20 +98,7 @@ class RuntimeSessionState:
     closed: bool = False
     stop_signal: asyncio.Event = field(default_factory=asyncio.Event)
     stop_reason: str = ""
-    worker_task: asyncio.Task | None = None  # 当前的session worker
-
-    # Task board (s12) — per-app_id, initialised on session start
-    # task_manager: Any = None  # bot.agent.task.task_manager.TaskManager
-
-    # Per-request fields (reset per request)
-
-    # request_id: str = ""
-    # context: TurnContext | None = None
-    # code_dir: str = ""
-    # safe_paths: list[str] = field(default_factory=list)
-    # knowledge_cache: dict[str, Any] = field(default_factory=dict)
-    # prompt_template: str = ""
-    # plan_summary: str = ""
+    worker_task: asyncio.Task | None = None  # 一个携程任务
 
 
     def touch(self) -> None:

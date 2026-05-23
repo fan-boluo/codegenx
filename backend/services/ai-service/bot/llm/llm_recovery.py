@@ -11,7 +11,7 @@ import asyncio
 import random
 from typing import TYPE_CHECKING, Any
 
-from agent.runtime_schema import AgentEvent, AgentState, RuntimeSessionState, RuntimeTurnState, TurnStoppedError, \
+from agent.runtime_schema import AgentEvent, AgentState, RuntimeSessionState, TurnStoppedError, \
     ActivateTurn
 from shared.config.log_config import log
 

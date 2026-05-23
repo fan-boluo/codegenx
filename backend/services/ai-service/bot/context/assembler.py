@@ -168,35 +168,6 @@ class ContextAssembler:
             normalized.append(payload)
         return normalized
 
-    @staticmethod
-    def ensure_user_message(context: Any) -> None:
-        user_input = str(getattr(context, "user_input", "") or "").strip()
-        if not user_input:
-            return
-
-        history = list(getattr(context, "chat_history", []) or [])
-        if history:
-            last_message = history[-1]
-            if isinstance(last_message, dict) and last_message.get("role") == "user" and str(last_message.get("content", "") or "") == user_input:
-                return
-        history.append({"role": "user", "content": user_input})
-        context.chat_history = history
-
-    # async def assemble2(self, session_state:RuntimeSessionState, context: Any) -> list[dict[str, Any]]:
-    #     """ 发送llm前最终的组装 prepare_turn_context已经组装到了system_prompt里面了
-    #     这里就只加上user_message即可
-    #     """
-    #     messages: list[dict[str, Any]] = []
-    #     system_prompt = session_state.session_manager
-    #
-    #     system_prompt = str(getattr(context, "system_prompt", "") or "").strip()
-    #     if system_prompt:
-    #         messages.append({"role": "system", "content": system_prompt})
-    #
-    #     messages.extend(self._normalize_history(list(getattr(context, "chat_history", []) or [])))
-    #
-    #     return messages
-
     # def _ensure_user_message(self,user_input:str,history:list) -> None:
     #     """ 确保最后一个消息是用户输入的
     #     这样做的目的是什么，在多次step后，用户消息可能以及被冲掉了

@@ -6,7 +6,7 @@ from datetime import datetime
 from threading import Lock
 from typing import Any
 
-from agent.runtime_schema import RuntimeSessionState, RuntimeTurnState
+from agent.runtime_schema import RuntimeSessionState, ActivateTurn
 from monitor.alert_evaluator import get_monitor_alert_evaluator
 from monitor.metric_collector import MetricCollector
 from monitor.monitor_store import MonitorStore, get_monitor_store
@@ -99,7 +99,7 @@ class MonitorPipeline:
         """
         span_collector = SpanCollector()
         self._span_collectors[session.session_id] = span_collector
-        # session.span_collector = span_collector
+        # self._span_collectors.get(session.session_id) = span_collector
 
         session_span = SpanRecord.new_session_span_recorder(session)
         span_collector.add(session_span)
@@ -124,7 +124,7 @@ class MonitorPipeline:
         telemetry.status = _session_status(session.state)
         telemetry.end_reason = str(kwargs.get("end_reason", "completed") or "completed")
 
-        # collector = session.span_collector
+        # collector = self._span_collectors.get(session.session_id)
         collector = self._span_collectors.get(session.session_id)
         root_span_id = getattr(session, "root_span_id", None)
         if root_span_id and collector:
@@ -153,7 +153,7 @@ class MonitorPipeline:
     # Turn lifecycle
     # ------------------------------------------------------------------
 
-    async def on_turn_start(self, session: RuntimeSessionState, turn: RuntimeTurnState) -> None:
+    async def on_turn_start(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
         """
         new turn tele
         new turn span
@@ -161,9 +161,9 @@ class MonitorPipeline:
         """
 
         turn_telemetry = TurnTelemetry.new_tel(session.telemetry)
-        turn_telemetry.turn_number = turn.turn_number
-        turn_telemetry.turn_id = turn.turn_id
-        turn_telemetry.request_id = turn.request_id
+        turn_telemetry.turn_number = turn.step_counter
+        turn_telemetry.turn_id = session.request_id
+        turn_telemetry.request_id = session.request_id
 
         metric_collector = self._metric_collectors.get(session.session_id)
         metric_collector.add_turn(turn_telemetry)
@@ -184,12 +184,12 @@ class MonitorPipeline:
                 session_id=session.session_id,
                 app_id=session.app_id,
                 user_id=session.user_id,
-                turn_id=turn.turn_id,
-                turn_number=turn.turn_number,
+                turn_id=session.request_id,
+                turn_number=turn.step_counter,
                 operation_name=OperationName.TURN.value,
                 start_time=turn.active_span_refs["turn_started_at"],
                 status="running",
-                attributes={"turn.id": turn.turn_id, "turn.number": turn.turn_number},
+                attributes={"turn.id": session.request_id, "turn.number": turn.step_counter},
             ))
 
         if session.telemetry:
@@ -199,9 +199,9 @@ class MonitorPipeline:
                 turn_telemetry=turn.telemetry,
             )
             if alerts:
-                log.info("TurnStart alerts session={} turn={} count={}", session.session_id, turn.turn_id, len(alerts))
+                log.info("TurnStart alerts session={} turn={} count={}", session.session_id, session.request_id, len(alerts))
 
-    async def on_turn_end(self, session: RuntimeSessionState, turn: RuntimeTurnState) -> None:
+    async def on_turn_end(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
         telemetry = turn.telemetry
         telemetry.ended_at = _utcnow()
         finished_at = float(turn.finished_at or time.time())
@@ -232,7 +232,7 @@ class MonitorPipeline:
         if session.telemetry:
             session.telemetry.record_turn(telemetry)
 
-    def on_error(self, session: RuntimeSessionState, turn: RuntimeTurnState) -> None:
+    def on_error(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
         turn.telemetry.status = TelemetryStatus.ERROR
         turn.telemetry.llm.is_error = True
 
@@ -240,7 +240,7 @@ class MonitorPipeline:
     # LLM lifecycle
     # ------------------------------------------------------------------
 
-    def pre_llm_call(self, session: RuntimeSessionState, turn: RuntimeTurnState, **kwargs) -> None:
+    def pre_llm_call(self, session: RuntimeSessionState, turn: ActivateTurn, **kwargs) -> None:
         """
         new llm record
         update turn tele
@@ -269,15 +269,15 @@ class MonitorPipeline:
                 session_id=session.session_id,
                 app_id=session.app_id,
                 user_id=session.user_id,
-                turn_id=turn.turn_id,
-                turn_number=turn.turn_number,
+                turn_id=session.request_id,
+                turn_number=turn.step_counter,
                 operation_name=OperationName.LLM.value,
                 start_time=turn.active_span_refs["llm_started_at_utc"],
                 status="running",
                 attributes={"llm.prompt_tokens": prompt_tokens},
             ))
 
-    async def post_llm_call(self, session: RuntimeSessionState, turn: RuntimeTurnState, **kwargs) -> None:
+    async def post_llm_call(self, session: RuntimeSessionState, turn: ActivateTurn, **kwargs) -> None:
         """
         update turn tele
         update llm span record
@@ -325,13 +325,13 @@ class MonitorPipeline:
                 projected_total_tokens=telemetry.context.token_usage,
             )
             if alerts:
-                log.info("LLM alerts session={} turn={} count={}", session.session_id, turn.turn_id, len(alerts))
+                log.info("LLM alerts session={} turn={} count={}", session.session_id, session.request_id, len(alerts))
 
     # ------------------------------------------------------------------
     # Tool lifecycle
     # ------------------------------------------------------------------
 
-    def pre_tool_use(self, session: RuntimeSessionState, turn: RuntimeTurnState, tool_call: dict) -> None:
+    def pre_tool_use(self, session: RuntimeSessionState, turn: ActivateTurn, tool_call: dict) -> None:
         tool_name = str(tool_call.get("name", "") or "")
         tool_id = str(tool_call.get("id") or tool_name)
 
@@ -344,7 +344,7 @@ class MonitorPipeline:
             "started_at_utc": started_utc,
         }
 
-        collector = session.span_collector
+        collector = self._span_collectors.get(session.session_id)
         if collector:
             collector.add(SpanRecord(
                 span_id=tool_span_id,
@@ -353,8 +353,8 @@ class MonitorPipeline:
                 session_id=session.session_id,
                 app_id=session.app_id,
                 user_id=session.user_id,
-                turn_id=turn.turn_id,
-                turn_number=turn.turn_number,
+                turn_id=session.request_id,
+                turn_number=turn.step_counter,
                 operation_name=f"{OperationName.TOOL.value}.{tool_name}",
                 start_time=started_utc,
                 status="running",
@@ -364,7 +364,7 @@ class MonitorPipeline:
     async def post_tool_use(
         self,
         session: RuntimeSessionState,
-        turn: RuntimeTurnState,
+        turn: ActivateTurn,
         tool_call: dict,
         result: Any,
     ) -> None:
@@ -384,7 +384,7 @@ class MonitorPipeline:
             is_error=(status == TelemetryStatus.ERROR),
         ))
 
-        collector = session.span_collector
+        collector = self._span_collectors.get(session.session_id)
         if tool_span_id and collector:
             collector.update_end(
                 tool_span_id,
@@ -407,7 +407,7 @@ class MonitorPipeline:
                 tool_status=status.value,
             )
             if alerts:
-                log.info("Tool alerts session={} turn={} tool={} count={}", session.session_id, turn.turn_id, tool_name, len(alerts))
+                log.info("Tool alerts session={} turn={} tool={} count={}", session.session_id, session.request_id, tool_name, len(alerts))
 
     # ------------------------------------------------------------------
     # Alerts

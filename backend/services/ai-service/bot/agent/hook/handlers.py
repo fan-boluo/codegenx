@@ -53,21 +53,20 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
     get_monitor_pipeline().on_session_start(session)
 
 
-async def on_turn_start(session_state: Any, **kwargs):
-    context = session_state.context_manager.system_prompt
+async def on_turn_start(turn: Any, **kwargs):
     session = kwargs["session"]
+    context = session.context_manager.system_prompt
     snapshot = {
         "session": dict(session.audit_context),
         "turn": {
-            "turn_id": session_state.request_id,
-            "turn_number": session_state.turn.step_counter,
+            "turn_id": session.request_id,
+            "turn_number": turn.step_counter,
             "context": context.model_dump(),
         },
     }
-    snapshot_path = session.session_manager.save_turn_snapshot(session_state.request_id, snapshot)
-    # session_state.turn.snapshot_path = str(snapshot_path)
+    snapshot_path = session.session_manager.save_turn_snapshot(session.request_id, snapshot)
 
-    await get_monitor_pipeline().on_turn_start(session, session_state.turn)
+    await get_monitor_pipeline().on_turn_start(session, turn)
 
 
 async def pre_llm_call(turn: Any, **kwargs):
@@ -141,7 +140,7 @@ async def post_tool_use(turn: Any, **kwargs):
         snapshot: dict[str, Any] = {
             "request_id":session.request.request_id,
             "ts": datetime.now(UTC).isoformat(),
-            "turn_id": turn.turn_id,
+            "turn_id": turn.active_step_id,
             "tool": tool_name,
             "input": loggable_input,
             "result": result,
