@@ -78,23 +78,27 @@ class SessionPool:
         log.info("SessionPool stopped")
 
     async def get_or_create(
-        self, session_id: str, factory: Any
+        self, session_id: str, request: Any, runtime: Any
     ) -> tuple[Any, bool]:
         """
         Get existing session or create new one.
-        
+
         Args:
             session_id: Unique session identifier
-            factory: Callable that creates new session state
-            
+            request: AiServiceGenerateRequest
+            runtime: AgentRuntime instance
+
         Returns:
             Tuple of (session_state, is_new_session)
         """
+        from agent.runtime_schema import RuntimeSessionState
+
         async with self._lock:
             if session_id in self._sessions:
                 session = self._sessions[session_id]
-                # Move to end (most recently used)
                 self._sessions.move_to_end(session_id)
+                session.request = request
+                session.touch()
                 return session, False
 
             # Check if we need to evict LRU session
@@ -107,8 +111,8 @@ class SessionPool:
                     lru_session_id,
                 )
 
-            # Create new session
-            session = factory()
+            session = RuntimeSessionState(session_id=session_id, request=request, runtime=runtime)
+            session.touch()
             self._sessions[session_id] = session
             return session, True
 

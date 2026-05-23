@@ -53,21 +53,21 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
     get_monitor_pipeline().on_session_start(session)
 
 
-async def on_turn_start(turn: Any, **kwargs):
-    context = turn.context
+async def on_turn_start(session_state: Any, **kwargs):
+    context = session_state.context_manager.system_prompt
     session = kwargs["session"]
     snapshot = {
         "session": dict(session.audit_context),
         "turn": {
-            "turn_id": turn.turn_id,
-            "turn_number": turn.turn_number,
+            "turn_id": session_state.request_id,
+            "turn_number": session_state.turn.step_counter,
             "context": context.model_dump(),
         },
     }
-    snapshot_path = session.session_manager.save_turn_snapshot(turn.turn_id, snapshot)
-    turn.snapshot_path = str(snapshot_path)
+    snapshot_path = session.session_manager.save_turn_snapshot(session_state.request_id, snapshot)
+    # session_state.turn.snapshot_path = str(snapshot_path)
 
-    await get_monitor_pipeline().on_turn_start(session, turn)
+    await get_monitor_pipeline().on_turn_start(session, session_state.turn)
 
 
 async def pre_llm_call(turn: Any, **kwargs):

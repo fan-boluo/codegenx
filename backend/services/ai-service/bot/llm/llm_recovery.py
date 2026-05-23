@@ -11,7 +11,8 @@ import asyncio
 import random
 from typing import TYPE_CHECKING, Any
 
-from agent.runtime_schema import AgentEvent, AgentState, RuntimeSessionState, RuntimeTurnState, TurnStoppedError
+from agent.runtime_schema import AgentEvent, AgentState, RuntimeSessionState, RuntimeTurnState, TurnStoppedError, \
+    ActivateTurn
 from shared.config.log_config import log
 
 if TYPE_CHECKING:
@@ -28,23 +29,22 @@ class LLMRecoveryMixin:
     context_compactor: Any
 
     def _raise_if_stop_requested(self, session_state: RuntimeSessionState) -> None: ...  # provided by AgentRuntime
-    async def _publish_runtime_event(self, session_state: RuntimeSessionState, turn_state: RuntimeTurnState, event: AgentEvent) -> None: ...  # provided by AgentRuntime
+    async def _publish_runtime_event(self, session_state: RuntimeSessionState, event: AgentEvent) -> None: ...  # provided by AgentRuntime
 
     # ------------------------------------------------------------------ public entry
 
     async def _invoke_llm_with_recovery(
         self,
-        initial_messages: list[dict[str, Any]],
-        turn_state: RuntimeTurnState,
+        messages: list[dict[str, Any]],
+        turn_state: ActivateTurn,
         session_state: RuntimeSessionState,
     ) -> dict[str, Any]:
         """Invoke the LLM with error recovery (s11)."""
         from bot.llm.async_client import AsyncLLMClient
 
         cfg = self.agent_config
-        context = turn_state.context
-        messages = initial_messages
-
+        context = session_state.context_manager
+        tools = session_state.runtime.tools
         continuation_attempts = 0
         compact_attempts = 0
         transport_attempts = 0
@@ -59,13 +59,12 @@ class LLMRecoveryMixin:
                     "finish_reason": None,
                 }
 
-                async for chunk in llm_client.invoke_stream(messages, context.tool):
+                async for chunk in llm_client.invoke_stream(messages,tools):
                     self._raise_if_stop_requested(session_state)
                     if chunk["type"] == "content":
                         round_response["content"] += chunk["data"]
                         await self._publish_runtime_event(
                             session_state,
-                            turn_state,
                             AgentEvent(
                                 event_type="LLM_Response_Chunk",
                                 data=chunk["data"],
@@ -96,12 +95,8 @@ class LLMRecoveryMixin:
                             continuation_attempts,
                             cfg.max_continuation_attempts,
                         )
-                        context.chat_history.append(
-                            {"role": "assistant", "content": accumulated_content}
-                        )
-                        context.chat_history.append(
-                            {"role": "user", "content": self.CONTINUATION_MESSAGE}
-                        )
+                        context.add_assistant_message(accumulated_content)
+                        context.add_user_message(self.CONTINUATION_MESSAGE)
                         messages = await self.context_assembler.assemble(context)
                         continue
                     log.error(
@@ -201,7 +196,7 @@ class LLMRecoveryMixin:
 
     @staticmethod
     def _record_recovery(
-        turn_state: RuntimeTurnState, kind: str, total_count: int
+        turn_state: ActivateTurn, kind: str, total_count: int
     ) -> None:
         if turn_state.telemetry is not None:
             turn_state.telemetry.llm.recovery_count = total_count

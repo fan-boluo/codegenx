@@ -97,10 +97,10 @@ class ToolRegistry:
         else:
             return {"error": f"未知工具：{tool_name}"}
 
-    async def build_tool(self, tools: list, exclude_tools: list=None) -> list:
+    async def build_tool(self,exclude_tools: list=None) -> list:
         # build_tool = await self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
 
-        tool_catalog = [tool for tool in tools if tool.name not in exclude_tools]
+        tool_catalog = [tool for tool in self.tools if tool.name not in exclude_tools]
 
         return [
             {

@@ -197,19 +197,19 @@ class ContextAssembler:
     #
     #     return messages
 
-    def _ensure_user_message(self,user_input:str,history:list) -> None:
-        """ 确保最后一个消息是用户输入的
-        这样做的目的是什么，在多次step后，用户消息可能以及被冲掉了
-        """
-        if not user_input:
-            return
-        if history:
-            last_message = history[-1]
-            if isinstance(last_message, dict) and last_message.get("role") == "user" and str(
-                    last_message.get("content", "") or "") == user_input:
-                return
-        history.append({"role": "user", "content": user_input})
-        context.chat_history = history
+    # def _ensure_user_message(self,user_input:str,history:list) -> None:
+    #     """ 确保最后一个消息是用户输入的
+    #     这样做的目的是什么，在多次step后，用户消息可能以及被冲掉了
+    #     """
+    #     if not user_input:
+    #         return
+    #     if history:
+    #         last_message = history[-1]
+    #         if isinstance(last_message, dict) and last_message.get("role") == "user" and str(
+    #                 last_message.get("content", "") or "") == user_input:
+    #             return
+    #     history.append({"role": "user", "content": user_input})
+    #     context.chat_history = history
 
     async def assemble(self,system_prompt:str,chat_messages:list) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []

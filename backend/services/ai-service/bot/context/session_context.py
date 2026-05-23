@@ -67,6 +67,12 @@ class SessionContext:
     def add_assistant_message(self, message):
         self.chat_messages.append({"role": "assistant", "content": message})
 
+    def add_tool_message(self, message):
+        if isinstance(message,dict):
+            self.chat_messages.append(message)
+        if isinstance(message,str):
+            self.chat_messages.append({"role": "tool", "content": message})
+
     async def assemble(self)-> list[dict[str, Any]]:
         # 将system_prompt和turn的聊天历史组合
         return self.assembler.assemble(self.system_prompt,self.chat_messages)

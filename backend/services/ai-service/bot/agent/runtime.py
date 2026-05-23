@@ -6,6 +6,7 @@ from contextlib import suppress
 import json
 import time
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, AsyncGenerator
 
@@ -17,10 +18,10 @@ from agent.runtime_schema import (
     RuntimeSessionState,
     RuntimeTurnState,
     TurnContext,
-    TurnStoppedError,
+    TurnStoppedError, ActivateTurn,
 )
 from agent.session_pool import SessionPool
-from bot.agent.llm_recovery import LLMRecoveryMixin
+from bot.llm.llm_recovery import LLMRecoveryMixin
 from bot.agent.hook.registry import register_all_hooks
 from bot.agent.hook.runner import HookRunner
 from bot.agent.tool_executor import ToolExecutor
@@ -55,6 +56,8 @@ class AgentRuntime(LLMRecoveryMixin):
         self.message_bus = message_bus or MessageBus()
         self.tool_registry = get_tool_registry()
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
+        self.tools = self.tool_registry.build_tool(self.config.tools.excluded)
+
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
         self.hook_runner = hook_runner or HookRunner()
@@ -104,6 +107,7 @@ class AgentRuntime(LLMRecoveryMixin):
     async def submit_request(
         self, request: AiServiceGenerateRequest
     ) -> AsyncGenerator[AgentEvent, None]:
+        """ 一次请求的消息收发 """
         await self.start()
         request_id = self._request_id(request)
         subscriber = self.message_bus.subscribe_request(request_id)
@@ -215,7 +219,7 @@ class AgentRuntime(LLMRecoveryMixin):
     # ------------------------------------------------------------------ dispatch loop
 
     async def _dispatch_loop(self) -> None:
-        """Consume inbound requests and route to session workers."""
+        """消费 inbound requests 并传给 session workers."""
         while not self._shutdown_event.is_set():
             request = await self.message_bus.consume_inbound()
             log.info(
@@ -238,26 +242,11 @@ class AgentRuntime(LLMRecoveryMixin):
     ) -> RuntimeSessionState:
         """Get existing session or create new one using pool."""
         session_id = str(request.session_id or "")
-        
-        # Factory function to create new sessions
-        def create_session():
-            return RuntimeSessionState(session_id=session_id, request=request, runtime=self)
-        
-        # Get or create from pool
-        session_state, is_new = await self.session_pool.get_or_create(session_id, create_session)
-        
-        # Initialize new sessions
+        session_state, is_new = await self.session_pool.get_or_create(session_id, request, self)
+
         if is_new:
-            session_state.request = request
-            session_state.touch()
-            
-            # Dispatch OnSessionStart hook
             await self.hook_runner.dispatch("OnSessionStart", session_state)
-        else:
-            # Existing session: update request and touch
-            session_state.request = request
-            session_state.touch()
-        
+
         return session_state
 
     async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
@@ -279,6 +268,7 @@ class AgentRuntime(LLMRecoveryMixin):
         try:
             while not self._shutdown_event.is_set() and not session_state.closed:
                 async with session_state.request_lock:
+                    # 没有等待的请求了，session就结束了，这样合理吗？如果用户一会儿又发送了请求不还得新建？
                     if not session_state.pending_requests:
                         session_state.processing = False
                         return
@@ -306,9 +296,9 @@ class AgentRuntime(LLMRecoveryMixin):
                         session_state.stop_signal.clear()
                         session_state.stop_reason = ""
                     session_state.touch()
-                    if session_state.session_manager is not None and session_state.context is not None:
+                    if session_state.session_manager is not None and session_state.context_manager.chat_messages is not None:
                         session_state.session_manager.save_history(
-                            session_state.session_id, session_state.context.chat_history
+                            session_state.session_id, session_state.context_manager.chat_messages
                         )
         finally:
             async with session_state.request_lock:
@@ -374,23 +364,9 @@ class AgentRuntime(LLMRecoveryMixin):
         now = datetime.utcnow()
         request_dict = request.model_dump()
         request_dict["started_at"] = now.isoformat()
+        # 对话加入日志
         session_state.session_manager.append_chat_history_message(session_state.session_id, request_dict)
 
-
-    # ------------------------------------------------------------------ turn building
-
-    async def _build_turn_state(self, session_state: RuntimeSessionState) -> RuntimeTurnState:
-        # turn_id的处理
-        session_state.step_counter += 1
-        turn_number = session_state.step_counter
-        turn_id = f"{session_state.request_id}"
-        
-        return RuntimeTurnState(
-            turn_id=turn_id,
-            turn_number=turn_number,
-            request_id=session_state.request_id,
-            context=TurnContext(user_input=str(session_state.request.message or ""))
-        )
 
     # ------------------------------------------------------------------ request execution
 
@@ -402,6 +378,14 @@ class AgentRuntime(LLMRecoveryMixin):
         context_manager = session_state.context_manager
         context_manager.add_user_message(user_message)
         error_msg = ""
+        # 初始化
+        activate_turn = session_state.activate_turn
+        activate_turn.state = AgentState.RUNNING
+        activate_turn.started_at = time.time()
+        await self.hook_runner.dispatch("OnTurnStart", session_state)
+        await self._publish_runtime_event(
+            session_state,
+            AgentEvent(event_type="OnTurnStart", data=asdict(activate_turn)))
 
         try:
             # 执行turn的任务
@@ -409,36 +393,33 @@ class AgentRuntime(LLMRecoveryMixin):
                 self._raise_if_stop_requested(session_state)
                 # 聊天历史微压，清除工具执行结果
                 context_manager.microcompact()
-                turn_state = await self._build_turn_state(session_state)
-                session_state.active_steps[turn_state.turn_id] = turn_state
-                session_state.active_step_id = turn_state.turn_id
+                # 初始化step_id step_counter
+
+                activate_turn.step_counter += 1
+                step_id = f"{session_state.request_id}_{activate_turn.step_counter}"  # reqid_1,2,3
+                activate_turn.active_step_id = step_id
+                activate_turn.active_steps.append(step_id)
+                activate_turn.state = AgentState.RUNNING
 
                 try:
-                    await self._execute_step(session_state, turn_state)
+                    await self._execute_step(session_state, activate_turn)
                 finally:
-                    if session_state.context is not None:
-                        session_state.context.chat_history = deepcopy(
-                            turn_state.context.chat_history
-                        )
-                    session_state.active_steps.pop(turn_state.turn_id, None)
-                    session_state.active_step_id = ""
-
-                    # 执行完一次迭代后的
+                    # TODO 这样pop对吗，取出最后面的，有必要维护这样一个activate_steps吗
+                    activate_turn.active_steps.pop()
+                    activate_turn.active_step_id = ""
+                    # 执行完一次迭代后的压缩，到底放到哪里？？？ TODO
                     async for compact_event in context_manager.compact_after_turn():
                         yield compact_event
-
-                if turn_state.state == AgentState.STOPPED:
-                    raise TurnStoppedError(turn_state.transition_reason or "stopped")
-                if turn_state.state == AgentState.FAILED:
-                    session_state.state = AgentState.FAILED
-                    raise RuntimeError(turn_state.error_text or "turn failed")
-                if not turn_state.requires_followup:
+                # 报错合并？
+                # if activate_turn.state == AgentState.STOPPED:
+                #     raise TurnStoppedError(turn_state.transition_reason or "stopped")
+                # if activate_turn.state == AgentState.FAILED:
+                #     session_state.state = AgentState.FAILED
+                #     raise RuntimeError(turn_state.error_text or "turn failed")
+                if not activate_turn.requires_followup:
                     break
 
-
-
-
-
+            log.debug("执行完一轮",session_state.request_id)
             await self._publish_request_event(
                 session_state,
                 AgentEvent(
@@ -447,9 +428,13 @@ class AgentRuntime(LLMRecoveryMixin):
                     state=AgentState.COMPLETED,
                 ),
             )
-
+            activate_turn.finished_at = time.time()
+            activate_turn.state = AgentState.COMPLETED
 
         except TurnStoppedError:
+            activate_turn.state = AgentState.FAILED
+            await self.hook_runner.dispatch("OnError", activate_turn, session=session_state, error=exc)
+
             await self._publish_request_event(
                 session_state,
                 AgentEvent(
@@ -458,7 +443,11 @@ class AgentRuntime(LLMRecoveryMixin):
                     state=AgentState.STOPPED,
                 ),
             )
+
         except asyncio.CancelledError:
+            activate_turn.state = AgentState.FAILED
+            await self.hook_runner.dispatch("OnError", activate_turn, session=session_state, error=exc)
+
             await self._publish_request_event(
                 session_state,
                 AgentEvent(
@@ -469,38 +458,27 @@ class AgentRuntime(LLMRecoveryMixin):
             )
             raise
         except Exception as exc:
-            session_state.state = AgentState.FAILED
+            await self.hook_runner.dispatch("OnError", activate_turn, session=session_state, error=exc)
+
+            activate_turn.state = AgentState.FAILED
             await self._publish_request_event(
                 session_state,
                 AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
             )
+            await self.hook_runner.dispatch("OnError", activate_turn, session=session_state, error=exc)
 
+        finally:
+            activate_turn.finished_at = time.time()
 
+            await self.hook_runner.dispatch("OnTurnEnd", activate_turn, session=session_state)
 
     # ------------------------------------------------------------------ turn execution
 
     async def _execute_step(
-        self, session_state: RuntimeSessionState, turn_state: RuntimeTurnState
+        self, session_state: RuntimeSessionState, turn_state: ActivateTurn
     ) -> None:
-        turn_state.state = AgentState.RUNNING
-        turn_state.started_at = time.time()
-
         try:
             self._raise_if_stop_requested(session_state)
-
-            await self.hook_runner.dispatch("OnTurnStart", turn_state, session=session_state)
-            await self._publish_runtime_event(
-                session_state,
-                turn_state,
-                AgentEvent(
-                    event_type="OnTurnStart",
-                    data={"request_id": turn_state.request_id, "turn_id": turn_state.turn_id},
-                    state=AgentState.RUNNING,
-                ),
-            )
-
-            self._raise_if_stop_requested(session_state)
-
             # 整合message
             messages = await session_state.context_manager.assemble()
             prompt_tokens = self._estimate_message_tokens(messages)
@@ -518,16 +496,14 @@ class AgentRuntime(LLMRecoveryMixin):
                 messages=messages,
                 prompt_tokens=prompt_tokens,
                 projected_total_tokens=projected_total_tokens,
-                tool_catalog=turn_state.context.tool,
+                # tool_catalog=turn_state.context.tool,
             )
             await self._publish_runtime_event(
                 session_state,
-                turn_state,
                 AgentEvent(
                     event_type="LLM_Thinking_Start",
                     data={
-                        "request_id": turn_state.request_id,
-                        "turn_id": turn_state.turn_id,
+                        "request_id": session_state.request_id,
                         "prompt_tokens": prompt_tokens,
                         "message_count": len(messages),
                     },
@@ -573,7 +549,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     }
                     for tc in tool_calls
                 ]
-            turn_state.context.chat_history.append(assistant_message)
+            session_state.context_manager.add_assistant_message(assistant_message)
 
             turn_state.requires_followup = bool(tool_calls)
             for tool_call in tool_calls:
@@ -602,7 +578,6 @@ class AgentRuntime(LLMRecoveryMixin):
                 )
                 await self._publish_runtime_event(
                     session_state,
-                    turn_state,
                     AgentEvent(
                         event_type="ToolExecutionStart", data=tool_call, state=AgentState.RUNNING
                     ),
@@ -623,10 +598,9 @@ class AgentRuntime(LLMRecoveryMixin):
                     "name": tool_call.get("name", ""),
                     "content": result ,
                 }
-                turn_state.context.chat_history.append(tool_message)
+                session_state.context_manager.add_tool_message(tool_message)
                 await self._publish_runtime_event(
                     session_state,
-                    turn_state,
                     AgentEvent(
                         event_type="ToolExecutionEnd",
                         data={"tool_id": tool_call.get("id"), "result": tool_message["content"]},
@@ -635,50 +609,30 @@ class AgentRuntime(LLMRecoveryMixin):
                 )
 
 
-            turn_state.finished_at = time.time()
-            await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
-            turn_state.state = AgentState.COMPLETED
-            await self._publish_runtime_event(
-                session_state,
-                turn_state,
-                AgentEvent(
-                    event_type="TurnCompleted",
-                    data={
-                        "request_id": turn_state.request_id,
-                        "turn_id": turn_state.turn_id,
-                        "requires_followup": turn_state.requires_followup,
-                    },
-                    state=AgentState.COMPLETED,
-                ),
-            )
+            log.debug("执行完一次step 迭代",turn_state.active_step_id,turn_state.step_counter)
         except TurnStoppedError as exc:
             turn_state.state = AgentState.STOPPED
             turn_state.transition_reason = str(exc)
             turn_state.finished_at = time.time()
-            await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             await self._publish_runtime_event(
                 session_state,
-                turn_state,
-                self._build_stopped_event(turn_state, reason=str(exc)),
+                self._build_stopped_event(session_state.request_id, reason=str(exc)),
             )
         except asyncio.CancelledError:
             reason = self._stop_reason(session_state)
             turn_state.state = AgentState.STOPPED
             turn_state.transition_reason = reason
             turn_state.finished_at = time.time()
-            await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             await self._publish_runtime_event(
-                session_state, turn_state, self._build_stopped_event(turn_state, reason=reason)
+                session_state, self._build_stopped_event(session_state.request_id, reason=reason)
             )
         except Exception as exc:
             turn_state.state = AgentState.FAILED
             turn_state.error_text = str(exc)
             turn_state.finished_at = time.time()
             await self.hook_runner.dispatch("OnError", turn_state, session=session_state, error=exc)
-            await self.hook_runner.dispatch("OnTurnEnd", turn_state, session=session_state)
             await self._publish_runtime_event(
                 session_state,
-                turn_state,
                 AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
             )
 
@@ -698,13 +652,12 @@ class AgentRuntime(LLMRecoveryMixin):
             )
         )
 
-    def _build_stopped_event(self, turn_state: RuntimeTurnState, *, reason: str) -> AgentEvent:
+    def _build_stopped_event(self, request_id: str, *, reason: str) -> AgentEvent:
         return AgentEvent(
             event_type="TurnStopped",
             data={
                 "reason": reason,
-                "turn_id": turn_state.turn_id,
-                "request_id": turn_state.request_id,
+                "request_id": request_id,
             },
             state=AgentState.STOPPED,
         )
@@ -712,14 +665,13 @@ class AgentRuntime(LLMRecoveryMixin):
     async def _publish_runtime_event(
         self,
         session_state: RuntimeSessionState,
-        turn_state: RuntimeTurnState,
         event: AgentEvent,
     ) -> None:
         await self.message_bus.publish_outbound(
             RuntimeTurnEvent(
                 session_id=session_state.session_id,
-                request_id=turn_state.request_id,
-                turn_id=turn_state.turn_id,
+                request_id=session_state.request_id,
+                turn_id=session_state.activate_turn.active_step_id,
                 event_type=event.event_type,
                 state=event.state.value,
                 data=event.data,

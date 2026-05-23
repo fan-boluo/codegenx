@@ -78,6 +78,18 @@ class RuntimeTurnState:
     requires_followup: bool = False
     turn_record:SpanRecord =  None
 
+@dataclass
+class ActivateTurn:
+    step_counter: int = 0  # 一次请求（turn）的迭代次数
+    # active_steps: dict[str, RuntimeTurnState] = field(default_factory=dict)  # 活跃的step_id
+    active_step_id: str = ""
+    active_steps: list[str] = field(default_factory=list)  # 活跃的step_id
+    state: AgentState = AgentState.IDLE  # 一次turn的状态
+    requires_followup:bool = False  # 是否需要继续，如果没有工具调用则停止
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    telemetry: TurnTelemetry | None = None
+
 
 @dataclass
 class RuntimeSessionState:
@@ -85,11 +97,9 @@ class RuntimeSessionState:
     session_id: str
     request: AiServiceGenerateRequest | None
     runtime: AgentRuntime
-    context_manager:SessionContext | None
+    context_manager:SessionContext | None  # 整个会话的上下文管理
     session_manager: SessionManager | None = None  # TODO 转移到后台监控模块，负责落盘的
-    workspace_metadata: dict[str, Any] = field(default_factory=dict)
-    skill: list[Any] = field(default_factory=list)
-    tool: list[Any] = field(default_factory=list)
+
 
     # Monitoring (initialised by on_session_start hook)
     telemetry: SessionTelemetry | None = None
@@ -98,37 +108,41 @@ class RuntimeSessionState:
     root_span_id: str = ""
     root_span_started_at: datetime | None = None
 
+    # session 中的请求任务
+    request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # 获取请求任务锁
+    pending_requests: list[AiServiceGenerateRequest] = field(default_factory=list)  # 等待的请求
+    active_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)  # 活跃的请求任务
+    activate_turn:ActivateTurn = field(default_factory=ActivateTurn)  # 当前获取的turn
+
+    # tool
+    tool_iterations: int = 0
+    last_tool_signature: str | None = None
+    consecutive_same_tool_calls: int = 0
+
+
     # Session lifecycle
-    step_counter: int = 0
     started_at: datetime = ""
     last_activity_at: float = 0.0
     state: AgentState = AgentState.IDLE
-    active_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
-    active_steps: dict[str, RuntimeTurnState] = field(default_factory=dict)
-    worker_task: asyncio.Task | None = None
-    pending_requests: list[AiServiceGenerateRequest] = field(default_factory=list)
-    request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     processing: bool = False
+    closed: bool = False
     stop_signal: asyncio.Event = field(default_factory=asyncio.Event)
     stop_reason: str = ""
-    closed: bool = False
+    worker_task: asyncio.Task | None = None  # 当前的session worker
 
     # Task board (s12) — per-app_id, initialised on session start
-    task_manager: Any = None  # bot.agent.task.task_manager.TaskManager
+    # task_manager: Any = None  # bot.agent.task.task_manager.TaskManager
 
     # Per-request fields (reset per request)
 
     # request_id: str = ""
-    context: TurnContext | None = None
+    # context: TurnContext | None = None
     # code_dir: str = ""
     # safe_paths: list[str] = field(default_factory=list)
     # knowledge_cache: dict[str, Any] = field(default_factory=dict)
     # prompt_template: str = ""
     # plan_summary: str = ""
-    tool_iterations: int = 0
-    last_tool_signature: str | None = None
-    consecutive_same_tool_calls: int = 0
-    active_step_id: str = ""
+
 
     def touch(self) -> None:
         self.last_activity_at = time.time()
