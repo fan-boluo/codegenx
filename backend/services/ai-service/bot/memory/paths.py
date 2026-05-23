@@ -18,13 +18,6 @@ def get_hot_memory_path(app_id:str) -> Path:
     return get_memory_dir(app_id) / "MEMORY.md"
 
 
-def get_topics_dir(app_id:str) -> Path:
-    """Warm topic files: ~/.bot/memory/topics/  (created on demand)"""
-    d = get_memory_dir(app_id) / "topics"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 
 def get_session_memory_path(app_id:str,session_id: str) -> Path:
     """Session memory file: ~/.bot/sessions/<session_id>/MEMORY.md"""

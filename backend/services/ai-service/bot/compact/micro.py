@@ -37,11 +37,8 @@ COMPACTABLE_TOOLS = frozenset({
     "shell",
     "grep",
     "glob",
-    "web_search",
-    "web_fetch",
     "edit_file",
     "write_file",
-    "calculator",   # example tool from mock LLM
     "echo",
 })
 

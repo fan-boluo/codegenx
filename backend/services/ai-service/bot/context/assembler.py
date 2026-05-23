@@ -12,7 +12,8 @@ from bot.memory.memory_manager import get_memory_manager
 from bot.skill.skill_loader import SkillLoader
 from bot.utils.context_utils import ensure_app_workdir
 from bot.utils.log_utils import log
-from prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE
+from constants import get_memory_dir, get_code_dir
+from prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE, AUTO_MEMORY_PROMPT
 from shared.schema.ai_service import AiServiceGenerateRequest
 
 
@@ -37,7 +38,12 @@ class ContextAssembler:
     # 会话记忆
     session_memory_prompt:str = ""
 
+    # 自动记忆
+    auto_memorize_prompt = AUTO_MEMORY_PROMPT
+
     extra :str = ""
+
+
 
     async def build_workspace(self,app_id:str):
         code_dir = ensure_app_workdir(app_id)
@@ -62,12 +68,15 @@ class ContextAssembler:
 
         self.workspace_metadata_prompt = workspace_metadata
         self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format("code_dir", workspace_metadata.get("code_dir"))
+        self.auto_memorize_prompt = AUTO_MEMORY_PROMPT.format("memoryDir",get_memory_dir(app_id)).format("projectDir",get_code_dir(app_id))
 
     def build_extra(self) -> str:
-        """ 提醒，需要更新任务看板了 """
+        """ 提醒，需要更新任务看板了
+        # TODO
+        """
         parts = []
-        if extra:
-            parts.append(extra)
+        if self.extra:
+            parts.append(self.extra)
         if not parts:
             return None
         content = "<system-reminder>\n" + "\n".join(parts) + "\n</system-reminder>"
@@ -87,11 +96,13 @@ class ContextAssembler:
         if self.workspace_metadata_prompt:
             parts.append(self.workspace_metadata_prompt)
         if self.skill_prompt:
-            parts.append(f"以下是你可以使用的技能：\n {self.skill_prompt}")
+            parts.append(f"# 以下是你可以使用的技能：\n {self.skill_prompt}")
         if self.session_memory_prompt:
-            parts.append(f"以下是提取的历史对话信息：\n {self.session_memory_prompt}")
+            parts.append(f"# 以下是提取的历史对话信息：\n {self.session_memory_prompt}")
         if self.task_prompt:
-            parts.append(f"以下是任务看板：\n {self.task_prompt}")
+            parts.append(f"# 以下是任务看板：\n {self.task_prompt}")
+        if self.auto_memorize_prompt:
+            parts.append(self.auto_memorize_prompt)
         if self.extra:
             parts.append(self.build_extra())
         return "\n".join(parts)

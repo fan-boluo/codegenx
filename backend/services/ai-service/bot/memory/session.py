@@ -25,8 +25,9 @@ import asyncio
 import re
 from pathlib import Path
 
+from llm.async_client import AsyncLLMClient
 from .paths import get_session_memory_path
-from .prompts import SESSION_MEMORY_TEMPLATE
+from .prompts import SESSION_MEMORY_TEMPLATE, build_extraction_prompt
 
 # ── Thresholds (scaled-down; mirrors DEFAULT_SESSION_MEMORY_CONFIG) ───────────
 # Production: minimumMessageTokensToInit = 10_000
@@ -162,7 +163,7 @@ class SessionMemory:
         """
         try:
             current_notes = self.load()
-            summary = await _mock_summarize(messages, current_notes)
+            summary = await _session_summarize(messages, current_notes,str(self._path))
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(summary, encoding="utf-8")
         except Exception:
@@ -174,6 +175,48 @@ class SessionMemory:
 # ── Mock summariser ────────────────────────────────────────────────────────────
 # Replace with a real sideQuery(Sonnet) call for production.
 # Signature mirrors sideQuery({ model, system, messages, output_format }).
+
+async def _session_summarize(
+    messages: list[dict],
+    current_notes: str,
+    notes_path: str,
+) -> str:
+    """
+    使用大模型从对话中提取结构化 session 摘要。
+
+    Args:
+        messages: 完整的对话历史（list of message dicts）
+        current_notes: 当前已有的 MEMORY.md 内容（可能为空）
+        notes_path: 记忆文件路径（用于提示词中指示更新目标）
+
+    Returns:
+        更新后的 session 记忆内容（完整的新 MEMORY.md 文本）
+    """
+    # 构建提取提示词（系统指令）
+    system_prompt = build_extraction_prompt(
+        messages=messages,
+        current_notes=current_notes,
+        notes_path=notes_path,
+    )
+
+    # 初始化 LLM 客户端
+    client = AsyncLLMClient()
+
+    # 调用大模型（使用 Sonnet 级别模型，temperature=0 保证稳定输出）
+    updated_notes = await client.invoke(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "请根据上述指令更新会话笔记。"}
+        ],
+        temperature=0.0,
+        max_tokens=4096,
+    )
+
+    # 如果模型返回空或失败，回退到当前已有的笔记
+    if not updated_notes or not updated_notes.strip():
+        return current_notes if current_notes else ""
+
+    return updated_notes.strip()
 
 async def _mock_summarize(messages: list[dict], current_notes: str) -> str:
     """
