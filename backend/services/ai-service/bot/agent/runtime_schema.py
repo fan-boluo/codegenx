@@ -121,3 +121,9 @@ class RuntimeSessionState:
             "user_id": self.user_id,
             "request_id": self.request.request_id,
         }
+
+    @property
+    def safe_paths(self) -> list|None:
+        if self.context_manager:
+            return self.context_manager.get_safe_path()
+        return None

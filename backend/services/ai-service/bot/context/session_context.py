@@ -64,6 +64,15 @@ class SessionContext:
         self.system_prompt = self.assembler.prepare_turn_context()
         return self.system_prompt
 
+    def get_safe_path(self) -> list|None:
+        if self.assembler.workspace_metadata:
+            code_dir = self.assembler.workspace_metadata.get("safe_paths",[])
+            rm_dirs =  self.assembler.workspace_metadata.get("allowed_rw_dirs",[])
+
+            return code_dir.extend(rm_dirs)
+        return []
+
+
     def add_user_message(self,message):
         self.chat_messages.append({"role":"user","content":message})
 

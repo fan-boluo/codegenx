@@ -23,7 +23,8 @@ class ContextAssembler:
     memory_prompt: str = ""
 
     # Injected by SessionContext each turn from metadata
-    workspace_metadata_prompt: str = ""
+    # workspace_metadata_prompt: str = ""
+    workspace_metadata:dict = {}
 
     # Appended by caller (e.g. skill frontmatter, plugin text)
     skill_prompt: str = ""
@@ -39,30 +40,20 @@ class ContextAssembler:
     extra :str = ""
 
 
-
     async def build_workspace(self,app_id:str):
         code_dir = ensure_app_workdir(app_id)
         safe_paths = [str(code_dir)]
-        workspace_metadata = {
+        self.workspace_metadata = {
             "code_dir": str(code_dir),
             "safe_paths": list(safe_paths),
-            "allowed_rw_dirs": list(safe_paths),
+            "allowed_rw_dirs": list(safe_paths).extend(str(get_memory_dir(app_id))),
             "os_name": (platform.system() or "Windows").lower(),
             "project_skeleton": self.build_directory_skeleton(code_dir),
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
             # "code_gen_type": str(session.request.code_gen_type or "")
         }
-        workspace_prompt = "## 项目工作区元数据\n"
-        workspace_prompt += f"- 代码根目录：{workspace_metadata['code_dir']}\n"
-        workspace_prompt += f"- 安全路径列表：{', '.join(workspace_metadata['safe_paths'])}\n"
-        workspace_prompt += f"- 允许读写的目录：{', '.join(workspace_metadata['allowed_rw_dirs'])}\n"
-        workspace_prompt += f"- 操作系统类型：{workspace_metadata['os_name']}\n"
-        workspace_prompt += f"- 代码生成类型：{workspace_metadata.get('code_gen_type', '')}\n"
-        workspace_prompt += "- 项目目录结构：\n" + workspace_metadata["project_skeleton"]
-        workspace_prompt += "- time：\n" + str(workspace_metadata["timestamp"])
 
-        self.workspace_metadata_prompt = workspace_prompt
-        self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format(code_dir=workspace_metadata.get("code_dir"))
+        self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format(code_dir=self.workspace_metadata.get("code_dir"))
         self.auto_memorize_prompt = AUTO_MEMORY_PROMPT.format(memoryDir=get_memory_dir(app_id), projectDir=get_code_dir(app_id))
 
     def build_extra(self) -> str:
@@ -88,8 +79,17 @@ class ContextAssembler:
             parts.append(self.base_prompt)
         if self.memory_prompt:
             parts.append(self.memory_prompt)
-        if self.workspace_metadata_prompt:
-            parts.append(self.workspace_metadata_prompt)
+        if self.workspace_metadata:
+            workspace_prompt = "## 项目工作区元数据\n"
+            workspace_prompt += f"- 代码根目录：{self.workspace_metadata['code_dir']}\n"
+            workspace_prompt += f"- 安全路径列表：{', '.join(self.workspace_metadata['safe_paths'])}\n"
+            workspace_prompt += f"- 允许读写的目录：{', '.join(self.workspace_metadata['allowed_rw_dirs'])}\n"
+            workspace_prompt += f"- 操作系统类型：{self.workspace_metadata['os_name']}\n"
+            workspace_prompt += f"- 代码生成类型：{self.workspace_metadata.get('code_gen_type', '')}\n"
+            workspace_prompt += "- 项目目录结构：\n" + self.workspace_metadata["project_skeleton"]
+            workspace_prompt += "- time：\n" + str(self.workspace_metadata["timestamp"])
+
+            parts.append(workspace_prompt)
         if self.skill_prompt:
             parts.append(f"# 以下是你可以使用的技能：\n {self.skill_prompt}")
         if self.session_memory_prompt:

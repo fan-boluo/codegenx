@@ -9,7 +9,9 @@ from shared.constants import get_code_dir
 def ensure_app_workdir(app_id: str | int) -> Path:
     workdir = get_code_dir(app_id)
     workdir.mkdir(parents=True, exist_ok=True)
+    print(workdir,"已创建")
     return workdir
+
 
 
 def ensure_context_workdir(context: Any) -> Path:

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.runtime_schema import ActivateTurn, RuntimeSessionState
 from bot.utils.log_utils import log
 from bot.agent.tool_handler import ToolRegistry
 from shared.constants import get_code_dir
@@ -35,22 +36,20 @@ class ToolExecutor:
             return session
         return getattr(context, "session_state", None)
 
-    async def execute(self, tool_call: Dict[str, Any], context: Any,
-                      session: Any | None = None,safe_paths: Optional[List[str]] = None) -> Any:
+    async def execute(self, tool_call: Dict[str, Any], turn_state: ActivateTurn,
+                      session_state: RuntimeSessionState | None = None,safe_paths: Optional[List[str]] = None) -> Any:
         """
         统一执行工具的逻辑。包含安全检查。
         """
         tool_name = tool_call.get("name")
         tool_input = dict(tool_call.get("arguments", {}) or {})
-        session_state =  session
-        request = getattr(context, "request", None)
         app_id = getattr(session_state, "app_id", "main") if session_state is not None else "main"
         user_id = getattr(session_state, "user_id", "") if session_state is not None else ""
-        session_id = getattr(session_state, "session_id", "default") if session_state is not None else "default"
-        turn_id = str(getattr(context, "turn_id", "") or getattr(request, "turn_id", "") or "")
-        trace_id = getattr(request, "trace_id", "") if request is not None else ""
+        session_id = getattr(session_state, "session_id", "") if session_state is not None else ""
+        turn_id = getattr(session_state, "request_id", "") if session_state is not None else ""
+        trace_id = getattr(session_state, "trace_id", "")
         stop_signal = getattr(session_state, "stop_signal", None) if session_state is not None else None
-        safe_paths = self._resolve_safe_paths(context, session_state,safe_paths)
+        safe_paths = self._resolve_safe_paths(turn_state, session_state,safe_paths)
 
         if tool_name in MEMORY_TOOL_NAMES:
             tool_input.setdefault("app_id", app_id)
