@@ -8,7 +8,7 @@ import time
 import traceback
 from datetime import datetime
 from typing import Any, AsyncGenerator
-from agent.agent_schema import     AgentEvent,AgentState
+from agent.agent_schema import     AgentEvent,AgentState,AgentEventType
 from agent.runtime_schema import (
     RuntimeSessionState,
     TurnStoppedError, ActivateTurn,
@@ -38,7 +38,7 @@ class AgentRuntime(LLMRecoveryMixin):
         self.max_tool_iterations = max(1, int(self.agent_config.max_tool_iterations or 40))
         self.max_same_tool_calls = 3
         self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
-        self.max_steps = self.agent_config.max_steps or 50
+        self.max_steps = self.agent_config.max_steps
         
         self.message_bus = message_bus or MessageBus()
         self.tool_registry = get_tool_registry()
@@ -229,7 +229,7 @@ class AgentRuntime(LLMRecoveryMixin):
 
         if is_new:
             await self.hook_runner.dispatch("OnSessionStart", session_state)
-
+            log.debug("新建一个session_state")
         return session_state
 
     async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
@@ -288,7 +288,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     log.opt(exception=True).error("Unhandled error in request {}: {}", session_state.request_id, exc)
                     await self._publish_request_event(
                         session_state,
-                        AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
+                        AgentEvent(event_type=AgentEventType.ERROR, data=str(exc), state=AgentState.FAILED),
                     )
                 finally:
                     session_state.active_tasks.pop(session_state.request_id, None)
@@ -378,7 +378,7 @@ class AgentRuntime(LLMRecoveryMixin):
             await self.hook_runner.dispatch("OnTurnStart", activate_turn, session=session_state)
             await self._publish_runtime_event(
                 session_state,
-                AgentEvent(event_type="OnTurnStart", data={
+                AgentEvent(event_type=AgentEventType.ON_TURN_START, data={
                     "request_id": request_id,
                     "step_counter": activate_turn.step_counter,
                 }, state=activate_turn.state))
@@ -411,7 +411,7 @@ class AgentRuntime(LLMRecoveryMixin):
             await self._publish_request_event(
                 session_state,
                 AgentEvent(
-                    event_type="RequestCompleted",
+                    event_type=AgentEventType.REQUEST_COMPLETED,
                     data={"request_id": request_id},
                     state=AgentState.COMPLETED,
                 ),
@@ -425,7 +425,7 @@ class AgentRuntime(LLMRecoveryMixin):
             await self._publish_request_event(
                 session_state,
                 AgentEvent(
-                    event_type="RequestStopped",
+                    event_type=AgentEventType.REQUEST_STOPPED,
                     data={"request_id": request_id, "reason": str(exc)},
                     state=AgentState.STOPPED,
                 ),
@@ -438,7 +438,7 @@ class AgentRuntime(LLMRecoveryMixin):
             await self._publish_request_event(
                 session_state,
                 AgentEvent(
-                    event_type="RequestStopped",
+                    event_type=AgentEventType.REQUEST_STOPPED,
                     data={"request_id": request_id, "reason": reason},
                     state=AgentState.STOPPED,
                 ),
@@ -485,7 +485,7 @@ class AgentRuntime(LLMRecoveryMixin):
         await self._publish_runtime_event(
             session_state,
             AgentEvent(
-                event_type="LLM_Thinking_Start",
+                event_type=AgentEventType.LLM_THINKING_START,
                 data={
                     "request_id": session_state.request_id,
                     "prompt_tokens": prompt_tokens,
@@ -563,7 +563,7 @@ class AgentRuntime(LLMRecoveryMixin):
             await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
-                    event_type="ToolExecutionStart", data=tool_call, state=AgentState.RUNNING
+                    event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
                 ),
             )
             log.debug(session_state.request_id, turn_state.step_counter, turn_state.active_step_id, " PreToolUse")
@@ -587,8 +587,8 @@ class AgentRuntime(LLMRecoveryMixin):
             await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
-                    event_type="ToolExecutionEnd",
-                    data={"tool_id": tool_call.get("id"), "result": tool_message["content"]},
+                    event_type=AgentEventType.TOOL_EXECUTION_END,
+                    data={"tool_id": tool_call.get("id"), "tool_name": tool_call.get("name"), "result": tool_message["content"]},
                     state=AgentState.RUNNING,
                 ),
             )
@@ -605,7 +605,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 session_id=str(request.session_id or ""),
                 request_id=self._request_id(request),
                 turn_id="",
-                event_type="RequestStopped",
+                event_type=AgentEventType.REQUEST_STOPPED,
                 state=AgentState.STOPPED.value,
                 data={"reason": reason, "request_id": self._request_id(request)},
             )
@@ -616,6 +616,7 @@ class AgentRuntime(LLMRecoveryMixin):
         session_state: RuntimeSessionState,
         event: AgentEvent,
     ) -> None:
+        data = self._sanitize_event_data(event)
         await self.message_bus.publish_outbound(
             RuntimeTurnEvent(
                 session_id=session_state.session_id,
@@ -623,9 +624,29 @@ class AgentRuntime(LLMRecoveryMixin):
                 turn_id=session_state.activate_turn.active_step_id,
                 event_type=event.event_type,
                 state=event.state.value,
-                data=event.data,
+                data=data,
             )
         )
+
+    def _sanitize_event_data(self, event: AgentEvent) -> Any:
+        """过滤敏感数据，工具事件只描述正在做什么，不传输原始内容。"""
+        if event.event_type == AgentEventType.TOOL_EXECUTION_START:
+            tc = event.data if isinstance(event.data, dict) else {}
+            return {
+                "tool_name": tc.get("name", ""),
+                "tool_id": tc.get("id", ""),
+                "description": f"执行工具: {tc.get('name', 'unknown')}",
+            }
+        if event.event_type == AgentEventType.TOOL_EXECUTION_END:
+            tc = event.data if isinstance(event.data, dict) else {}
+            result = str(tc.get("result", ""))
+            desc = f"工具执行完成, 输出 {len(result)} 字符"
+            return {
+                "tool_name": tc.get("tool_name", ""),
+                "tool_id": tc.get("tool_id", ""),
+                "description": desc,
+            }
+        return event.data
 
     async def _publish_request_event(
         self, session_state: RuntimeSessionState, event: AgentEvent

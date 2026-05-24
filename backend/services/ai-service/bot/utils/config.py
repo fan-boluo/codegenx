@@ -57,7 +57,10 @@ class AgentConfig(Base):
     max_transport_attempts: ClassVar[int] = 3
     transport_backoff_base_seconds: ClassVar[float] = 1.0
     transport_backoff_max_seconds: ClassVar[float] = 8.0
-    max_steps :ClassVar[int] = 50  # 一次turn的最大llm推理步数
+    max_steps: int = Field(
+        default=50,
+        validation_alias=AliasChoices("maxSteps", "max_steps"),
+    )  # 一次turn的最大llm推理步数
     session_cleanup_interval_seconds: ClassVar[int] = 300 # 每隔5分钟就进行闲置sessioni清理一次
     session_idle_timeout_seconds : ClassVar[int] = 1800 # session空闲时间 30分钟就清除
     max_sessions : ClassVar[int] = 100  # sessoion pool的session的最多个数

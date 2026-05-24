@@ -1,7 +1,7 @@
 from dataclasses import field, dataclass
 from typing import Any, Dict
 
-from agent.agent_schema import AgentEvent, AgentState
+from agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from agent.task.task_manager import TaskManager
 from shared.config.log_config import log
 from context.assembler import ContextAssembler
@@ -69,7 +69,7 @@ class SessionContext:
             code_dir = self.assembler.workspace_metadata.get("safe_paths",[])
             rm_dirs =  self.assembler.workspace_metadata.get("allowed_rw_dirs",[])
 
-            return code_dir.extend(rm_dirs)
+            return code_dir + rm_dirs
         return []
 
 
@@ -92,16 +92,16 @@ class SessionContext:
     async def microcompact(self):
         self.chat_messages = microcompact_messages(self.chat_messages)
 
-    async def persist_large_output(self,tool_call:Dict[str, Any], output:ToolResult):
+    async def persist_large_output(self,tool_call:Dict[str, Any], output:ToolResult) -> str:
 
         data =  output.data or ""
-        persist_large_output(tool_call=tool_call, output=data,app_id=self.app_id,session_id=self.session_id)
+        return persist_large_output(tool_call=tool_call, output=data,app_id=self.app_id,session_id=self.session_id)
 
     async def compact_after_turn(self):
         # (a) Session-memory extraction — non-blocking background task
         if self._session_memory.should_extract(self.chat_messages):
             self._session_memory.fire_extract(self.chat_messages)
-
+            log.debug("压缩了")
         # (b) Auto-compaction — awaited so messages are updated before next turn
         # 没有传入llm_fn，使用的是session memory快速压缩
         self.chat_messages, result = await self._compaction.compact_if_needed(
@@ -109,7 +109,7 @@ class SessionContext:
         )
         if result is not None:
             yield AgentEvent(
-                event_type="CompactEvent",
+                event_type=AgentEventType.COMPACT_EVENT,
                 data={
                     "path_used": result.path_used,
                     "tokens_before": result.tokens_before,

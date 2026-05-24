@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import random
 from typing import TYPE_CHECKING, Any
-from agent.agent_schema import AgentEvent, AgentState
+from agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from agent.runtime_schema import  RuntimeSessionState, TurnStoppedError, \
     ActivateTurn
 from shared.config.log_config import log
@@ -66,7 +66,7 @@ class LLMRecoveryMixin:
                         await self._publish_runtime_event(
                             session_state,
                             AgentEvent(
-                                event_type="LLM_Response_Chunk",
+                                event_type=AgentEventType.LLM_RESPONSE_CHUNK,
                                 data=chunk["data"],
                                 state=AgentState.RUNNING,
                             ),

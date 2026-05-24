@@ -118,7 +118,7 @@ STREAM_TIMEOUT_SECONDS = 300
 
 """ 
 
-ROOT_DIR = Path(__file__).resolve().parents[3] / ".data"
+ROOT_DIR = Path(__file__).resolve().parents[2] / ".data"
 
 APPS_DIR = ROOT_DIR / "apps"
 APPS_CODE_DIR = APPS_DIR / "code"

@@ -2,10 +2,13 @@ from typing import Dict, Any
 
 from shared.constants import PERSIST_THRESHOLD, get_current_session_dir, PREVIEW_CHARS, get_runtime_app_dir
 import uuid
+from shared.config.log_config import log
 
 def persist_large_output(tool_call: Dict[str, Any], output: str,app_id:str,session_id:str) -> str:
     if len(output) <= PERSIST_THRESHOLD:
         return output
+
+    log.debug("超过阈值：",PERSIST_THRESHOLD,"执行大结果落盘")
     tool_call_id = tool_call.get("id", app_id+"_"+uuid.uuid4().hex)
 
     persist_dir = get_current_session_dir(app_id,session_id)

@@ -46,7 +46,7 @@ class ContextAssembler:
         self.workspace_metadata = {
             "code_dir": str(code_dir),
             "safe_paths": list(safe_paths),
-            "allowed_rw_dirs": list(safe_paths).extend(str(get_memory_dir(app_id))),
+            "allowed_rw_dirs": safe_paths + [str(get_memory_dir(app_id))],
             "os_name": (platform.system() or "Windows").lower(),
             "project_skeleton": self.build_directory_skeleton(code_dir),
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")

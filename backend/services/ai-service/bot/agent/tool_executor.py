@@ -22,13 +22,6 @@ TASK_TOOL_NAMES = {"task_create", "task_update", "task_get", "task_list"}
 class ToolExecutor:
     def __init__(self, tools_registry: ToolRegistry):
         self.tools_registry = tools_registry
-        # Resolve all safe paths to absolute paths
-        # self.safe_paths = [Path(p).resolve() for p in (safe_paths or [])]
-        # if not self.safe_paths:
-        #     # 如果没有配置 safe_path，可以将其限制为当前工作区或某个默认策略
-        #     # 这里先假设如果没有配置则默认当前文件夹是 safe_path，保护不跑出去
-        #     self.safe_paths = [Path(os.getcwd()).resolve()]
-        #     log.warning(f"No safe_paths configured, defaulting to current working directory: {self.safe_paths}")
 
     @staticmethod
     def _get_session_state(context: Any, session: Any | None) -> Any | None:
