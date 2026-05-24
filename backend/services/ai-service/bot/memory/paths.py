@@ -20,5 +20,5 @@ def get_hot_memory_path(app_id:str) -> Path:
 
 
 def get_session_memory_path(app_id:str,session_id: str) -> Path:
-    """Session memory file: ~/.bot/sessions/<session_id>/MEMORY.md"""
+    """Session memory file: ~/.data/app_id/session/<session_id>/MEMORY.md"""
     return get_session_dir(app_id) / session_id / "MEMORY.md"

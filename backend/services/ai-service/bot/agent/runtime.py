@@ -534,6 +534,10 @@ class AgentRuntime(LLMRecoveryMixin):
                 for tc in tool_calls
             ]
         session_state.context_manager.add_assistant_message(assistant_message)
+        if session_state.session_manager is not None:
+            session_state.session_manager.append_chat_history_message(
+                session_state.session_id, assistant_message
+            )
 
         turn_state.requires_followup = bool(tool_calls)
         for tool_call in tool_calls:
@@ -616,6 +620,7 @@ class AgentRuntime(LLMRecoveryMixin):
         session_state: RuntimeSessionState,
         event: AgentEvent,
     ) -> None:
+        self._record_chat_history(session_state, event)
         data = self._sanitize_event_data(event)
         await self.message_bus.publish_outbound(
             RuntimeTurnEvent(
@@ -627,6 +632,20 @@ class AgentRuntime(LLMRecoveryMixin):
                 data=data,
             )
         )
+
+    def _record_chat_history(self, session_state: RuntimeSessionState, event: AgentEvent) -> None:
+        """将工具执行结果写入 chat_history JSONL，供前端展示完整对话过程。"""
+        sm = session_state.session_manager
+        if sm is None:
+            return
+        if event.event_type == AgentEventType.TOOL_EXECUTION_END:
+            tc = event.data if isinstance(event.data, dict) else {}
+            sm.append_chat_history_message(session_state.session_id, {
+                "role": "tool",
+                "tool_call_id": tc.get("tool_id", ""),
+                "name": tc.get("tool_name", ""),
+                "content": str(tc.get("result", "")),
+            })
 
     def _sanitize_event_data(self, event: AgentEvent) -> Any:
         """过滤敏感数据，工具事件只描述正在做什么，不传输原始内容。"""
