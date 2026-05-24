@@ -110,8 +110,12 @@ class SessionPool:
                     "SessionPool reached max capacity, evicted LRU session: {}",
                     lru_session_id,
                 )
-
-            session = RuntimeSessionState(session_id=session_id, request=request, runtime=runtime)
+            
+            session = RuntimeSessionState(
+                session_id=session_id,
+                request=request,
+                runtime=runtime,
+            )
             session.touch()
             self._sessions[session_id] = session
             return session, True

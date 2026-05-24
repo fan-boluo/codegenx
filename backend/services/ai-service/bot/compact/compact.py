@@ -270,7 +270,7 @@ class CompactionEngine:
     def __init__(
         self,
         session_id: str,
-        llm_fn: Any,                 # async generator: messages -> token strings
+        llm_fn: Any = None,                 # async generator: messages -> token strings
         session_memory: Any = None,  # SessionMemory instance (optional)
     ) -> None:
         self.session_id = session_id

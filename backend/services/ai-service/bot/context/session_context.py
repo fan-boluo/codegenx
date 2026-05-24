@@ -1,8 +1,9 @@
-from dataclasses import field
+from dataclasses import field, dataclass
 from typing import Any, Dict
 
 from agent.agent_schema import AgentEvent, AgentState
 from agent.task.task_manager import TaskManager
+from shared.config.log_config import log
 from context.assembler import ContextAssembler
 from compact import microcompact_messages
 from compact.compact import CompactionEngine
@@ -12,7 +13,7 @@ from memory.memory_manager import MemoryManager
 from skill.skill_loader import SkillLoader
 from tools.base import ToolResult
 
-
+@dataclass
 class SessionContext:
     """
     负责一个session的上下文管理
@@ -46,18 +47,20 @@ class SessionContext:
         self.task = TaskManager(app_id=self.app_id)
         self._session_memory = SessionMemory(session_id=self.session_id,app_id=self.app_id)
         self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_memory)
-
+        self.system_prompt = ""
+        self.chat_messages = []
+        log.info(self.session_id,"SessonContext 启动完毕")
     async def build_system_prompt(self, query:str) -> str:
         """
         每个turn要构建的
         """
         await self.assembler.build_workspace(self.app_id)
 
-        self.assembler.memory_prompt = self.memory.load(query)
-        self.assembler.skill_prompt = self.skill_loader.build_skill()
+        self.assembler.memory_prompt = await self.memory.load(query)
+        self.assembler.skill_prompt = await self.skill_loader.build_skill()
         self.assembler.task_prompt = self.task.get_board()
 
-        self.assembler.session_memory_prompt = self.session_memory.load()
+        self.assembler.session_memory_prompt = self._session_memory.load()
         self.system_prompt = self.assembler.prepare_turn_context()
         return self.system_prompt
 
@@ -75,7 +78,7 @@ class SessionContext:
 
     async def assemble(self)-> list[dict[str, Any]]:
         # 将system_prompt和turn的聊天历史组合
-        return self.assembler.assemble(self.system_prompt,self.chat_messages)
+        return await self.assembler.assemble(self.system_prompt,self.chat_messages)
 
     async def microcompact(self):
         self.chat_messages = microcompact_messages(self.chat_messages)

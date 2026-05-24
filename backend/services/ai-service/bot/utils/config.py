@@ -22,7 +22,7 @@ class AgentConfig(Base):
     name: str = ""
     defaults: bool = False
     workspace: str = "~/.bot/workspace"
-    model: str = "dashscope-qwen/qwen3.5-plus"
+    model: str = "dashscope-qwen/qwen3.6-plus"
     provider: str = (
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     )
@@ -79,7 +79,7 @@ class ProviderConfig(Base):
 
     api_key: str = ""
     api_base: str | None = None
-    model_name: str | None = None
+    # model_name: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
 
 

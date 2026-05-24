@@ -28,7 +28,7 @@ class MemoryManager:
     _surfaced: set[str] = field(default_factory=set)
     _session_bytes: int = field(default=0)
 
-    def load(self, query: str = "") -> str:
+    async def load(self, query: str = "") -> str:
         """
         Assemble memory prompt for the current turn.
 
@@ -49,7 +49,7 @@ class MemoryManager:
 
         # ── Warm tier ─────────────────────────────────────────────────────────
         if query:
-            relevant = find_relevant_topics(
+            relevant = await find_relevant_topics(
                 app_id=self.app_id,
                 query=query,
                 already_surfaced=self._surfaced,

@@ -5,7 +5,7 @@ import asyncio
 from contextlib import suppress
 import json
 import time
-from dataclasses import asdict
+import traceback
 from datetime import datetime
 from typing import Any, AsyncGenerator
 from agent.agent_schema import     AgentEvent,AgentState
@@ -284,13 +284,19 @@ class AgentRuntime(LLMRecoveryMixin):
                 except asyncio.CancelledError:
                     await self._close_session_state(session_state, end_reason="runtime-stop")
                     raise
+                except Exception as exc:
+                    log.opt(exception=True).error("Unhandled error in request {}: {}", session_state.request_id, exc)
+                    await self._publish_request_event(
+                        session_state,
+                        AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
+                    )
                 finally:
                     session_state.active_tasks.pop(session_state.request_id, None)
                     if not session_state.closed:
                         session_state.stop_signal.clear()
                         session_state.stop_reason = ""
                     session_state.touch()
-                    if session_state.session_manager is not None and session_state.context_manager.chat_messages is not None:
+                    if session_state.session_manager is not None and session_state.context_manager is not None:
                         session_state.session_manager.save_history(
                             session_state.session_id, session_state.context_manager.chat_messages
                         )
@@ -301,6 +307,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 if session_state.worker_task is current_task:
                     session_state.processing = False
                     session_state.worker_task = None
+                log.info(session_state.session_id,"finished")
 
 
 
@@ -355,20 +362,27 @@ class AgentRuntime(LLMRecoveryMixin):
     async def _execute_request(self, session_state: RuntimeSessionState) -> None:
         """Process all turns. Always publishes a terminal event; re-raises CancelledError."""
         request_id = session_state.request_id
-        # 加入聊天历史
-        user_message = session_state.request.message
-        context_manager = session_state.context_manager
-        context_manager.add_user_message(user_message)
-        # 初始化
         activate_turn = session_state.activate_turn
         activate_turn.state = AgentState.RUNNING
         activate_turn.started_at = time.time()
-        await self.hook_runner.dispatch("OnTurnStart", activate_turn, session=session_state)
-        await self._publish_runtime_event(
-            session_state,
-            AgentEvent(event_type="OnTurnStart", data=asdict(activate_turn)))
 
         try:
+            # 加入聊天历史
+            user_message = session_state.request.message
+            context_manager = session_state.context_manager
+            if context_manager is None:
+                raise RuntimeError("context_manager is not initialized — on_session_start may not have run")
+            context_manager.add_user_message(user_message)
+            await context_manager.build_system_prompt(user_message)
+
+            await self.hook_runner.dispatch("OnTurnStart", activate_turn, session=session_state)
+            await self._publish_runtime_event(
+                session_state,
+                AgentEvent(event_type="OnTurnStart", data={
+                    "request_id": request_id,
+                    "step_counter": activate_turn.step_counter,
+                }, state=activate_turn.state))
+
             # 执行turn的任务
             while True:
                 self._raise_if_stop_requested(session_state)
@@ -430,6 +444,7 @@ class AgentRuntime(LLMRecoveryMixin):
             )
             raise
         except Exception as exc:
+            log.opt(exception=True).error("_execute_request failed: {}", exc)
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.FAILED
             await self.hook_runner.dispatch("OnError", activate_turn, session=session_state, error=exc)

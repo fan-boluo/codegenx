@@ -50,7 +50,7 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
     session.state = AgentState.RUNNING
     session.started_at = now
 
-    get_monitor_pipeline().on_session_start(session)
+    # get_monitor_pipeline().on_session_start(session)
 
 
 async def on_turn_start(turn: Any, **kwargs):
@@ -61,35 +61,35 @@ async def on_turn_start(turn: Any, **kwargs):
         "turn": {
             "turn_id": session.request_id,
             "turn_number": turn.step_counter,
-            "context": context.model_dump(),
+            "context": context,
         },
     }
     snapshot_path = session.session_manager.save_turn_snapshot(session.request_id, snapshot)
 
-    await get_monitor_pipeline().on_turn_start(session, turn)
+    # await get_monitor_pipeline().on_turn_start(session, turn)
 
 
 async def pre_llm_call(turn: Any, **kwargs):
     session = kwargs["session"]
-    get_monitor_pipeline().pre_llm_call(
-        session, turn,
-        prompt_tokens=kwargs.get("prompt_tokens"),
-        projected_total_tokens=kwargs.get("projected_total_tokens"),
-    )
+    # get_monitor_pipeline().pre_llm_call(
+    #     session, turn,
+    #     prompt_tokens=kwargs.get("prompt_tokens"),
+    #     projected_total_tokens=kwargs.get("projected_total_tokens"),
+    # )
 
 
 async def post_llm_call(turn: Any, **kwargs):
     session = kwargs["session"]
-    await get_monitor_pipeline().post_llm_call(
-        session, turn,
-        usage=kwargs.get("usage"),
-    )
+    # await get_monitor_pipeline().post_llm_call(
+    #     session, turn,
+    #     usage=kwargs.get("usage"),
+    # )
 
 
 async def pre_tool_use(turn: Any, **kwargs):
     session = kwargs["session"]
     tool_call = kwargs.get("tool_call") or {}
-    get_monitor_pipeline().pre_tool_use(session, turn, tool_call)
+    # get_monitor_pipeline().pre_tool_use(session, turn, tool_call)
     def _log_tool_execution(
         self,
         session_manager: Any,
@@ -151,18 +151,19 @@ async def post_tool_use(turn: Any, **kwargs):
     except Exception as exc:
         log.debug(f"Session log write failed for tool '{tool_name}': {exc}")
 
-    await get_monitor_pipeline().post_tool_use(session, turn, tool_call, result)
+    # await get_monitor_pipeline().post_tool_use(session, turn, tool_call, result)
 
 
 async def on_turn_end(turn: Any, **kwargs):
     session = kwargs["session"]
-    await get_monitor_pipeline().on_turn_end(session, turn)
+    # await get_monitor_pipeline().on_turn_end(session, turn)
 
 
 async def on_error(turn: Any, **kwargs):
     session = kwargs["session"]
-    get_monitor_pipeline().on_error(session, turn)
+    # get_monitor_pipeline().on_error(session, turn)
 
 
 async def on_session_end(session: Any, **kwargs):
-    await get_monitor_pipeline().on_session_end(session, **kwargs)
+    pass
+    # await get_monitor_pipeline().on_session_end(session, **kwargs)

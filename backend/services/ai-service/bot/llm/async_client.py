@@ -16,7 +16,7 @@ class AsyncLLMClient:
 
         self.api_key = provider_config.api_key or fallback_provider.api_key or config.providers.custom.api_key or ""
         self.model_base_url = provider_config.api_base or fallback_provider.api_base or config.providers.custom.api_base or "https://api.openai.com/v1"
-        self.model_name = model_name or provider_config.model_name or agent_config.resolved_model_name or "qwen-plus"
+        self.model_name = model_name or agent_config.resolved_model_name or "qwen-plus"
         
         self.client = AsyncOpenAI(
             api_key=self.api_key.strip(),

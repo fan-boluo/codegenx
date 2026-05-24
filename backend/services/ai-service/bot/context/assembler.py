@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from bot.utils.context_utils import ensure_app_workdir
 from bot.utils.log_utils import log
-from constants import get_memory_dir, get_code_dir
+from shared.constants import get_memory_dir, get_code_dir
 from prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE, AUTO_MEMORY_PROMPT
 
 
@@ -57,13 +57,13 @@ class ContextAssembler:
         workspace_prompt += f"- 安全路径列表：{', '.join(workspace_metadata['safe_paths'])}\n"
         workspace_prompt += f"- 允许读写的目录：{', '.join(workspace_metadata['allowed_rw_dirs'])}\n"
         workspace_prompt += f"- 操作系统类型：{workspace_metadata['os_name']}\n"
-        workspace_prompt += f"- 代码生成类型：{workspace_metadata['code_gen_type']}\n"
+        workspace_prompt += f"- 代码生成类型：{workspace_metadata.get('code_gen_type', '')}\n"
         workspace_prompt += "- 项目目录结构：\n" + workspace_metadata["project_skeleton"]
         workspace_prompt += "- time：\n" + str(workspace_metadata["timestamp"])
 
-        self.workspace_metadata_prompt = workspace_metadata
-        self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format("code_dir", workspace_metadata.get("code_dir"))
-        self.auto_memorize_prompt = AUTO_MEMORY_PROMPT.format("memoryDir",get_memory_dir(app_id)).format("projectDir",get_code_dir(app_id))
+        self.workspace_metadata_prompt = workspace_prompt
+        self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format(code_dir=workspace_metadata.get("code_dir"))
+        self.auto_memorize_prompt = AUTO_MEMORY_PROMPT.format(memoryDir=get_memory_dir(app_id), projectDir=get_code_dir(app_id))
 
     def build_extra(self) -> str:
         """ 提醒，需要更新任务看板了
@@ -78,7 +78,7 @@ class ContextAssembler:
         return content
 
 
-    async def prepare_turn_context(self) -> str:
+    def prepare_turn_context(self) -> str:
         """
         每个turn要构建de
         """

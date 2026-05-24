@@ -159,6 +159,8 @@ class MonitorPipeline:
         new turn span
 
         """
+        if session.telemetry is None:
+            return
 
         turn_telemetry = TurnTelemetry.new_tel(session.telemetry)
         turn_telemetry.turn_number = turn.step_counter
@@ -203,6 +205,8 @@ class MonitorPipeline:
 
     async def on_turn_end(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
         telemetry = turn.telemetry
+        if telemetry is None:
+            return
         telemetry.ended_at = _utcnow()
         finished_at = float(turn.finished_at or time.time())
         started_at_ts = float(turn.started_at or finished_at)
@@ -233,6 +237,8 @@ class MonitorPipeline:
             session.telemetry.record_turn(telemetry)
 
     def on_error(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
+        if turn.telemetry is None:
+            return
         turn.telemetry.status = TelemetryStatus.ERROR
         turn.telemetry.llm.is_error = True
 

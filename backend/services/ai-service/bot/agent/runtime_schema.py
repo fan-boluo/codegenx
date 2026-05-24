@@ -55,7 +55,7 @@ class RuntimeSessionState:
     session_id: str
     request: AiServiceGenerateRequest | None
     runtime: AgentRuntime
-    context_manager:SessionContext | None  # 整个会话的上下文管理
+    context_manager: SessionContext | None = None  # 整个会话的上下文管理（由 on_session_start hook 初始化）
     session_manager: SessionManager | None = None  # TODO 转移到后台监控模块，负责落盘的
 
 

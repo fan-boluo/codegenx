@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Set,Optional,List,Tuple
 import json
 from bot.llm.async_client import AsyncLLMClient
-from constants import get_memory_dir
+from shared.constants import get_memory_dir
 from memory.prompts import  FIND_RELEVANT_MD_USER_PROMPT, FIND_RELEVANT_MD_SYSTEM_PROMPT
 
 # ── Budget constants (mirrors Claude Code) ────────────────────────────────────
@@ -240,7 +240,7 @@ async def _llm_score_memories(query: str, topics, llm_client) -> dict:
     files_list = "\n".join(
         f"- {t.name}：{t.description or '无描述'}" for t in topics
     )
-    user_prompt = FIND_RELEVANT_MD_USER_PROMPT.format("query",query).format("files_list", files_list)
+    user_prompt = FIND_RELEVANT_MD_USER_PROMPT.format(query=query, files_list=files_list)
     system_prompt = FIND_RELEVANT_MD_SYSTEM_PROMPT
 
     try:
