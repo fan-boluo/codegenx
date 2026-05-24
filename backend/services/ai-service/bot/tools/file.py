@@ -95,7 +95,11 @@ def check_path(path: Path):
         raise FileNotFoundError(f"File not found: {path}")
 
     if not path.is_file():
-        raise ValueError(f"Not a file: {path}")
+        if path.is_dir():
+            raise IsADirectoryError(
+                f"这是一个目录，不是文件: {path}。请使用 list_directory 工具浏览目录内容。"
+            )
+        raise ValueError(f"Not a regular file: {path}")
 
     if not os.access(path, os.R_OK):
         raise PermissionError(f"File not readable: {path}")
@@ -248,6 +252,19 @@ class ReadFileTool(BaseTool):
             params: dict,
             signal: asyncio.Event | None = None,
             # on_update: Callable[[AgentToolResult[TDetails]], None] | None = None,
+    ) -> ToolResult:
+        try:
+            return await self._do_execute(params, signal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("read_file 执行异常: %s", exc)
+            return ToolResult(success=False, message=f"读取文件失败: {exc}")
+
+    async def _do_execute(
+            self,
+            params: dict,
+            signal: asyncio.Event | None = None,
     ) -> ToolResult:
         path = params["path"]
         offset = params.get("offset")
@@ -417,6 +434,19 @@ class WriteFileTool(BaseTool):
             signal: asyncio.Event | None = None,
             # on_update: Callable[[AgentToolResult[TDetails]], None] | None = None,
     ) -> ToolResult:
+        try:
+            return await self._do_execute(params, signal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("write_file 执行异常: %s", exc)
+            return ToolResult(success=False, message=f"写入文件失败: {exc}")
+
+    async def _do_execute(
+            self,
+            params: dict,
+            signal: asyncio.Event | None = None,
+    ) -> ToolResult:
         path = params["path"]
         content = params["content"]
         # 解析
@@ -488,6 +518,19 @@ class EditFileTool(BaseTool):
             params: dict,
             signal: asyncio.Event | None = None,
     ) -> ToolResult:
+        try:
+            return await self._do_execute(params, signal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("edit_file 执行异常: %s", exc)
+            return ToolResult(success=False, message=f"编辑文件失败: {exc}")
+
+    async def _do_execute(
+            self,
+            params: dict,
+            signal: asyncio.Event | None = None,
+    ) -> ToolResult:
         path = params["path"]
         old_text = params["old_text"]
         new_text = params["new_text"]
@@ -519,3 +562,98 @@ class EditFileTool(BaseTool):
             success=True,
             data=f"Successfully edited {path}",
         )
+
+
+class ListDirectoryTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "list_directory"
+
+    @property
+    def label(self) -> str:
+        return "file"
+
+    @property
+    def description(self) -> str:
+        return (
+            "List the contents of a directory. Shows all files and subdirectories "
+            "with type indicators ([DIR] for directories). "
+            "Use this tool to explore project structure before reading specific files. "
+            "Returns entries sorted alphabetically with directories listed first."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path to list. Can be relative to project root or absolute."
+                },
+            },
+            "required": ["path"]
+        }
+
+    async def execute(
+            self,
+            params: dict,
+            signal: asyncio.Event | None = None,
+    ) -> ToolResult:
+        try:
+            return await self._do_execute(params, signal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("list_directory 执行异常: %s", exc)
+            return ToolResult(success=False, message=f"列出目录失败: {exc}")
+
+    async def _do_execute(
+            self,
+            params: dict,
+            signal: asyncio.Event | None = None,
+    ) -> ToolResult:
+        path = params["path"]
+        absolute_path = resolve_read_path(path, params.get("app_id", "main"))
+
+        if signal and signal.is_set():
+            raise asyncio.CancelledError("Operation aborted")
+
+        if not absolute_path.exists():
+            return ToolResult(
+                success=False,
+                message=f"目录不存在: {path}"
+            )
+        if not absolute_path.is_dir():
+            return ToolResult(
+                success=False,
+                message=f"不是目录: {path}。请使用 read_file 工具读取文件内容。"
+            )
+
+        try:
+            children = sorted(
+                absolute_path.iterdir(),
+                key=lambda x: (x.is_file(), x.name.lower())
+            )
+        except PermissionError:
+            return ToolResult(
+                success=False,
+                message=f"没有权限访问目录: {path}"
+            )
+
+        if signal and signal.is_set():
+            raise asyncio.CancelledError("Operation aborted")
+
+        if not children:
+            return ToolResult(
+                success=True,
+                data=f"目录为空: {absolute_path}"
+            )
+
+        entries: list[str] = []
+        for child in children:
+            prefix = "[DIR]  " if child.is_dir() else "[FILE] "
+            entries.append(f"{prefix}{child.name}")
+
+        output = f"Contents of {absolute_path} ({len(entries)} entries):\n" + "\n".join(entries)
+        return ToolResult(success=True, data=output)

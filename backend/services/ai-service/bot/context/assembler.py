@@ -86,8 +86,8 @@ class ContextAssembler:
             workspace_prompt += f"- 允许读写的目录：{', '.join(self.workspace_metadata['allowed_rw_dirs'])}\n"
             workspace_prompt += f"- 操作系统类型：{self.workspace_metadata['os_name']}\n"
             workspace_prompt += f"- 代码生成类型：{self.workspace_metadata.get('code_gen_type', '')}\n"
-            workspace_prompt += "- 项目目录结构：\n" + self.workspace_metadata["project_skeleton"]
-            workspace_prompt += "- time：\n" + str(self.workspace_metadata["timestamp"])
+            workspace_prompt += "- 项目目录结构：\n" + self.workspace_metadata["project_skeleton"] + "\n"
+            workspace_prompt += "- 元数据生成时间：" + str(self.workspace_metadata["timestamp"])
 
             parts.append(workspace_prompt)
         if self.skill_prompt:
@@ -108,20 +108,34 @@ class ContextAssembler:
         if not root.exists():
             return ""
 
+        _IGNORED_DIRS = {
+            ".git", "node_modules", "__pycache__", ".data",
+            "dist", "build", ".next", ".nuxt",
+            "venv", ".venv", "env", ".env", ".tox",
+            ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+        }
+
         lines: list[str] = []
+        prefix_map = {0: "", 1: "  ", 2: "    "}
 
         def walk(current: Path, depth: int) -> None:
             if depth > max_depth or len(lines) >= max_entries:
                 return
             try:
-                children = sorted(current.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
+                children = sorted(
+                    current.iterdir(),
+                    key=lambda item: (item.is_file(), item.name.lower()),
+                )
             except OSError as exc:
                 log.warning("Failed to read project skeleton for {}: {}", current, exc)
                 return
 
+            indent = prefix_map.get(depth, "    " * depth)
             for child in children:
-                relative = child.relative_to(root).as_posix()
-                lines.append(relative + ("/" if child.is_dir() else ""))
+                if child.is_dir() and child.name in _IGNORED_DIRS:
+                    continue
+                prefix = indent + ("- " if depth > 0 else "")
+                lines.append(prefix + child.name + ("/" if child.is_dir() else ""))
                 if child.is_dir() and depth < max_depth:
                     walk(child, depth + 1)
                 if len(lines) >= max_entries:
