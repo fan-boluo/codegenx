@@ -21,6 +21,7 @@ if str(LOCAL_SERVICES_ROOT) not in sys.path:
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from monitor.health_checker import get_health_checker
 from monitor.maintenance_service import get_monitor_maintenance_service
@@ -223,9 +224,16 @@ async def internal_cleanup_monitor_history(
 	)
 
 
+@app.get("/metrics", response_class=PlainTextResponse)
+async def get_metrics():
+    """Prometheus metrics endpoint (standard path)."""
+    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/internal/monitor/metrics", response_class=PlainTextResponse)
 async def internal_get_monitor_metrics():
-	return PlainTextResponse(await get_monitor_maintenance_service().render_metrics_text())
+    """Prometheus metrics endpoint (internal path, kept for compatibility)."""
+    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 

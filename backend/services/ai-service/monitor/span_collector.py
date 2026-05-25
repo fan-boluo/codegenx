@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from monitor.telemetry_schema import OperationName, SpanRecord, TurnTelemetry
+from monitor.telemetry_schema import OperationType, SpanRecord, TurnTelemetry
 
 if TYPE_CHECKING:
     pass
@@ -57,7 +57,7 @@ class SpanCollector:
     # ------------------------------------------------------------------
 
     def get_turn_spans(self, turn_id: str) -> list[SpanRecord]:
-        return [s for s in self._buffer if s.turn_id == turn_id]
+        return [s for s in self._buffer if s.request_id == turn_id]
 
     def get_all(self) -> list[SpanRecord]:
         return list(self._buffer)
@@ -78,7 +78,7 @@ class SpanCollector:
         from the already-maintained TurnTelemetry sub-models.
         """
         spans = self.get_turn_spans(turn_telemetry.turn_id)
-        tool_spans = [s for s in spans if s.operation_name.startswith(OperationName.TOOL.value)]
+        tool_spans = [s for s in spans if s.operation_type.startswith(OperationType.TOOL.value)]
         error_count = sum(1 for s in spans if s.status == "error")
         tool_calls_status = [
             {
@@ -95,21 +95,21 @@ class SpanCollector:
             "turn_id": turn_telemetry.turn_id,
             "turn_number": turn_telemetry.turn_number,
             "status": turn_telemetry.status.value,
-            "prompt_tokens": turn_telemetry.llm.prompt_tokens,
-            "completion_tokens": turn_telemetry.llm.completion_tokens,
-            "llm_latency_ms": turn_telemetry.llm.total_ms,
-            "first_token_ms": turn_telemetry.llm.first_token_ms,
-            "llm_recovery_count": turn_telemetry.llm.recovery_count,
-            "llm_recovery_kind": turn_telemetry.llm.recovery_kind,
-            "is_llm_error": turn_telemetry.llm.is_error,
-            "tool_calls_count": len(turn_telemetry.tool),
-            "tool_calls_status": tool_calls_status,
-            "memory_hits": turn_telemetry.memory.hits,
-            "memory_retrieval_ms": turn_telemetry.memory.latency_ms,
-            "is_memory_error": turn_telemetry.memory.is_error,
-            "context_tokens": turn_telemetry.context.token_count,
-            "context_token_usage": int(turn_telemetry.context.token_usage),
-            "is_compress": turn_telemetry.context.is_compress,
+            "prompt_tokens": turn_telemetry.llm_prompt_tokens,
+            "completion_tokens": turn_telemetry.llm_completion_tokens,
+            "llm_latency_ms": turn_telemetry.llm_total_ms,
+            "first_token_ms": turn_telemetry.llm_first_token_ms,
+            "llm_recovery_count": turn_telemetry.llm_recovery_count,
+            "llm_recovery_kind": turn_telemetry.llm_recovery_kind,
+            "is_llm_error": turn_telemetry.llm_is_error,
+            "tool_calls_count": len(turn_telemetry.tool_calls),
+            "tool_calls_detail": tool_calls_status,
+            "memory_hits": turn_telemetry.memory_hits,
+            "memory_retrieval_ms": turn_telemetry.memory_latency_ms,
+            "is_memory_error": turn_telemetry.memory_is_error,
+            "context_tokens": turn_telemetry.context_token_count,
+            "context_token_usage": int(turn_telemetry.context_token_usage),
+            "is_compress": turn_telemetry.context_is_compress,
             "error_count": error_count,
             "started_at": turn_telemetry.started_at,
             "ended_at": turn_telemetry.ended_at,

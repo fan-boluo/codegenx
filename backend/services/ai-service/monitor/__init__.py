@@ -13,11 +13,7 @@ from monitor.telemetry_schema import (
 	MonitorAlertRecord,
 	SessionTelemetry,
 	TelemetryStatus,
-	TurnContextMetrics,
-	TurnLLMMetrics,
-	TurnMemoryMetrics,
 	TurnTelemetry,
-	TurnToolMetrics,
 )
 
 __all__ = [
@@ -35,9 +31,5 @@ __all__ = [
 	"MonitorAlertRecord",
 	"SessionTelemetry",
 	"TelemetryStatus",
-	"TurnContextMetrics",
-	"TurnLLMMetrics",
-	"TurnMemoryMetrics",
 	"TurnTelemetry",
-	"TurnToolMetrics",
 ]

@@ -164,3 +164,7 @@ def get_current_session_dir(app_id: str | int,session_id:str) -> Path:
 # 压缩
 PERSIST_THRESHOLD = 30000  # 压缩阈值
 PREVIEW_CHARS = 2000  # 展示的长度
+
+# 监控
+# 是否开启
+TELEMETRY_OPEN = False
