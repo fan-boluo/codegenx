@@ -10,3 +10,4 @@ config.json
 cc/
 learn-claudecode/
 /backend/services/ai-service/bak/
+/.data/
