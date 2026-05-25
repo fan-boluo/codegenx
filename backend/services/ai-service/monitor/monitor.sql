@@ -1,24 +1,25 @@
-CREATE TABLE spans (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    app_id VARCHAR(64) NOT NULL DEFAULT 'main',
-    user_id VARCHAR(64) DEFAULT '',
-    trace_id CHAR(32) NOT NULL,
-    span_id CHAR(16) NOT NULL,
-    parent_span_id CHAR(16),
-    session_id VARCHAR(64) NOT NULL,
-    turn_id VARCHAR(64) DEFAULT '',
-    turn_number INT DEFAULT 0,
-    operation_name VARCHAR(128) NOT NULL,
-    start_time DATETIME(3) NOT NULL,
-    end_time DATETIME(3),
-    duration_ms INT,
-    status VARCHAR(10) DEFAULT 'running',
-    attributes JSON,
-    INDEX idx_app_start_time (app_id, start_time),
-    INDEX idx_trace_id (trace_id),
-    INDEX idx_session_turn (session_id, turn_number),
-    INDEX idx_start_time (start_time)
-);
+CREATE TABLE `spans` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `app_id` varchar(64) NOT NULL DEFAULT 'main',
+  `user_id` varchar(64) DEFAULT '',
+  `trace_id` char(32) NOT NULL,
+  `span_id` char(16) NOT NULL,
+  `parent_span_id` char(16) DEFAULT NULL,
+  `session_id` varchar(64) NOT NULL,
+  `request_id` varchar(64) DEFAULT '',
+  `step_counter` int DEFAULT '0',
+  `operation_type` varchar(20) NOT NULL,
+  `start_time` datetime(3) NOT NULL,
+  `end_time` datetime(3) DEFAULT NULL,
+  `duration_ms` int DEFAULT NULL,
+  `status` varchar(10) DEFAULT 'running',
+  `attributes` json DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_app_start_time` (`app_id`,`start_time`),
+  KEY `idx_trace_id` (`trace_id`),
+  KEY `idx_session_turn` (`session_id`,`step_counter`),
+  KEY `idx_start_time` (`start_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
 CREATE TABLE session_metrics (
     session_id VARCHAR(64) PRIMARY KEY,
