@@ -2,7 +2,18 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - 'prometheus_alerts.yml'
+
 scrape_configs:
   - job_name: 'codegenx-services'
     static_configs:
-      - targets: ['api-gateway:8000', 'user-service:8001', 'ai-service:8002', 'chat-service:8005', 'task-service:8004']
+      - targets: ['api-gateway:8000', 'user-service:8001', 'ai-service:8002', 'task-service:8004']
+
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['mysql-exporter:9104']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']

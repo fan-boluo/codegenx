@@ -83,19 +83,12 @@ def _load_app_module():
     monitor_package = ModuleType("monitor")
     monitor_package.__path__ = []  # type: ignore[attr-defined]
 
-    health_checker_module = ModuleType("monitor.health_checker")
     maintenance_module = ModuleType("monitor.maintenance_service")
     query_service_module = ModuleType("monitor.monitor_query_service")
 
     class _MonitorStub:
-        async def get_system_health(self):
-            return {"overallStatus": "up"}
-
         async def cleanup_history(self, **kwargs):
             return {"cleaned": 0, **kwargs}
-
-        async def render_metrics_text(self):
-            return ""
 
         async def get_overview(self):
             return {}
@@ -116,12 +109,10 @@ def _load_app_module():
             return {}
 
     monitor_stub = _MonitorStub()
-    health_checker_module.get_health_checker = lambda: monitor_stub
     maintenance_module.get_monitor_maintenance_service = lambda: monitor_stub
     query_service_module.get_monitor_query_service = lambda: monitor_stub
 
     sys.modules.setdefault("monitor", monitor_package)
-    sys.modules["monitor.health_checker"] = health_checker_module
     sys.modules["monitor.maintenance_service"] = maintenance_module
     sys.modules["monitor.monitor_query_service"] = query_service_module
 
@@ -389,14 +380,8 @@ class AppRouteSmokeTest(unittest.TestCase):
                     num_turns=1,
                 )
 
-        class BrokenHealthChecker:
-            async def get_system_health(self):
-                raise RuntimeError("monitor unavailable")
-
         module.session_store._store.clear()
-        with patch.object(module, "QueryEngine", FakeEngine), patch.object(
-            module, "get_health_checker", return_value=BrokenHealthChecker()
-        ):
+        with patch.object(module, "QueryEngine", FakeEngine):
             with TestClient(module.app) as client:
                 response = client.post(
                     "/api/ai/codegen/stream",
@@ -429,10 +414,6 @@ class AppRouteSmokeTest(unittest.TestCase):
                 self.assertIn("event: meta", internal_response.text)
                 self.assertIn("event: chunk", internal_response.text)
                 self.assertIn("event: done", internal_response.text)
-
-                health_response = client.get("/health")
-                self.assertEqual(health_response.status_code, 200)
-                self.assertEqual(health_response.json()["monitor"]["overallStatus"], "unavailable")
 
         self.assertEqual(module.session_store.count(), 1)
         engine = module.session_store.get("session-route")

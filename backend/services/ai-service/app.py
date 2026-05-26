@@ -23,7 +23,6 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from monitor.health_checker import get_health_checker
 from monitor.maintenance_service import get_monitor_maintenance_service
 from monitor.monitor_query_service import get_monitor_query_service
 from shared.config.config import get_settings
@@ -206,11 +205,6 @@ async def internal_list_monitor_alerts(
 @app.get("/internal/monitor/config")
 async def internal_get_monitor_config():
 	return await get_monitor_query_service().get_monitor_config()
-
-
-@app.get("/internal/monitor/health")
-async def internal_get_monitor_health():
-	return await get_health_checker().get_system_health()
 
 
 @app.post("/internal/monitor/cleanup")

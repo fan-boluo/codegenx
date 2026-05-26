@@ -33,10 +33,6 @@ alert_evaluator = types.ModuleType("monitor.alert_evaluator")
 alert_evaluator.get_alert_streak_tracker = lambda: None
 sys.modules["monitor.alert_evaluator"] = alert_evaluator
 
-health_checker = types.ModuleType("monitor.health_checker")
-health_checker.get_health_checker = lambda: None
-sys.modules["monitor.health_checker"] = health_checker
-
 maintenance_service = types.ModuleType("monitor.maintenance_service")
 maintenance_service.get_monitor_maintenance_service = lambda: None
 sys.modules["monitor.maintenance_service"] = maintenance_service

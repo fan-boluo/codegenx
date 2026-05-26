@@ -41,7 +41,6 @@ if str(REPO_ROOT) not in sys.path:
 from bot.agent.runtime import AgentRuntime
 from infra.mysql.session import shutdown_mysql_engine
 from infra.redis.redis_client import redis_client
-from monitor.health_checker import get_health_checker
 from shared.config.log_config import log
 
 
@@ -49,9 +48,7 @@ class AgentAdapterService:
     def __init__(self) -> None:
         self._runtime: AgentRuntime | None = None
         self._startup_lock = asyncio.Lock()
-        self._startup_summary: dict[str, object] = {}
         self._started = False
-        self._health_task: asyncio.Task | None = None
         self._telemetry_started = False
 
     def _get_runtime(self) -> AgentRuntime:
@@ -65,17 +62,6 @@ class AgentAdapterService:
         # OTLP telemetry removed — monitor module now uses its own collectors.
         return False
 
-    async def _health_check_loop(self) -> None:
-        checker = get_health_checker()
-        while True:
-            try:
-                await checker.get_system_health()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log.warning("ai-service background health check failed: {}", exc)
-            await asyncio.sleep(60)
-
     async def startup(self) -> None:
         async with self._startup_lock:
             if self._started:
@@ -87,23 +73,10 @@ class AgentAdapterService:
             # runtime.start 启动runtime需要的任务
             await runtime.start()
             log.info("启动runtime完毕")
-            # runtime主流程用不到的后台任务在这里启动
-            if self._health_task is None:
-                self._health_task = asyncio.create_task(
-                    self._health_check_loop(),
-                    name="ai-service-health-check",
-                )
-                log.info("启动健康检查")
             self._started = True
 
     async def shutdown(self) -> None:
         async with self._startup_lock:
-            if self._health_task is not None:
-                self._health_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await self._health_task
-                self._health_task = None
-
             if self._runtime is not None:
                 with suppress(Exception):
                     await self._runtime.stop()
