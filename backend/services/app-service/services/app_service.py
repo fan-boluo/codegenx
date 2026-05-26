@@ -23,7 +23,6 @@ from shared.schema.app import AppAddRequest, AppAdminUpdateRequest, AppDeployReq
 from shared.schema.common import PageData
 from shared.schema.code import GeneratedCodeSaveRequest
 
-from core.ai_client import AiServiceClient
 from core.auth_proxy import JWTUser
 from core.code_generator_facade import CodePersistenceFacade
 from chat_history import ChatHistoryService
@@ -37,7 +36,6 @@ settings = get_settings()
 class AppService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
-        self.ai_service_client = AiServiceClient()
         self.code_persistence_facade = CodePersistenceFacade()
         self.screenshot_service = ScreenshotService()
 

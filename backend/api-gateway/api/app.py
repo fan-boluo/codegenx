@@ -1,4 +1,4 @@
-"""App-facing gateway routes forwarded to app-service or chat-service."""
+"""App-facing gateway routes forwarded to app-service or ai-service."""
 
 from __future__ import annotations
 

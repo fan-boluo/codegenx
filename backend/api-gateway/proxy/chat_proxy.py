@@ -1,4 +1,4 @@
-"""Chat-service HTTP proxy for API gateway."""
+"""AI-service HTTP proxy for API gateway — streams chat/stop requests."""
 
 from __future__ import annotations
 
@@ -30,11 +30,11 @@ def _build_forward_headers(authorization: str | None, trace_id: str | None) -> d
 
 
 class ChatProxy:
-    """Proxy class that forwards chat requests to app-service HTTP endpoints."""
+    """Proxy class that forwards chat requests to ai-service HTTP endpoints."""
 
     def __init__(self) -> None:
-        self.service_name = settings.app_service_name
-        self.base_url = f"http://{settings.app_service_host}:{settings.app_service_http_port}"
+        self.service_name = settings.ai_service_name
+        self.base_url = f"http://{settings.ai_service_host}:{settings.ai_service_http_port}"
         self._timeout = httpx.Timeout(120.0)
 
     async def resolve_base_url(self) -> str:
@@ -75,9 +75,9 @@ class ChatProxy:
                             yield chunk
             except httpx.HTTPStatusError as exc:
                 body = await exc.response.aread()
-                detail = body.decode("utf-8", errors="ignore") or "调用聊天服务失败"
+                detail = body.decode("utf-8", errors="ignore") or "调用 AI 服务失败"
                 log.error(
-                    "chat-service stream bad response path={} method={} status={} traceId={} upstreamInstance={} body={}",
+                    "ai-service stream bad response path={} method={} status={} traceId={} upstreamInstance={} body={}",
                     path,
                     method,
                     exc.response.status_code,
@@ -97,7 +97,7 @@ class ChatProxy:
                 yield "event: done\ndata: \n\n"
             except Exception as exc:
                 log.error(
-                    "chat-service stream failed path={} method={} traceId={} upstreamInstance={} error={}",
+                    "ai-service stream failed path={} method={} traceId={} upstreamInstance={} error={}",
                     path,
                     method,
                     trace_id,
@@ -117,7 +117,7 @@ class ChatProxy:
             finally:
                 total_latency_ms = int((time.perf_counter() - started_at) * 1000)
                 log.info(
-                    "chat-service stream path={} method={} traceId={} upstreamInstance={} firstChunkLatencyMs={} totalLatencyMs={}",
+                    "ai-service stream path={} method={} traceId={} upstreamInstance={} firstChunkLatencyMs={} totalLatencyMs={}",
                     path,
                     method,
                     trace_id,
@@ -166,12 +166,12 @@ class ChatProxy:
                     traceId=trace_id,
                     retryable=False,
                 )
-                log.error("chat-service request failed path={} method={} error={}", path, method, exc)
+                log.error("ai-service request failed path={} method={} error={}", path, method, exc)
                 raise BusinessException(ErrorCode.SYSTEM_ERROR, invocation_error.to_message()) from exc
 
         latency_ms = (time.perf_counter() - started_at) * 1000
         log.info(
-            "chat-service request serviceName={} resolvedInstance={} path={} method={} latencyMs={:.2f} traceId={}",
+            "ai-service request serviceName={} resolvedInstance={} path={} method={} latencyMs={:.2f} traceId={}",
             self.service_name,
             base_url,
             path,
@@ -181,7 +181,7 @@ class ChatProxy:
         )
 
         if response.status_code >= 400:
-            detail = response.text or "调用聊天服务失败"
+            detail = response.text or "调用 AI 服务失败"
             invocation_error = ServiceInvocationError(
                 serviceName=self.service_name,
                 protocol="http",
@@ -193,7 +193,7 @@ class ChatProxy:
                 retryable=response.status_code >= 500,
             )
             log.error(
-                "chat-service bad response path={} method={} status={} body={}",
+                "ai-service bad response path={} method={} status={} body={}",
                 path,
                 method,
                 response.status_code,
@@ -204,13 +204,13 @@ class ChatProxy:
         try:
             return response.json()
         except Exception as exc:
-            log.error("chat-service invalid json path={} method={} body={}", path, method, response.text)
+            log.error("ai-service invalid json path={} method={} body={}", path, method, response.text)
             invocation_error = ServiceInvocationError(
                 serviceName=self.service_name,
                 protocol="http",
                 operation=f"{method} {path}",
                 target=url,
-                message="聊天服务返回格式错误",
+                message="AI 服务返回格式错误",
                 traceId=trace_id,
                 retryable=False,
             )

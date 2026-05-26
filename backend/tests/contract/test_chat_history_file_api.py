@@ -13,9 +13,9 @@ from fastapi.testclient import TestClient
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-CHAT_SERVICE_ROOT = BACKEND_ROOT / "services" / "chat-service"
-CHAT_SERVICE_SERVICES_ROOT = CHAT_SERVICE_ROOT / "services"
-for candidate in (str(CHAT_SERVICE_SERVICES_ROOT), str(CHAT_SERVICE_ROOT), str(BACKEND_ROOT)):
+APP_SERVICE_ROOT = BACKEND_ROOT / "services" / "app-service"
+APP_SERVICE_SERVICES_ROOT = APP_SERVICE_ROOT / "services"
+for candidate in (str(APP_SERVICE_SERVICES_ROOT), str(APP_SERVICE_ROOT), str(BACKEND_ROOT)):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
 
@@ -48,8 +48,8 @@ class ChatHistoryFileApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.runtime_root = Path(self.temp_dir.name) / "workspace"
-        self.original_session_dir_getter = chat_history.get_bot_session_dir
-        chat_history.get_bot_session_dir = lambda app_id: self.runtime_root / str(app_id) / "session"
+        self.original_session_dir_getter = chat_history.get_session_dir
+        chat_history.get_session_dir = lambda app_id: self.runtime_root / str(app_id) / "session"
         self.service = ChatHistoryService(FakeSession())
 
         app = FastAPI()
@@ -60,7 +60,7 @@ class ChatHistoryFileApiTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.client.close()
-        chat_history.get_bot_session_dir = self.original_session_dir_getter
+        chat_history.get_session_dir = self.original_session_dir_getter
         self.temp_dir.cleanup()
 
     def test_user_and_admin_endpoints_read_jsonl_history(self) -> None:

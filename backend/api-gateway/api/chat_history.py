@@ -1,4 +1,4 @@
-"""Chat history routes forwarded by gateway to chat-service."""
+"""Chat history routes forwarded by gateway to app-service."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, Query
 
-from proxy.chat_proxy import ChatProxy
+from proxy.app_proxy import AppProxy
 
 
 router = APIRouter(prefix="/chatHistory", tags=["chatHistory"])
@@ -23,7 +23,7 @@ async def list_app_chat_history(
     if last_create_time:
         params["last_create_time"] = last_create_time
 
-    proxy = ChatProxy()
+    proxy = AppProxy()
     return await proxy.request_json(
         method="GET",
         path=f"/api/chatHistory/app/{app_id}",
@@ -37,7 +37,7 @@ async def list_all_chat_history_by_page_for_admin(
     payload: dict[str, Any],
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
-    proxy = ChatProxy()
+    proxy = AppProxy()
     return await proxy.request_json(
         method="POST",
         path="/api/chatHistory/admin/list/page/vo",

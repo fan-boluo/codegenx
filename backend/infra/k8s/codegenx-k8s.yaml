@@ -72,27 +72,6 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: chat-service
-  namespace: codegenx
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: chat-service
-  template:
-    metadata:
-      labels:
-        app: chat-service
-    spec:
-      containers:
-        - name: chat-service
-          image: codegenx/chat-service:latest
-          ports:
-            - containerPort: 8005
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
   name: task-service
   namespace: codegenx
 spec:
@@ -149,19 +128,6 @@ spec:
   ports:
     - port: 8002
       targetPort: 8002
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: chat-service
-  namespace: codegenx
-spec:
-  type: ClusterIP
-  selector:
-    app: chat-service
-  ports:
-    - port: 8005
-      targetPort: 8005
 ---
 apiVersion: v1
 kind: Service

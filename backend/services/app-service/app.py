@@ -32,13 +32,11 @@ from shared.schema.common import BaseResponse, DeleteRequest, PageData
 from shared.schema.code import GeneratedCodeSaveRequest
 from shared.utils.result_utils import success
 from app_service import AppService
-from chat_api import router as chat_router
 from chat_history_api import router as chat_history_router
 
 app = FastAPI(title="CodeGenX App Service", version="1.0.0")
 static_resource_service = StaticResourceService()
 service_registry = AppServiceRegistry()
-app.include_router(chat_router)
 app.include_router(chat_history_router)
 
 

@@ -73,12 +73,6 @@ class Settings(BaseSettings):
     app_service_register_port: str = "8004"
     app_service_discovery_cache_ttl_seconds: int = 3
 
-    chat_service_host: str = "localhost"
-    chat_service_http_port: str = "8005"
-    chat_service_name: str = "chat-service"
-    chat_service_register_host: str = ""
-    chat_service_register_port: str = "8005"
-    
     ai_service_host: str = "localhost"
     ai_service_port: str = "50053"
     ai_service_http_port: str = "8002"
