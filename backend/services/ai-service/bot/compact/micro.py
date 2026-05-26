@@ -61,74 +61,58 @@ def microcompact_messages(messages: list[dict]) -> list[dict]:
     将工具执行结果超长的压缩
     Return a shallow-copied message list with oversized tool results cleared.
 
-    Mirrors the legacy microcompactMessages() path (non-cached).
+    Messages are expected in the normalized OpenAI-compatible schema:
+      - tool:      {"role":"tool", "content":"<str>", "tool_call_id":"<str>", "name":"<str>"}
+      - assistant: {"role":"assistant", "content":"<str>",
+                     "tool_calls":[{"id":"...", "function":{"name":"..."}}]}
 
     The function:
-      1. Builds an index: tool_use_id → position of the tool_result in messages.
-      2. For every assistant tool_use whose name is in COMPACTABLE_TOOLS,
-         checks the corresponding tool_result token count.
-      3. If above MAX_TOOL_RESULT_TOKENS, replaces the result content with
-         CLEARED_MARKER.
+      1. Builds an index: tool_call_id → msg_index for every tool message.
+      2. For every assistant tool_call whose function.name is in COMPACTABLE_TOOLS,
+         checks the corresponding tool message content length.
+      3. If above MAX_TOOL_RESULT_TOKENS, replaces the tool message's content
+         with CLEARED_MARKER.
 
     Returns a new list; the input is never mutated.
     """
-    # Build tool_use_id → (msg_index, result_index_within_content) map
-    result_index: dict[str, tuple[int, int]] = {}
+    # Build tool_call_id → msg_index map (one result per tool message)
+    result_index: dict[str, int] = {}
     for msg_i, msg in enumerate(messages):
         if msg.get("role") != "tool":
             continue
-        content = msg.get("content", [])
-        if isinstance(content, list):
-            for res_i, item in enumerate(content):
-                uid = item.get("tool_use_id", "")
-                if uid:
-                    result_index[uid] = (msg_i, res_i)
+        tc_id = msg.get("tool_call_id", "")
+        if tc_id:
+            result_index[tc_id] = msg_i
 
-    # Identify which tool_use_ids should be cleared
+    # Identify which tool_call_ids should be cleared
     to_clear: set[str] = set()
     for msg in messages:
         if msg.get("role") != "assistant":
             continue
         for tc in msg.get("tool_calls", []):
-            name = tc.get("name", "")
+            name = tc.get("function", {}).get("name", "")
             uid = tc.get("id", "")
             if name not in COMPACTABLE_TOOLS or not uid:
                 continue
-            loc = result_index.get(uid)
-            if loc is None:
+            msg_i = result_index.get(uid)
+            if msg_i is None:
                 continue
-            msg_i, res_i = loc
-            result_content = (
-                messages[msg_i].get("content", [])[res_i].get("content", "")
-            )
+            result_content = messages[msg_i].get("content", "")
             if isinstance(result_content, str) and _rough_tokens(result_content) > MAX_TOOL_RESULT_TOKENS:
                 to_clear.add(uid)
 
     if not to_clear:
         return messages  # nothing to do; return original reference
 
-    # Build new list, cloning only mutated messages
+    # Build new list, cloning only mutated tool messages
     new_messages: list[dict] = []
     for msg_i, msg in enumerate(messages):
         if msg.get("role") != "tool":
             new_messages.append(msg)
             continue
-
-        content = msg.get("content", [])
-        if not isinstance(content, list):
-            new_messages.append(msg)
-            continue
-
-        new_content = list(content)
-        mutated = False
-        for res_i, item in enumerate(new_content):
-            uid = item.get("tool_use_id", "")
-            if uid in to_clear:
-                new_content[res_i] = {**item, "content": CLEARED_MARKER}
-                mutated = True
-
-        if mutated:
-            new_messages.append({**msg, "content": new_content})
+        tc_id = msg.get("tool_call_id", "")
+        if tc_id in to_clear:
+            new_messages.append({**msg, "content": CLEARED_MARKER})
         else:
             new_messages.append(msg)
 
@@ -142,9 +126,7 @@ def microcompact_stats(
     cleared = sum(
         1
         for msg in after
-        if msg.get("role") == "tool"
-        for item in (msg.get("content") or [])
-        if isinstance(item, dict) and item.get("content") == CLEARED_MARKER
+        if msg.get("role") == "tool" and msg.get("content") == CLEARED_MARKER
     )
     return {"cleared_results": cleared, "message_count": len(after)}
 
