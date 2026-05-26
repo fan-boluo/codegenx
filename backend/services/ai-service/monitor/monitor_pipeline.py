@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Any
 
 from agent.runtime_schema import RuntimeSessionState, ActivateTurn
+from bot.agent.agent_schema import AgentState
 from monitor.alert_evaluator import get_monitor_alert_evaluator
 from monitor.metric_collector import MetricCollector
 from monitor.monitor_store import MonitorStore, get_monitor_store
@@ -51,15 +52,14 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
-def _session_status(state: Any) -> TelemetryStatus:
+def _session_status(state: Any) -> AgentState:
+    if isinstance(state, AgentState):
+        return state
     normalized = str(getattr(state, "value", state) or "").lower()
-    if normalized == "failed":
-        return TelemetryStatus.ERROR
-    if normalized == "stopped":
-        return TelemetryStatus.STOPPED
-    if normalized == "completed":
-        return TelemetryStatus.SUCCESS
-    return TelemetryStatus.RUNNING
+    for agent_state in AgentState:
+        if agent_state.value == normalized:
+            return agent_state
+    return AgentState.RUNNING
 
 
 def _tool_status(result: Any) -> TelemetryStatus:
@@ -145,10 +145,10 @@ class MonitorPipeline:
                     getattr(session, "root_span_started_at", None) or telemetry.started_at or _utcnow(),
                     telemetry.ended_at,
                 ),
-                status="error" if telemetry.status == TelemetryStatus.ERROR else "ok",
+                status="error" if telemetry.status == AgentState.FAILED else "ok",
                 attributes={
                     "session.end_reason": telemetry.end_reason,
-                    "session.total_turns": telemetry.total_turns,
+                    "session.total_turns": telemetry.turn_number,
                 },
             )
 
@@ -232,13 +232,13 @@ class MonitorPipeline:
                 turn_span_id,
                 end_time=telemetry.ended_at,
                 duration_ms=telemetry.duration_ms,
-                status="error" if telemetry.status == TelemetryStatus.ERROR else "ok",
+                status="error" if telemetry.status == AgentState.FAILED else "ok",
                 attributes={
                     "turn.duration_ms": telemetry.duration_ms,
-                    "turn.prompt_tokens": telemetry.llm_prompt_tokens,
-                    "turn.completion_tokens": telemetry.llm_completion_tokens,
-                    "turn.tool_calls": len(telemetry.tool_calls),
-                    "turn.memory_hits": telemetry.memory_hits,
+                    "turn.prompt_tokens": telemetry.total_prompt_tokens,
+                    "turn.completion_tokens": telemetry.total_completion_tokens,
+                    "turn.tool_calls": telemetry.total_tool_calls,
+                    "turn.memory_hits": telemetry.total_memory_hits,
                 },
             )
 
@@ -253,8 +253,7 @@ class MonitorPipeline:
     def on_error(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
         if turn.telemetry is None:
             return
-        turn.telemetry.status = TelemetryStatus.ERROR
-        turn.telemetry.llm_is_error = True
+        turn.telemetry.status = AgentState.FAILED
         record_error(session.telemetry, turn.telemetry, scope="turn", error_type="pipeline_error")
 
     # ------------------------------------------------------------------
@@ -270,8 +269,8 @@ class MonitorPipeline:
         telemetry = turn.telemetry
         prompt_tokens = int(kwargs.get("prompt_tokens", 0) or 0)
         projected_total_tokens = int(kwargs.get("projected_total_tokens", 0) or 0)
-        telemetry.context_token_count = prompt_tokens
-        telemetry.context_token_usage = projected_total_tokens
+        telemetry.token_count = prompt_tokens
+        telemetry.token_usage = projected_total_tokens
 
         metric_collector = self._metric_collectors.get(session.session_id)
         if metric_collector:
@@ -315,12 +314,10 @@ class MonitorPipeline:
         total_ms = max(0, int((time.perf_counter() - started_perf) * 1000)) if started_perf else 0
         ended_utc = _utcnow()
 
-        telemetry.llm_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        telemetry.llm_completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        telemetry.llm_total_ms = total_ms
-        # TODO
-        telemetry.llm_first_token_ms = int(usage.get("first_token_ms", 0) or 0)
-        telemetry.llm_is_error = int(usage.get("is_error", 0) or 0)
+        telemetry.total_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        telemetry.total_completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        telemetry.total_tokens = telemetry.total_prompt_tokens + telemetry.total_completion_tokens
+        first_token_ms = int(usage.get("first_token_ms", 0) or 0)
 
         metric_collector = self._metric_collectors.get(session.session_id)
         if metric_collector:
@@ -334,14 +331,14 @@ class MonitorPipeline:
                 duration_ms=total_ms,
                 status="ok",
                 attributes={
-                    "llm.prompt_tokens": telemetry.llm_prompt_tokens,
-                    "llm.completion_tokens": telemetry.llm_completion_tokens,
-                    "llm.first_token_ms": telemetry.llm_first_token_ms,
+                    "llm.prompt_tokens": telemetry.total_prompt_tokens,
+                    "llm.completion_tokens": telemetry.total_completion_tokens,
+                    "llm.first_token_ms": first_token_ms,
                     "llm.total_ms": total_ms,
                 },
             )
 
-        record_llm_call(session.telemetry, telemetry)
+        record_llm_call(session.telemetry, telemetry, is_error=False, total_ms=total_ms, first_token_ms=first_token_ms)
 
         if session.telemetry:
             alerts = await get_monitor_alert_evaluator().evaluate_llm(
@@ -349,7 +346,8 @@ class MonitorPipeline:
                 session_telemetry=session.telemetry,
                 turn_telemetry=telemetry,
                 token_budget=session.telemetry.token_budget,
-                projected_total_tokens=telemetry.context_token_usage,
+                projected_total_tokens=telemetry.token_usage,
+                llm_total_ms=total_ms,
             )
             if alerts:
                 log.info("LLM alerts session={} turn={} count={}", session.session_id, session.request_id, len(alerts))
@@ -405,11 +403,9 @@ class MonitorPipeline:
         ended_utc = _utcnow()
 
         telemetry = turn.telemetry
-        telemetry.tool_calls.append(dict(
-            tool_name=tool_name,
-            latency_ms=latency_ms,
-            is_error=(status == TelemetryStatus.ERROR),
-        ))
+        telemetry.total_tool_calls += 1
+        if status == TelemetryStatus.ERROR:
+            telemetry.total_tool_call_errors += 1
 
         collector = self._span_collectors.get(session.session_id)
         if tool_span_id and collector:
@@ -422,9 +418,9 @@ class MonitorPipeline:
             )
 
         if tool_name in MEMORY_TOOL_NAMES:
-            telemetry.memory_hits += _memory_hits(result)
-            telemetry.memory_latency_ms += latency_ms
-            record_memory_hits(session.telemetry, telemetry, _memory_hits(result))
+            hits = _memory_hits(result)
+            telemetry.total_memory_hits += hits
+            record_memory_hits(session.telemetry, telemetry, hits)
 
         record_tool_call(
             session.telemetry, telemetry,

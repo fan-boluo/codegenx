@@ -197,14 +197,13 @@ def record_turn_end(session_telemetry, turn_telemetry) -> None:
 # LLM helpers
 # ---------------------------------------------------------------------------
 
-def record_llm_call(session_telemetry, turn_telemetry) -> None:
+def record_llm_call(session_telemetry, turn_telemetry, *, is_error: bool = False, total_ms: int = 0, first_token_ms: int = 0) -> None:
     labels = _base_labels(session_telemetry, turn_telemetry)
-    is_error = getattr(turn_telemetry, "llm_is_error", False)
     status = "error" if is_error else "ok"
-    total_s = (getattr(turn_telemetry, "llm_total_ms", 0) or 0) / 1000
-    first_s = (getattr(turn_telemetry, "llm_first_token_ms", 0) or 0) / 1000
-    prompt_tokens = getattr(turn_telemetry, "llm_prompt_tokens", 0) or 0
-    completion_tokens = getattr(turn_telemetry, "llm_completion_tokens", 0) or 0
+    total_s = total_ms / 1000
+    first_s = first_token_ms / 1000
+    prompt_tokens = getattr(turn_telemetry, "total_prompt_tokens", 0) or 0
+    completion_tokens = getattr(turn_telemetry, "total_completion_tokens", 0) or 0
 
     llm_calls_total.labels(**labels, status=status).inc()
     llm_latency_seconds.labels(**labels).observe(total_s)
@@ -213,15 +212,15 @@ def record_llm_call(session_telemetry, turn_telemetry) -> None:
     llm_completion_tokens_total.labels(**labels).inc(completion_tokens)
 
     recovery_count = getattr(turn_telemetry, "llm_recovery_count", 0) or 0
-    recovery_kind = getattr(turn_telemetry, "llm_recovery_kind", "") or ""
+    recovery_kind = getattr(turn_telemetry, "last_recovery_kind", "") or ""
     if recovery_count > 0:
         llm_recoveries_total.labels(**labels, recovery_kind=recovery_kind).inc(recovery_count)
 
 
 def record_context_metrics(session_telemetry, turn_telemetry) -> None:
     labels = _base_labels(session_telemetry, turn_telemetry)
-    count = getattr(turn_telemetry, "context_token_count", 0) or 0
-    usage = getattr(turn_telemetry, "context_token_usage", 0.0) or 0.0
+    count = getattr(turn_telemetry, "token_count", 0) or 0
+    usage = getattr(turn_telemetry, "token_usage", 0.0) or 0.0
     context_token_count.labels(**labels).set(count)
     token_usage_ratio.labels(**labels).set(min(usage, 1.0))
 

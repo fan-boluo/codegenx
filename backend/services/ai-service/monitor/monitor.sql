@@ -40,14 +40,13 @@ CREATE TABLE session_metrics (
     total_prompt_tokens BIGINT DEFAULT 0,
     total_completion_tokens BIGINT DEFAULT 0,
     total_tokens BIGINT DEFAULT 0,
-    max_duration_ms INT DEFAULT 0,
-    min_duration_ms INT DEFAULT 999999,
-    recovery_count INT DEFAULT 0,
+    llm_recovery_count INT DEFAULT 0,
     last_recovery_kind VARCHAR(32) DEFAULT '',
 
     total_tool_calls INT DEFAULT 0,
     total_tool_call_errors INT DEFAULT 0,
     total_memory_hits INT DEFAULT 0,
+    memory_is_error BOOL DEFAULT FALSE,
 
     started_at DATETIME(3) NOT NULL,
     ended_at DATETIME(3),
@@ -60,46 +59,42 @@ CREATE TABLE session_metrics (
 );
 
 CREATE TABLE turn_metrics (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    trace_id CHAR(32) NOT NULL,
+    turn_id VARCHAR(64) PRIMARY KEY,
     session_id VARCHAR(64) NOT NULL,
-    request_id VARCHAR(64) NOT NULL,
-    turn_id VARCHAR(64) NOT NULL,
+    trace_id CHAR(32) NOT NULL,
+    request_id VARCHAR(64) NOT NULL DEFAULT '',
     app_id VARCHAR(64) NOT NULL DEFAULT 'main',
     user_id VARCHAR(64),
     model VARCHAR(32) NOT NULL DEFAULT 'unknown',
     span_id VARCHAR(64) NOT NULL DEFAULT '',
 
-    turn_number INT DEFAULT 0,
     status VARCHAR(16) DEFAULT 'running',
-    end_reason VARCHAR(32) DEFAULT '',
+    end_reason VARCHAR(32),
+    turn_number INT DEFAULT 0,
     token_count INT DEFAULT 0,
     token_usage REAL DEFAULT 0.0,
     is_compress BOOL DEFAULT FALSE,
 
-    prompt_tokens INT DEFAULT 0,
-    completion_tokens INT DEFAULT 0,
-    total_tokens INT DEFAULT 0,
-    llm_latency_ms INT,
-    first_token_ms INT,
-    max_duration_ms INT,
-    min_duration_ms INT,
-    recovery_count INT DEFAULT 0,
+    total_prompt_tokens BIGINT DEFAULT 0,
+    total_completion_tokens BIGINT DEFAULT 0,
+    total_tokens BIGINT DEFAULT 0,
+    llm_recovery_count INT DEFAULT 0,
     last_recovery_kind VARCHAR(32) DEFAULT '',
 
-    tool_calls_count INT DEFAULT 0,
+    total_tool_calls INT DEFAULT 0,
     total_tool_call_errors INT DEFAULT 0,
-    memory_hits INT DEFAULT 0,
+    total_memory_hits INT DEFAULT 0,
+    memory_is_error BOOL DEFAULT FALSE,
 
-    started_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    started_at DATETIME(3) NOT NULL,
     ended_at DATETIME(3),
     duration_ms INT DEFAULT 0,
-    created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
     INDEX idx_turn_metrics_trace (trace_id),
     INDEX idx_session_turn (session_id, turn_number),
     INDEX idx_request_turn (session_id, request_id, turn_number),
-    INDEX idx_turn_metrics_status (status, created_at)
+    INDEX idx_turn_metrics_status (status, updated_at)
 );
 
 CREATE TABLE monitor_alerts (

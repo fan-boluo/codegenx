@@ -200,7 +200,7 @@ class LLMRecoveryMixin:
     ) -> None:
         if turn_state.telemetry is not None:
             turn_state.telemetry.llm_recovery_count = total_count
-            turn_state.telemetry.llm_recovery_kind = kind
+            turn_state.telemetry.last_recovery_kind = kind
 
 
 def _recovery_backoff_delay(attempt: int, base: float, max_delay: float) -> float:

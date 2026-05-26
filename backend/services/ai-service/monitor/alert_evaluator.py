@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.mysql.session import session_maker
 from infra.redis.redis_client import redis_client
-from monitor.telemetry_schema import AlertLevel, MonitorAlertRecord, SessionTelemetry, TelemetryStatus, TurnTelemetry
+from bot.agent.agent_schema import AgentState
+from monitor.telemetry_schema import AlertLevel, MonitorAlertRecord, SessionTelemetry, TurnTelemetry
 from shared.config.log_config import log
 from utils.config import load_config
 
@@ -43,7 +44,7 @@ class MonitorAlertEvaluator:
             return []
 
         triggered = (
-            session_telemetry.status == TelemetryStatus.RUNNING
+            session_telemetry.status == AgentState.RUNNING
             and turn_telemetry.turn_number > int(rule.thresholdTurns)
         )
         return await self._sync_alert_state(
@@ -70,6 +71,7 @@ class MonitorAlertEvaluator:
         turn_telemetry: TurnTelemetry,
         token_budget: int,
         projected_total_tokens: int,
+        llm_total_ms: int = 0,
     ) -> list[MonitorAlertRecord]:
         alerts = load_config().monitor.alerts
         records: list[MonitorAlertRecord] = []
@@ -78,7 +80,7 @@ class MonitorAlertEvaluator:
             avg_latency_ms, sample_count = await self._push_latency_window(
                 session_id=session_telemetry.session_id,
                 window_size=int(alerts.llmAvgLatencyLast5.windowSize),
-                latency_ms=int(turn_telemetry.llm_total_ms or 0),
+                latency_ms=llm_total_ms,
             )
             avg_latency_seconds = avg_latency_ms / 1000 if sample_count else 0.0
             records.extend(
@@ -107,7 +109,7 @@ class MonitorAlertEvaluator:
             )
 
         if alerts.llmSingleTimeout.enabled:
-            llm_total_seconds = int(turn_telemetry.llm_total_ms or 0) / 1000
+            llm_total_seconds = llm_total_ms / 1000
             records.extend(
                 await self._sync_alert_state(
                     rule_name="llmSingleTimeout",
@@ -121,7 +123,7 @@ class MonitorAlertEvaluator:
                     ),
                     observed_value=round(llm_total_seconds, 3),
                     threshold_value=alerts.llmSingleTimeout.thresholdSeconds,
-                    payload={"llm_total_ms": int(turn_telemetry.llm_total_ms or 0)},
+                    payload={"llm_total_ms": llm_total_ms},
                     triggered=llm_total_seconds >= float(alerts.llmSingleTimeout.thresholdSeconds),
                 )
             )

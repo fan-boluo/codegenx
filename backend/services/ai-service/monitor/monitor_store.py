@@ -85,10 +85,10 @@ class MonitorStore:
             await session.execute(
                 mysql_insert(TurnMetricsModel),
                 {
-                    "trace_id": metrics["trace_id"],
-                    "session_id": metrics["session_id"],
-                    "request_id": metrics.get("request_id") or "",
                     "turn_id": metrics["turn_id"],
+                    "session_id": metrics["session_id"],
+                    "trace_id": metrics["trace_id"],
+                    "request_id": metrics.get("request_id") or "",
                     "app_id": metrics.get("app_id") or "main",
                     "user_id": metrics.get("user_id") or "",
                     "model": metrics.get("model") or "unknown",
@@ -99,22 +99,19 @@ class MonitorStore:
                     "token_count": metrics.get("token_count", 0),
                     "token_usage": float(metrics.get("token_usage", 0) or 0),
                     "is_compress": metrics.get("is_compress", False),
-                    "prompt_tokens": metrics.get("prompt_tokens"),
-                    "completion_tokens": metrics.get("completion_tokens"),
+                    "total_prompt_tokens": metrics.get("total_prompt_tokens", 0),
+                    "total_completion_tokens": metrics.get("total_completion_tokens", 0),
                     "total_tokens": metrics.get("total_tokens", 0),
-                    "llm_latency_ms": metrics.get("llm_latency_ms"),
-                    "first_token_ms": metrics.get("first_token_ms"),
-                    "max_duration_ms": metrics.get("max_duration_ms"),
-                    "min_duration_ms": metrics.get("min_duration_ms"),
-                    "recovery_count": metrics.get("recovery_count", 0),
+                    "llm_recovery_count": metrics.get("llm_recovery_count", 0),
                     "last_recovery_kind": metrics.get("last_recovery_kind") or "",
-                    "tool_calls_count": metrics.get("tool_calls_count", 0),
+                    "total_tool_calls": metrics.get("total_tool_calls", 0),
                     "total_tool_call_errors": metrics.get("total_tool_call_errors", 0),
-                    "memory_hits": metrics.get("memory_hits", 0),
+                    "total_memory_hits": metrics.get("total_memory_hits", 0),
+                    "memory_is_error": metrics.get("memory_is_error", False),
                     "started_at": metrics.get("started_at") or datetime.utcnow(),
                     "ended_at": metrics.get("ended_at"),
                     "duration_ms": metrics.get("duration_ms", 0),
-                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
                 },
             )
 
@@ -125,11 +122,6 @@ class MonitorStore:
     # ------------------------------------------------------------------
 
     async def upsert_session_metrics(self, telemetry: SessionTelemetry) -> bool:
-        min_ms = (
-            0
-            if telemetry.min_llm_latency_ms in (0, 999999)
-            else telemetry.min_llm_latency_ms
-        )
         row = {
             "session_id": telemetry.session_id,
             "trace_id": telemetry.trace_id,
@@ -138,22 +130,21 @@ class MonitorStore:
             "user_id": telemetry.user_id or "",
             "model": telemetry.model or "unknown",
             "span_id": "",
-            "status": telemetry.status.value,
+            "status": telemetry.status.value if hasattr(telemetry.status, "value") else str(telemetry.status),
             "end_reason": telemetry.end_reason or "",
-            "turn_number": telemetry.total_turns,
+            "turn_number": telemetry.turn_number,
             "token_count": 0,
             "token_usage": 0.0,
             "is_compress": False,
             "total_prompt_tokens": telemetry.total_prompt_tokens,
             "total_completion_tokens": telemetry.total_completion_tokens,
-            "total_tokens": telemetry.total_prompt_tokens + telemetry.total_completion_tokens,
-            "max_duration_ms": telemetry.max_llm_latency_ms,
-            "min_llm_latency_ms": min_ms,
-            "recovery_count": telemetry.recovery_count,
+            "total_tokens": telemetry.total_tokens,
+            "llm_recovery_count": telemetry.llm_recovery_count,
             "last_recovery_kind": telemetry.last_recovery_kind,
             "total_tool_calls": telemetry.total_tool_calls,
-            "total_tool_call_errors": telemetry.total_errors,
+            "total_tool_call_errors": telemetry.total_tool_call_errors,
             "total_memory_hits": telemetry.total_memory_hits,
+            "memory_is_error": telemetry.memory_is_error,
             "started_at": telemetry.started_at or datetime.utcnow(),
             "ended_at": telemetry.ended_at,
             "duration_ms": self._duration_ms(telemetry.started_at, telemetry.ended_at),

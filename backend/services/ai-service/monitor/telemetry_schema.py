@@ -4,6 +4,7 @@ import secrets
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+from bot.agent.agent_schema import AgentState
 
 from pydantic import BaseModel, Field
 
@@ -71,10 +72,6 @@ class MemoryMetrics(BaseModel):
     is_error: bool = False
 
 
-# ---------------------------------------------------------------------------
-# SpanRecord: one row in the `spans` table
-# ---------------------------------------------------------------------------
-
 def _new_span_id() -> str:
     return secrets.token_hex(8)
 
@@ -121,40 +118,48 @@ class SpanRecord(BaseModel):
         record.duration_ms = max(0, int((now - record.start_time).total_seconds() * 1000))
 
 
-# ---------------------------------------------------------------------------
-# SessionTelemetry: session-level metric accumulator (lives on session state)
-# ---------------------------------------------------------------------------
-
-class SessionTelemetry(BaseModel):
-    """Session-level aggregate metrics.  Flat model — no nested sub-models."""
-
+class BaseTelemetry(BaseModel):
     # Identification
     trace_id: str = ""
-    session_id: str
-    app_id: str = "main"
+    session_id: str = ""
+    request_id: str = ""
+    app_id: str = ""
     user_id: str = ""
     model: str = "unknown"
-    token_budget: int = 0
+    span_id: str = ""
+
+class SessionTelemetry(BaseTelemetry):
+    """Session-level 监控属性，表示当前session的状态"""
+
+    token_budget: int = 0  # 用户剩余token
 
     # Timing / lifecycle
     started_at: datetime | None = None
     ended_at: datetime | None = None
-    status: TelemetryStatus = TelemetryStatus.RUNNING
+    duration_ms: int = 0
+    status: AgentState = AgentState.IDLE
     end_reason: str = ""
 
-    # Aggregated from turns
-    total_turns: int = 0
+    turn_number: int = 0  # 第几轮
+    # Context
+    token_count: int = 0
+    token_usage: float = 0.0
+    context_is_compress: bool = False
+
+    # LLM
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
-    sum_llm_latency_ms: int = 0
-    sum_first_token_ms: int = 0
-    max_llm_latency_ms: int = 0
-    min_llm_latency_ms: int = 999999
+    total_tokens: int = 0
+    llm_recovery_count: int = 0
+    last_recovery_kind: str = ""  # 最后一次的回复类型
+
+    # tool
     total_tool_calls: int = 0
-    total_errors: int = 0
+    total_tool_call_errors: int = 0
+
+    # Per-turn Memory
     total_memory_hits: int = 0
-    recovery_count: int = 0
-    last_recovery_kind: str = ""
+    memory_is_error: bool = False
 
     @staticmethod
     def new_tel(session: RuntimeSessionState) -> SessionTelemetry:
@@ -169,69 +174,30 @@ class SessionTelemetry(BaseModel):
 
     def record_turn(self, turn: TurnTelemetry) -> None:
         """Accumulate per-turn metrics into this session summary."""
-        self.total_turns += 1
-        self.total_prompt_tokens += turn.llm_prompt_tokens
-        self.total_completion_tokens += turn.llm_completion_tokens
-        llm_ms = turn.llm_total_ms
-        self.sum_llm_latency_ms += llm_ms
-        self.sum_first_token_ms += turn.llm_first_token_ms
-        if llm_ms > 0:
-            self.max_llm_latency_ms = max(self.max_llm_latency_ms, llm_ms)
-            self.min_llm_latency_ms = min(self.min_llm_latency_ms, llm_ms)
-        self.total_tool_calls += len(turn.tool_calls)
-        if turn.status == TelemetryStatus.ERROR:
-            self.total_errors += 1
-        self.total_memory_hits += turn.memory_hits
+        self.turn_number += 1
+        self.total_prompt_tokens += turn.total_prompt_tokens
+        self.total_completion_tokens += turn.total_completion_tokens
+        self.total_tokens += turn.total_tokens
+        self.total_tool_calls += turn.total_tool_calls
+        self.total_tool_call_errors += turn.total_tool_call_errors
+        self.total_memory_hits += turn.total_memory_hits
         if turn.llm_recovery_count > 0:
-            self.recovery_count += turn.llm_recovery_count
-            self.last_recovery_kind = turn.llm_recovery_kind
+            self.llm_recovery_count += turn.llm_recovery_count
+            self.last_recovery_kind = turn.last_recovery_kind
+        if turn.memory_is_error:
+            self.memory_is_error = True
 
 
 # ---------------------------------------------------------------------------
 # TurnTelemetry: per-turn tracking object (lives on turn state in handlers)
 # ---------------------------------------------------------------------------
 
-class TurnTelemetry(BaseModel):
-    """Per-turn metrics.  Flat model — no nested sub-models."""
+class TurnTelemetry(SessionTelemetry):
+    """turn-level 监控属性，表示当前turn的状态"""
 
     # Identification
-    trace_id: str = ""
-    session_id: str = ""
-    request_id: str = ""
     turn_id: str = ""
-    turn_number: int = 0
-    app_id: str = "main"
-    user_id: str = ""
-    model: str = "unknown"
-    token_budget: int = 0
 
-    # Timing / lifecycle
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
-    duration_ms: int = 0
-    status: TelemetryStatus = TelemetryStatus.RUNNING
-
-    # Per-turn LLM
-    llm_prompt_tokens: int = 0
-    llm_completion_tokens: int = 0
-    llm_first_token_ms: int = 0
-    llm_total_ms: int = 0
-    llm_recovery_count: int = 0
-    llm_recovery_kind: str = ""
-    llm_is_error: bool = False
-
-    # Per-turn Context
-    context_token_count: int = 0
-    context_token_usage: float = 0.0
-    context_is_compress: bool = False
-
-    # Per-turn Tool calls
-    tool_calls: list[dict] = Field(default_factory=list)
-
-    # Per-turn Memory
-    memory_hits: int = 0
-    memory_latency_ms: int = 0
-    memory_is_error: bool = False
 
     @staticmethod
     def new_tel(session_tel: SessionTelemetry) -> TurnTelemetry:

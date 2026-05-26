@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class MetricCollector:
-    """In-memory 指标 buffer for one agent session."""
+    """In-memory metric buffer for one agent session."""
 
     def __init__(self) -> None:
         self._session_buffer: list[SessionTelemetry] = []
@@ -31,18 +31,16 @@ class MetricCollector:
                 item.ended_at = tele.ended_at
                 item.duration_ms = tele.duration_ms
                 item.status = tele.status
-                item.llm_prompt_tokens = tele.llm_prompt_tokens
-                item.llm_completion_tokens = tele.llm_completion_tokens
-                item.llm_total_ms = tele.llm_total_ms
-                item.llm_first_token_ms = tele.llm_first_token_ms
+                item.total_prompt_tokens = tele.total_prompt_tokens
+                item.total_completion_tokens = tele.total_completion_tokens
+                item.total_tokens = tele.total_tokens
                 item.llm_recovery_count = tele.llm_recovery_count
-                item.llm_recovery_kind = tele.llm_recovery_kind
-                item.llm_is_error = tele.llm_is_error
-                item.tool_calls = tele.tool_calls
-                item.memory_hits = tele.memory_hits
-                item.memory_latency_ms = tele.memory_latency_ms
+                item.last_recovery_kind = tele.last_recovery_kind
+                item.total_tool_calls = tele.total_tool_calls
+                item.total_tool_call_errors = tele.total_tool_call_errors
+                item.total_memory_hits = tele.total_memory_hits
                 item.memory_is_error = tele.memory_is_error
-                item.context_token_count = tele.context_token_count
-                item.context_token_usage = tele.context_token_usage
+                item.token_count = tele.token_count
+                item.token_usage = tele.token_usage
                 item.context_is_compress = tele.context_is_compress
                 return

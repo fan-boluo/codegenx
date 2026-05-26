@@ -57,12 +57,10 @@ class MonitorQueryService:
                         SELECT
                             COUNT(*) AS total_turns,
                             COALESCE(AVG(duration_ms), 0) AS avg_turn_duration_ms,
-                            COALESCE(AVG(llm_latency_ms), 0) AS avg_llm_latency_ms,
-                            COALESCE(AVG(first_token_ms), 0) AS avg_first_token_ms,
                             COALESCE(AVG(token_count), 0) AS avg_context_tokens,
                             COALESCE(AVG(token_usage), 0) AS avg_context_token_usage,
-                            COALESCE(SUM(tool_calls_count), 0) AS total_tool_calls,
-                            COALESCE(SUM(memory_hits), 0) AS total_memory_hits
+                            COALESCE(SUM(total_tool_calls), 0) AS total_tool_calls,
+                            COALESCE(SUM(total_memory_hits), 0) AS total_memory_hits
                         FROM turn_metrics
                         """
                     )
@@ -91,8 +89,8 @@ class MonitorQueryService:
             errorSessions=int(sessions_row["error_sessions"] or 0),
             totalTurns=int(turns_row["total_turns"] or 0),
             avgTurnDurationMs=float(turns_row["avg_turn_duration_ms"] or 0),
-            avgLlmLatencyMs=float(turns_row["avg_llm_latency_ms"] or 0),
-            avgFirstTokenMs=float(turns_row["avg_first_token_ms"] or 0),
+            avgLlmLatencyMs=0.0,
+            avgFirstTokenMs=0.0,
             avgContextTokens=float(turns_row["avg_context_tokens"] or 0),
             avgContextTokenUsage=float(turns_row["avg_context_token_usage"] or 0),
             totalToolCalls=int(turns_row["total_tool_calls"] or 0),
@@ -123,8 +121,8 @@ class MonitorQueryService:
                         f"""
                         SELECT session_id, trace_id, app_id, user_id, model, status, turn_number,
                                total_prompt_tokens, total_completion_tokens, total_tokens,
-                               max_duration_ms, min_duration_ms, total_tool_calls,
-                               total_tool_call_errors, recovery_count,
+                               total_tool_calls,
+                               total_tool_call_errors, llm_recovery_count,
                                last_recovery_kind, total_memory_hits, end_reason,
                                started_at, ended_at, duration_ms, updated_at
                         FROM session_metrics
@@ -159,8 +157,8 @@ class MonitorQueryService:
                         """
                         SELECT session_id, trace_id, app_id, user_id, model, status, turn_number,
                                total_prompt_tokens, total_completion_tokens, total_tokens,
-                               max_duration_ms, min_duration_ms, total_tool_calls,
-                               total_tool_call_errors, recovery_count,
+                               total_tool_calls,
+                               total_tool_call_errors, llm_recovery_count,
                                last_recovery_kind, total_memory_hits, end_reason,
                                started_at, ended_at, duration_ms, updated_at
                         FROM session_metrics
@@ -177,14 +175,15 @@ class MonitorQueryService:
                 await session.execute(
                     text(
                         """
-                        SELECT trace_id, session_id, request_id, turn_id, turn_number, status, prompt_tokens,
-                               completion_tokens, llm_latency_ms, first_token_ms, recovery_count,
-                               last_recovery_kind, tool_calls_count, memory_hits,
+                        SELECT trace_id, session_id, request_id, turn_id, turn_number, status,
+                               total_prompt_tokens, total_completion_tokens, total_tokens,
+                               llm_recovery_count, last_recovery_kind,
+                               total_tool_calls, total_memory_hits,
                                token_count, token_usage, total_tool_call_errors,
-                               started_at, ended_at, duration_ms, created_at
+                               started_at, ended_at, duration_ms, updated_at
                         FROM turn_metrics
                         WHERE session_id = :session_id
-                        ORDER BY turn_number DESC, created_at DESC
+                        ORDER BY turn_number DESC, updated_at DESC
                         LIMIT 100
                         """
                     ),
@@ -219,11 +218,12 @@ class MonitorQueryService:
                 await session.execute(
                     text(
                         """
-                        SELECT trace_id, session_id, request_id, turn_id, turn_number, status, prompt_tokens,
-                               completion_tokens, llm_latency_ms, first_token_ms, recovery_count,
-                               last_recovery_kind, tool_calls_count, memory_hits,
+                        SELECT trace_id, session_id, request_id, turn_id, turn_number, status,
+                               total_prompt_tokens, total_completion_tokens, total_tokens,
+                               llm_recovery_count, last_recovery_kind,
+                               total_tool_calls, total_memory_hits,
                                token_count, token_usage, total_tool_call_errors,
-                               started_at, ended_at, duration_ms, created_at
+                               started_at, ended_at, duration_ms, updated_at
                         FROM turn_metrics
                         WHERE session_id = :session_id AND turn_id = :turn_id
                         LIMIT 1
@@ -339,11 +339,11 @@ class MonitorQueryService:
             tokenBudget=0,
             avgLlmLatencyMs=0.0,
             avgFirstTokenMs=0.0,
-            maxLlmLatencyMs=int(row.get("max_duration_ms") or 0),
-            minLlmLatencyMs=int(row.get("min_duration_ms") or 0),
+            maxLlmLatencyMs=0,
+            minLlmLatencyMs=0,
             totalToolCalls=int(row.get("total_tool_calls") or 0),
             totalErrors=int(row.get("total_tool_call_errors") or 0),
-            recoveryCount=int(row.get("recovery_count") or 0),
+            recoveryCount=int(row.get("llm_recovery_count") or 0),
             lastRecoveryKind=str(row.get("last_recovery_kind") or ""),
             avgMemoryHits=0.0,
             totalMemoryHits=int(row.get("total_memory_hits") or 0),
@@ -363,21 +363,21 @@ class MonitorQueryService:
             turnId=str(row.get("turn_id") or ""),
             turnNumber=int(row.get("turn_number") or 0),
             status=str(row.get("status") or "running"),
-            promptTokens=int(row.get("prompt_tokens") or 0),
-            completionTokens=int(row.get("completion_tokens") or 0),
-            llmLatencyMs=int(row.get("llm_latency_ms") or 0),
-            firstTokenMs=int(row.get("first_token_ms") or 0),
-            llmRecoveryCount=int(row.get("recovery_count") or 0),
+            promptTokens=int(row.get("total_prompt_tokens") or 0),
+            completionTokens=int(row.get("total_completion_tokens") or 0),
+            llmLatencyMs=0,
+            firstTokenMs=0,
+            llmRecoveryCount=int(row.get("llm_recovery_count") or 0),
             llmRecoveryKind=str(row.get("last_recovery_kind") or ""),
-            toolCallsCount=int(row.get("tool_calls_count") or 0),
-            memoryHits=int(row.get("memory_hits") or 0),
+            toolCallsCount=int(row.get("total_tool_calls") or 0),
+            memoryHits=int(row.get("total_memory_hits") or 0),
             contextTokens=int(row.get("token_count") or 0),
             contextTokenUsage=int(row.get("token_usage") or 0),
             errorCount=int(row.get("total_tool_call_errors") or 0),
             startedAt=row.get("started_at"),
             endedAt=row.get("ended_at"),
             durationMs=int(row.get("duration_ms") or 0),
-            createdAt=row.get("created_at"),
+            createdAt=row.get("updated_at"),
         )
 
     @staticmethod
