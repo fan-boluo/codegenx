@@ -3,7 +3,7 @@
 
 """
 
-from monitor.alert_evaluator import MonitorAlertEvaluator, get_monitor_alert_evaluator
+from monitor.alert_evaluator import AlertStreakTracker, get_alert_streak_tracker
 from monitor.health_checker import HealthChecker, get_health_checker
 from monitor.maintenance_service import MonitorMaintenanceService, get_monitor_maintenance_service
 from monitor.monitor_query_service import MonitorQueryService, get_monitor_query_service
@@ -17,8 +17,8 @@ from monitor.telemetry_schema import (
 )
 
 __all__ = [
-	"MonitorAlertEvaluator",
-	"get_monitor_alert_evaluator",
+	"AlertStreakTracker",
+	"get_alert_streak_tracker",
 	"HealthChecker",
 	"get_health_checker",
 	"MonitorMaintenanceService",

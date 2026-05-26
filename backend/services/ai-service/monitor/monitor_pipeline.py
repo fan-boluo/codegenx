@@ -8,13 +8,15 @@ from typing import Any
 
 from agent.runtime_schema import RuntimeSessionState, ActivateTurn
 from bot.agent.agent_schema import AgentState
-from monitor.alert_evaluator import get_monitor_alert_evaluator
+from monitor.alert_evaluator import get_alert_streak_tracker
 from monitor.metric_collector import MetricCollector
 from monitor.monitor_store import MonitorStore, get_monitor_store
 from monitor.prometheus_metrics import (
+    _base_labels,
     record_context_metrics,
     record_error,
     record_llm_call,
+    record_llm_last_latency,
     record_memory_hits,
     record_session_end,
     record_session_start,
@@ -23,7 +25,6 @@ from monitor.prometheus_metrics import (
 )
 from monitor.span_collector import SpanCollector
 from monitor.telemetry_schema import (
-    MonitorAlertRecord,
     OperationType,
     SessionTelemetry,
     SpanRecord,
@@ -157,6 +158,7 @@ class MonitorPipeline:
             collector.clear()
         await self.store.upsert_session_metrics(telemetry)
         record_session_end(telemetry)
+        get_alert_streak_tracker().cleanup_session(session.session_id)
         self._span_collectors.pop(session.session_id, None)
         self._metric_collectors.pop(session.session_id, None)
 
@@ -205,15 +207,6 @@ class MonitorPipeline:
                 status="running",
                 attributes={"turn.id": session.request_id, "turn.number": turn.step_counter},
             ))
-
-        if session.telemetry:
-            alerts = await get_monitor_alert_evaluator().evaluate_turn_start(
-                trace_id=session.trace_id,
-                session_telemetry=session.telemetry,
-                turn_telemetry=turn.telemetry,
-            )
-            if alerts:
-                log.info("TurnStart alerts session={} turn={} count={}", session.session_id, session.request_id, len(alerts))
 
     async def on_turn_end(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
         telemetry = turn.telemetry
@@ -339,18 +332,23 @@ class MonitorPipeline:
             )
 
         record_llm_call(session.telemetry, telemetry, is_error=False, total_ms=total_ms, first_token_ms=first_token_ms)
+        record_llm_last_latency(session.telemetry, telemetry, total_ms / 1000)
 
         if session.telemetry:
-            alerts = await get_monitor_alert_evaluator().evaluate_llm(
-                trace_id=session.trace_id,
-                session_telemetry=session.telemetry,
-                turn_telemetry=telemetry,
-                token_budget=session.telemetry.token_budget,
-                projected_total_tokens=telemetry.token_usage,
-                llm_total_ms=total_ms,
+            tracker = get_alert_streak_tracker()
+            labels = _base_labels(session.telemetry, telemetry)
+            tracker.track_llm_outcome(
+                session_id=session.session_id,
+                labels=labels,
+                recovery_count=telemetry.llm_recovery_count,
+                latency_s=total_ms / 1000,
             )
-            if alerts:
-                log.info("LLM alerts session={} turn={} count={}", session.session_id, session.request_id, len(alerts))
+            tracker.track_context_breach(
+                session_id=session.session_id,
+                labels=labels,
+                token_usage=telemetry.token_usage,
+                is_compress=telemetry.context_is_compress,
+            )
 
     # ------------------------------------------------------------------
     # Tool lifecycle
@@ -430,22 +428,17 @@ class MonitorPipeline:
         )
 
         if session.telemetry:
-            alerts = await get_monitor_alert_evaluator().evaluate_tool(
-                trace_id=session.trace_id,
-                session_telemetry=session.telemetry,
-                turn_telemetry=telemetry,
-                tool_name=tool_name,
-                tool_status=status.value,
+            tracker = get_alert_streak_tracker()
+            labels = _base_labels(session.telemetry, telemetry)
+            tracker.track_tool_outcome(
+                session_id=session.session_id,
+                labels=labels,
+                is_error=(status == TelemetryStatus.ERROR),
             )
-            if alerts:
-                log.info("Tool alerts session={} turn={} tool={} count={}", session.session_id, session.request_id, tool_name, len(alerts))
 
     # ------------------------------------------------------------------
-    # Alerts
+    # Alerts (delegated to Prometheus alert rules)
     # ------------------------------------------------------------------
-
-    async def persist_alert(self, record: MonitorAlertRecord) -> None:
-        await self.store.upsert_alert(record)
 
 
 def get_monitor_pipeline() -> MonitorPipeline:

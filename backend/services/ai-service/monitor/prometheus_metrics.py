@@ -144,6 +144,33 @@ llm_recoveries_total = Counter(
     BASE_LABELS + ["recovery_kind"],
 )
 
+# ---------------------------------------------------------------------------
+# Alert streak gauges (for Prometheus alert rules)
+# ---------------------------------------------------------------------------
+llm_recovery_streak = Gauge(
+    "codegenx_llm_recovery_streak",
+    "Consecutive LLM recovery count (0 = no active streak)",
+    BASE_LABELS,
+)
+
+tool_failure_streak = Gauge(
+    "codegenx_tool_failure_streak",
+    "Consecutive tool failure count (0 = no active streak)",
+    BASE_LABELS,
+)
+
+context_breach_streak = Gauge(
+    "codegenx_context_breach_streak",
+    "Consecutive times context exceeded threshold without compression (0 = no active streak)",
+    BASE_LABELS,
+)
+
+llm_last_call_latency_seconds_gauge = Gauge(
+    "codegenx_llm_last_call_latency_seconds",
+    "Latency of the most recent LLM call",
+    BASE_LABELS,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helper: build base label values dict from session / turn state
@@ -254,3 +281,27 @@ def record_memory_hits(session_telemetry, turn_telemetry, hits: int) -> None:
 def record_error(session_telemetry, turn_telemetry, scope: str, error_type: str = "") -> None:
     labels = _base_labels(session_telemetry, turn_telemetry)
     errors_total.labels(**labels, scope=scope, error_type=error_type).inc()
+
+
+# ---------------------------------------------------------------------------
+# Alert streak helpers
+# ---------------------------------------------------------------------------
+
+def record_llm_recovery_streak(session_telemetry, turn_telemetry, streak: int) -> None:
+    labels = _base_labels(session_telemetry, turn_telemetry)
+    llm_recovery_streak.labels(**labels).set(streak)
+
+
+def record_tool_failure_streak(session_telemetry, turn_telemetry, streak: int) -> None:
+    labels = _base_labels(session_telemetry, turn_telemetry)
+    tool_failure_streak.labels(**labels).set(streak)
+
+
+def record_context_breach_streak(session_telemetry, turn_telemetry, streak: int) -> None:
+    labels = _base_labels(session_telemetry, turn_telemetry)
+    context_breach_streak.labels(**labels).set(streak)
+
+
+def record_llm_last_latency(session_telemetry, turn_telemetry, latency_s: float) -> None:
+    labels = _base_labels(session_telemetry, turn_telemetry)
+    llm_last_call_latency_seconds_gauge.labels(**labels).set(latency_s)
