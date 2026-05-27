@@ -12,7 +12,6 @@ from __future__ import annotations
 from threading import Lock
 
 from monitor.prometheus_metrics import (
-    _base_labels,
     context_breach_streak,
     llm_last_call_latency_seconds_gauge,
     llm_recovery_streak,
@@ -34,9 +33,9 @@ class AlertStreakTracker:
 
     def __init__(self) -> None:
         self._lock = Lock()
-        self._recovery_streaks: dict[str, int] = {}
-        self._tool_failure_streaks: dict[str, int] = {}
-        self._context_breach_streaks: dict[str, int] = {}
+        self._recovery_streaks: dict[str, int] = {}       # session_id → streak
+        self._tool_failure_streaks: dict[str, int] = {}   # session_id → streak
+        self._context_breach_streaks: dict[str, int] = {}  # session_id → streak
 
     # ------------------------------------------------------------------
     # LLM
@@ -46,15 +45,13 @@ class AlertStreakTracker:
         self,
         *,
         session_id: str,
-        labels: dict[str, str],
+        model: str,
         recovery_count: int,
         latency_s: float,
     ) -> None:
         """Update recovery streak and last-call latency gauge."""
-        # latency gauge (always set)
-        llm_last_call_latency_seconds_gauge.labels(**labels).set(latency_s)
+        llm_last_call_latency_seconds_gauge.labels(model=model).set(latency_s)
 
-        # recovery streak
         with self._lock:
             if recovery_count > 0:
                 streak = self._recovery_streaks.get(session_id, 0) + 1
@@ -62,7 +59,7 @@ class AlertStreakTracker:
                 streak = 0
             self._recovery_streaks[session_id] = streak
 
-        llm_recovery_streak.labels(**labels).set(streak)
+        llm_recovery_streak.labels(model=model).set(streak)
         if streak >= 3:
             log.warning("LLM recovery streak={} session={}", streak, session_id)
 
@@ -74,7 +71,6 @@ class AlertStreakTracker:
         self,
         *,
         session_id: str,
-        labels: dict[str, str],
         token_usage: float,
         is_compress: bool,
     ) -> None:
@@ -93,7 +89,7 @@ class AlertStreakTracker:
                 streak = 0
             self._context_breach_streaks[session_id] = streak
 
-        context_breach_streak.labels(**labels).set(streak)
+        context_breach_streak.labels(session_id=session_id).set(streak)
         if streak >= 3:
             log.warning(
                 "Context breach streak={} session={} usage={:.2f} is_compress={}",
@@ -108,7 +104,7 @@ class AlertStreakTracker:
         self,
         *,
         session_id: str,
-        labels: dict[str, str],
+        tool_name: str,
         is_error: bool,
     ) -> None:
         """Update tool consecutive-failure streak."""
@@ -119,13 +115,40 @@ class AlertStreakTracker:
                 streak = 0
             self._tool_failure_streaks[session_id] = streak
 
-        tool_failure_streak.labels(**labels).set(streak)
+        tool_failure_streak.labels(tool_name=tool_name).set(streak)
         if streak >= 3:
             log.warning("Tool failure streak={} session={}", streak, session_id)
 
     # ------------------------------------------------------------------
-    # Cleanup
+    # Periodic cleanup
     # ------------------------------------------------------------------
+
+    @property
+    def tracked_session_count(self) -> int:
+        """Return total number of active streak-tracked sessions."""
+        with self._lock:
+            return (
+                len(self._recovery_streaks)
+                + len(self._tool_failure_streaks)
+                + len(self._context_breach_streaks)
+            )
+
+    def cleanup_stale_sessions(self, active_session_ids: set[str]) -> int:
+        """Remove streak state for sessions that are no longer active.
+
+        Returns the number of entries removed.
+        """
+        removed = 0
+        with self._lock:
+            for d in (self._recovery_streaks, self._tool_failure_streaks, self._context_breach_streaks):
+                stale = [sid for sid in d if sid not in active_session_ids]
+                for sid in stale:
+                    d.pop(sid, None)
+                    removed += 1
+        if removed:
+            log.info("AlertStreakTracker cleaned up {} stale entries across {} active sessions",
+                     removed, len(active_session_ids))
+        return removed
 
     def cleanup_session(self, session_id: str) -> None:
         """Remove per-session streak state (call on session end)."""

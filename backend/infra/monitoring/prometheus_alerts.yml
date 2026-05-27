@@ -1,0 +1,82 @@
+groups:
+  - name: codegenx_alerts
+    interval: 15s
+    rules:
+
+      # -----------------------------------------------------------------------
+      # 1. LLM 平均延迟过高（最近 5 次调用平均延迟 > 30s）
+      # -----------------------------------------------------------------------
+      - alert: LLMAvgLatencyHigh
+        expr: |
+          rate(codegenx_llm_latency_seconds_sum[5m]) /
+          rate(codegenx_llm_latency_seconds_count[5m])
+          > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM average latency is high"
+          description: >
+            App {{ $labels.app_id }} model {{ $labels.model }}:
+            average LLM latency over the last 5 minutes is
+            {{ $value | humanizeDuration }}s, exceeding the 30s threshold.
+
+      # -----------------------------------------------------------------------
+      # 2. LLM 单次调用超时（最近一次调用 > 60s）
+      # -----------------------------------------------------------------------
+      - alert: LLMSingleTimeout
+        expr: codegenx_llm_last_call_latency_seconds > 60
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM single call timed out"
+          description: >
+            App {{ $labels.app_id }} model {{ $labels.model }}:
+            most recent LLM call took {{ $value }}s, exceeding the 60s threshold.
+
+      # -----------------------------------------------------------------------
+      # 3. LLM 连续 recovery ≥ 3 次
+      # -----------------------------------------------------------------------
+      - alert: LLMConsecutiveRecovery
+        expr: codegenx_llm_recovery_streak >= 3
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM recovery streak at {{ $value }}"
+          description: >
+            App {{ $labels.app_id }} model {{ $labels.model }}:
+            LLM has required recovery {{ $value }} times in a row.
+            The underlying model or prompt configuration may be broken.
+
+      # -----------------------------------------------------------------------
+      # 4. 工具连续失败 ≥ 3 次
+      # -----------------------------------------------------------------------
+      - alert: ToolConsecutiveFailures
+        expr: codegenx_tool_failure_streak >= 3
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tool consecutive failures at {{ $value }}"
+          description: >
+            App {{ $labels.app_id }} model {{ $labels.model }}:
+            tools have failed {{ $value }} times in a row.
+            Check tool service health and connectivity.
+
+      # -----------------------------------------------------------------------
+      # 5. 上下文连续超阈值未压缩 ≥ 3 次
+      # -----------------------------------------------------------------------
+      - alert: ContextThresholdBreach
+        expr: codegenx_context_breach_streak >= 3
+        for: 15s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Context threshold breached {{ $value }} consecutive times without compression"
+          description: >
+            App {{ $labels.app_id }} model {{ $labels.model }}:
+            context token usage has exceeded the 85% threshold {{ $value }}
+            consecutive times without compression taking effect.
+            The context compressor may be broken or misconfigured.

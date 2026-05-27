@@ -12,8 +12,6 @@ from monitor.alert_evaluator import get_alert_streak_tracker
 from monitor.metric_collector import MetricCollector
 from monitor.monitor_store import MonitorStore, get_monitor_store
 from monitor.prometheus_metrics import (
-    _base_labels,
-    record_context_metrics,
     record_error,
     record_llm_call,
     record_memory_hits,
@@ -27,7 +25,6 @@ from monitor.telemetry_schema import (
     OperationType,
     SessionTelemetry,
     SpanRecord,
-    AgentState,
     TurnTelemetry,
 )
 from shared.config.log_config import log
@@ -275,9 +272,6 @@ class MonitorPipeline:
         if metric_collector and turn_span_id:
             metric_collector.update_turn(turn_span_id, telemetry)
 
-        session_telemetry = self._get_session_telemetry(session.session_id)
-        record_context_metrics(session_telemetry, telemetry)
-
         llm_span_id = _new_span_id()
         started_utc = _utcnow()
         turn.add_turn_span_id("llm_span_id", llm_span_id)
@@ -343,16 +337,15 @@ class MonitorPipeline:
 
         if session_telemetry:
             tracker = get_alert_streak_tracker()
-            labels = _base_labels(session_telemetry, telemetry)
+            model = str(getattr(telemetry, "model", "") or getattr(session_telemetry, "model", "") or "unknown")
             tracker.track_llm_outcome(
                 session_id=session.session_id,
-                labels=labels,
+                model=model,
                 recovery_count=telemetry.llm_recovery_count if telemetry else 0,
                 latency_s=total_ms / 1000,
             )
             tracker.track_context_breach(
                 session_id=session.session_id,
-                labels=labels,
                 token_usage=telemetry.token_usage if telemetry else 0,
                 is_compress=telemetry.context_is_compress if telemetry else False,
             )
@@ -433,10 +426,9 @@ class MonitorPipeline:
 
         if session_telemetry:
             tracker = get_alert_streak_tracker()
-            labels = _base_labels(session_telemetry, telemetry)
             tracker.track_tool_outcome(
                 session_id=session.session_id,
-                labels=labels,
+                tool_name=tool_name,
                 is_error=(status == AgentState.ERROR),
             )
 

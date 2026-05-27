@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from bot.agent.runtime import AgentRuntime
 from infra.mysql.session import shutdown_mysql_engine
 from infra.redis.redis_client import redis_client
+from monitor.maintenance_service import get_monitor_maintenance_service
 from shared.config.log_config import log
 
 
@@ -56,10 +57,17 @@ class AgentAdapterService:
             # runtime.start 启动runtime需要的任务
             await runtime.start()
             log.info("启动runtime完毕")
+
+            # 启动定时维护任务（DB 清理 + alert streak 清理）
+            await get_monitor_maintenance_service().start_periodic_maintenance()
+
             self._started = True
 
     async def shutdown(self) -> None:
         async with self._startup_lock:
+            # 停止定时维护任务
+            await get_monitor_maintenance_service().stop_periodic_maintenance()
+
             if self._runtime is not None:
                 with suppress(Exception):
                     await self._runtime.stop()

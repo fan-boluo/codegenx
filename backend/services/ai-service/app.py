@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import json
 import importlib.util
 from pathlib import Path
 import sys
@@ -19,8 +18,8 @@ LOCAL_SERVICES_ROOT = Path(__file__).resolve().parent / "services"
 if str(LOCAL_SERVICES_ROOT) not in sys.path:
 	sys.path.insert(0, str(LOCAL_SERVICES_ROOT))
 
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from monitor.maintenance_service import get_monitor_maintenance_service
@@ -29,7 +28,7 @@ from shared.config.config import get_settings
 from shared.config.log_config import log
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
-from shared.schema.monitor import MonitorAlertQueryRequest, MonitorSessionQueryRequest
+from shared.schema.monitor import MonitorSessionQueryRequest
 from shared.schema.ai_service import (
     AiServiceGenerateRequest,
 	AiServiceStopRequest,
@@ -133,11 +132,6 @@ async def stop_code_stream(request: AiServiceStopRequest):
 		raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/internal/ai/codegen/stop", response_model=AiServiceStopResponse)
-async def internal_stop_code_stream(request: AiServiceStopRequest):
-	return await stop_code_stream(request)
-
-
 # 监控
 @app.get("/internal/monitor/overview")
 async def internal_get_monitor_overview():
@@ -182,51 +176,14 @@ async def internal_get_monitor_turn_detail(session_id: str, turn_id: str):
 	return detail
 
 
-@app.get("/internal/monitor/alerts")
-async def internal_list_monitor_alerts(
-	page_num: int = Query(default=1, alias="pageNum"),
-	page_size: int = Query(default=10, alias="pageSize"),
-	status: str | None = None,
-	level: str | None = None,
-	rule_name: str | None = Query(default=None, alias="ruleName"),
-	session_id: str | None = Query(default=None, alias="sessionId"),
-):
-	query = MonitorAlertQueryRequest(
-		pageNum=page_num,
-		pageSize=page_size,
-		status=status,
-		level=level,
-		ruleName=rule_name,
-		sessionId=session_id,
-	)
-	return await get_monitor_query_service().list_alerts(query)
-
-
 @app.get("/internal/monitor/config")
 async def internal_get_monitor_config():
 	return await get_monitor_query_service().get_monitor_config()
 
 
-@app.post("/internal/monitor/cleanup")
-async def internal_cleanup_monitor_history(
-	retention_days: int = Query(default=7, alias="retentionDays", ge=1),
-	dry_run: bool = Query(default=True, alias="dryRun"),
-):
-	return await get_monitor_maintenance_service().cleanup_history(
-		retention_days=retention_days,
-		dry_run=dry_run,
-	)
-
-
 @app.get("/metrics", response_class=PlainTextResponse)
 async def get_metrics():
-    """Prometheus metrics endpoint (standard path)."""
-    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-@app.get("/internal/monitor/metrics", response_class=PlainTextResponse)
-async def internal_get_monitor_metrics():
-    """Prometheus metrics endpoint (internal path, kept for compatibility)."""
+    """Prometheus metrics endpoint (scraped by Prometheus — internal network only)."""
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
