@@ -145,7 +145,7 @@ llm_recoveries_total = Counter(
 )
 
 # ---------------------------------------------------------------------------
-# Alert streak gauges (for Prometheus alert rules)
+# Alert streak gauges (for Prometheus alert rules — set directly by tracker)
 # ---------------------------------------------------------------------------
 llm_recovery_streak = Gauge(
     "codegenx_llm_recovery_streak",
@@ -279,29 +279,7 @@ def record_memory_hits(session_telemetry, turn_telemetry, hits: int) -> None:
 # ---------------------------------------------------------------------------
 
 def record_error(session_telemetry, turn_telemetry, scope: str, error_type: str = "") -> None:
-    labels = _base_labels(session_telemetry, turn_telemetry)
+
+
+    abels = _base_labels(session_telemetry, turn_telemetry)
     errors_total.labels(**labels, scope=scope, error_type=error_type).inc()
-
-
-# ---------------------------------------------------------------------------
-# Alert streak helpers
-# ---------------------------------------------------------------------------
-
-def record_llm_recovery_streak(session_telemetry, turn_telemetry, streak: int) -> None:
-    labels = _base_labels(session_telemetry, turn_telemetry)
-    llm_recovery_streak.labels(**labels).set(streak)
-
-
-def record_tool_failure_streak(session_telemetry, turn_telemetry, streak: int) -> None:
-    labels = _base_labels(session_telemetry, turn_telemetry)
-    tool_failure_streak.labels(**labels).set(streak)
-
-
-def record_context_breach_streak(session_telemetry, turn_telemetry, streak: int) -> None:
-    labels = _base_labels(session_telemetry, turn_telemetry)
-    context_breach_streak.labels(**labels).set(streak)
-
-
-def record_llm_last_latency(session_telemetry, turn_telemetry, latency_s: float) -> None:
-    labels = _base_labels(session_telemetry, turn_telemetry)
-    llm_last_call_latency_seconds_gauge.labels(**labels).set(latency_s)

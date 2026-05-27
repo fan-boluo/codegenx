@@ -122,7 +122,7 @@ class BaseTelemetry(BaseModel):
     # Identification
     trace_id: str = ""
     session_id: str = ""
-    request_id: str = ""
+    turn_id: str = ""
     app_id: str = ""
     user_id: str = ""
     model: str = "unknown"
@@ -130,8 +130,6 @@ class BaseTelemetry(BaseModel):
 
 class SessionTelemetry(BaseTelemetry):
     """Session-level 监控属性，表示当前session的状态"""
-
-    token_budget: int = 0  # 用户剩余token
 
     # Timing / lifecycle
     started_at: datetime | None = None
@@ -144,6 +142,7 @@ class SessionTelemetry(BaseTelemetry):
     # Context
     token_count: int = 0
     token_usage: float = 0.0
+    token_budget: int = 0  # 用户剩余token
     context_is_compress: bool = False
 
     # LLM
@@ -166,6 +165,7 @@ class SessionTelemetry(BaseTelemetry):
         return SessionTelemetry(
             trace_id=session.trace_id,
             session_id=session.session_id,
+            turn_id = session.request_id,
             app_id=session.app_id,
             user_id=session.user_id,
             token_budget=getattr(session.runtime.agent_config, "context_max_tokens", 0),
@@ -194,11 +194,6 @@ class SessionTelemetry(BaseTelemetry):
 
 class TurnTelemetry(SessionTelemetry):
     """turn-level 监控属性，表示当前turn的状态"""
-
-    # Identification
-    turn_id: str = ""
-
-
     @staticmethod
     def new_tel(session_tel: SessionTelemetry) -> TurnTelemetry:
         return TurnTelemetry(

@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import BaseModel
 
 class AgentState(str, Enum):
+    ERROR = "error"
     IDLE = "idle"
     RUNNING = "running"
     COMPLETED = "completed"

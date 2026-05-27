@@ -21,23 +21,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-# def _ensure_local_constant_module() -> None:
-#     existing = sys.modules.get("constant")
-#     expected_path = AI_SERVICE_ROOT / "constant.py"
-#     if existing is not None and Path(getattr(existing, "__file__", "")).resolve() == expected_path.resolve():
-#         return
-#
-#     spec = importlib.util.spec_from_file_location("constant", expected_path)
-#     if spec is None or spec.loader is None:
-#         raise ImportError(f"Cannot load ai-service constant module from {expected_path}")
-#
-#     module = importlib.util.module_from_spec(spec)
-#     sys.modules["constant"] = module
-#     spec.loader.exec_module(module)
-#
-#
-# _ensure_local_constant_module()
-
 from bot.agent.runtime import AgentRuntime
 from infra.mysql.session import shutdown_mysql_engine
 from infra.redis.redis_client import redis_client

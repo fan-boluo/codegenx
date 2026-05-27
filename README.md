@@ -239,3 +239,40 @@ grep 工具 貌似需要安装rgrip，分析它的使用方法
 跑接口测试
 压缩没研究，上下文压缩
 
+
+record_llm_recovery_streak 这四个也是更新指标值 是不是跟tracker的重复了, 实际使用的是tracker中的
+_memory_hits从哪里来的
+
+telemetry是否可以从RuntimrSessionState ActivateTurn去掉, 只保留span_id就可以找到对应的spanRecorder和metrics了
+
+session总数
+活跃session数
+session会话时长分布
+
+_memory_hits从哪里来的
+telemetry是否可以从RuntimrSessionState ActivateTurn去掉, 只保留span
+
+session总数
+活跃session数
+session会话时长分布
+
+turn总数 , 不用吧
+turn时长分布
+
+llm_call_total
+llm_call_latency 分布
+首token延迟分布
+prompt_token总量
+completion_token总量
+recovery_总数, 按照kind分组统计
+
+context-token总数
+token使用比例
+
+
+tool_call_total
+tool_call_latency 分布
+
+memory_hits总数
+
+total-error

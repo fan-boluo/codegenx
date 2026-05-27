@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import time
@@ -11,26 +11,12 @@ from pydantic import BaseModel, Field
 
 from agent.agent_schema import AgentState
 from context.session_context import SessionContext
-from monitor.telemetry_schema import SessionTelemetry, TurnTelemetry, SpanRecord
+from monitor.telemetry_schema import SpanRecord
 from session.manager import SessionManager
 from shared.schema.ai_service import AiServiceGenerateRequest
 
 if TYPE_CHECKING:
     from agent.runtime import AgentRuntime
-
-class TurnContext(BaseModel):
-    """LLM-call context for a single turn."""
-    plan_summary: str = ""
-    tool: list[Any] = Field(default_factory=list)
-    skill: list[Any] = Field(default_factory=list)
-    memory: list[Any] = Field(default_factory=list)
-    workspace_metadata: dict[str, Any] = Field(default_factory=dict)
-    system_prompt: str = ""
-    chat_history: list[dict[str, Any]] = Field(default_factory=list)
-    user_input: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 
 
 class TurnStoppedError(Exception):
@@ -46,7 +32,15 @@ class ActivateTurn:
     requires_followup:bool = False  # 是否需要继续，如果没有工具调用则停止
     started_at: float = 0.0
     finished_at: float = 0.0
-    telemetry: TurnTelemetry | None = None
+    active_span_refs:dict = field(default_factory=dict)
+
+    def add_turn_span_id(self, key: str, span_id: str) -> None:
+        """Register an active span id for the current turn (e.g. 'turn_span_id', 'llm_span_id')."""
+        self.active_span_refs[key] = span_id
+
+    def pop_turn_span(self, key: str) -> str | None:
+        """Remove and return a span id by key. Returns None if the key doesn't exist."""
+        return self.active_span_refs.pop(key, None)
 
 
 @dataclass
@@ -60,7 +54,6 @@ class RuntimeSessionState:
 
 
     # Monitoring (initialised by on_session_start hook)
-    telemetry: SessionTelemetry | None = None
     session_record: SpanRecord | None = None
     # span_collector: Any = None
     root_span_id: str = ""

@@ -16,7 +16,6 @@ from monitor.prometheus_metrics import (
     record_context_metrics,
     record_error,
     record_llm_call,
-    record_llm_last_latency,
     record_memory_hits,
     record_session_end,
     record_session_start,
@@ -28,7 +27,7 @@ from monitor.telemetry_schema import (
     OperationType,
     SessionTelemetry,
     SpanRecord,
-    TelemetryStatus,
+    AgentState,
     TurnTelemetry,
 )
 from shared.config.log_config import log
@@ -63,13 +62,13 @@ def _session_status(state: Any) -> AgentState:
     return AgentState.RUNNING
 
 
-def _tool_status(result: Any) -> TelemetryStatus:
+def _tool_status(result: Any) -> AgentState:
     if isinstance(result, dict):
         if result.get("error"):
-            return TelemetryStatus.ERROR
+            return AgentState.ERROR
         if result.get("success") is False:
-            return TelemetryStatus.ERROR
-    return TelemetryStatus.SUCCESS
+            return AgentState.ERROR
+    return AgentState.SUCCESS
 
 
 def _memory_hits(result: Any) -> int:
@@ -83,10 +82,6 @@ def _memory_hits(result: Any) -> int:
     return 0
 
 
-def _duration_ms(started_at: datetime, ended_at: datetime) -> int:
-    return max(0, int((ended_at - started_at).total_seconds() * 1000))
-
-
 class MonitorPipeline:
     """
     Facade that coordinates SpanCollector, SessionTelemetry, and MonitorStore.
@@ -97,6 +92,18 @@ class MonitorPipeline:
         self.store: MonitorStore = get_monitor_store()
         self._span_collectors: dict[str, SpanCollector] = {}
         self._metric_collectors: dict[str, MetricCollector] = {}
+
+    # ------------------------------------------------------------------
+    # Telemetry lookup helpers
+    # ------------------------------------------------------------------
+
+    def _get_session_telemetry(self, session_id: str) -> SessionTelemetry | None:
+        mc = self._metric_collectors.get(session_id)
+        return mc.get_session_telemetry() if mc else None
+
+    def _get_turn_telemetry(self, session_id: str, span_id: str) -> TurnTelemetry | None:
+        mc = self._metric_collectors.get(session_id)
+        return mc.get_turn_telemetry(span_id) if mc else None
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -119,8 +126,7 @@ class MonitorPipeline:
         metric_collector = MetricCollector()
         self._metric_collectors[session.session_id] = metric_collector
         telemetry = SessionTelemetry.new_tel(session)
-        metric_collector.add_session(telemetry)
-        session.telemetry = telemetry
+        metric_collector.set_session_telemetry(telemetry)
         record_session_start(telemetry)
 
     async def on_session_end(self, session: RuntimeSessionState, **kwargs) -> None:
@@ -128,7 +134,7 @@ class MonitorPipeline:
         update session tele
         update session record
         """
-        telemetry = session.telemetry
+        telemetry = self._get_session_telemetry(session.session_id)
         if telemetry is None:
             return
         telemetry.ended_at = _utcnow()
@@ -141,11 +147,6 @@ class MonitorPipeline:
         if root_span_id and collector:
             collector.update_end(
                 root_span_id,
-                end_time=telemetry.ended_at,
-                duration_ms=_duration_ms(
-                    getattr(session, "root_span_started_at", None) or telemetry.started_at or _utcnow(),
-                    telemetry.ended_at,
-                ),
                 status="error" if telemetry.status == AgentState.FAILED else "ok",
                 attributes={
                     "session.end_reason": telemetry.end_reason,
@@ -172,24 +173,22 @@ class MonitorPipeline:
         new turn span
 
         """
-        if session.telemetry is None:
+        session_telemetry = self._get_session_telemetry(session.session_id)
+        if session_telemetry is None:
             return
 
-        turn_telemetry = TurnTelemetry.new_tel(session.telemetry)
+        turn_telemetry = TurnTelemetry.new_tel(session_telemetry)
         turn_telemetry.turn_number = turn.step_counter
         turn_telemetry.turn_id = session.request_id
         turn_telemetry.request_id = session.request_id
 
+        turn_span_id = _new_span_id()
+        turn_started_utc = _utcnow()
+        turn.add_turn_span_id("turn_span_id", turn_span_id)
+
         metric_collector = self._metric_collectors.get(session.session_id)
         if metric_collector:
-            metric_collector.add_turn(turn_telemetry)
-        turn.telemetry = turn_telemetry
-
-        turn_span_id = _new_span_id()
-        turn.active_span_refs = {
-            "turn_span_id": turn_span_id,
-            "turn_started_at": _utcnow(),
-        }
+            metric_collector.add_turn_telemetry(turn_span_id, turn_telemetry)
 
         collector = self._span_collectors.get(session.session_id)
         if collector:
@@ -203,13 +202,14 @@ class MonitorPipeline:
                 request_id=session.request_id,
                 step_counter=turn.step_counter,
                 operation_type=OperationType.TURN.value,
-                start_time=turn.active_span_refs["turn_started_at"],
+                start_time=turn_started_utc,
                 status="running",
                 attributes={"turn.id": session.request_id, "turn.number": turn.step_counter},
             ))
 
     async def on_turn_end(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
-        telemetry = turn.telemetry
+        turn_span_id = turn.pop_turn_span("turn_span_id")
+        telemetry = self._get_turn_telemetry(session.session_id, turn_span_id) if turn_span_id else None
         if telemetry is None:
             return
         telemetry.ended_at = _utcnow()
@@ -218,13 +218,10 @@ class MonitorPipeline:
         telemetry.duration_ms = max(0, int((finished_at - started_at_ts) * 1000))
         telemetry.status = _session_status(turn.state)
 
-        turn_span_id = turn.active_span_refs.get("turn_span_id")
         collector = self._span_collectors.get(session.session_id)
         if turn_span_id and collector:
             collector.update_end(
                 turn_span_id,
-                end_time=telemetry.ended_at,
-                duration_ms=telemetry.duration_ms,
                 status="error" if telemetry.status == AgentState.FAILED else "ok",
                 attributes={
                     "turn.duration_ms": telemetry.duration_ms,
@@ -238,16 +235,22 @@ class MonitorPipeline:
         if collector:
             metrics = collector.derive_turn_metrics(telemetry)
             await self.store.replace_turn_metrics(metrics)
-        if session.telemetry:
-            session.telemetry.record_turn(telemetry)
+        session_telemetry = self._get_session_telemetry(session.session_id)
+        if session_telemetry:
+            session_telemetry.record_turn(telemetry)
 
-        record_turn_end(session.telemetry, telemetry)
+        record_turn_end(session_telemetry, telemetry)
 
     def on_error(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
-        if turn.telemetry is None:
+        turn_span_id = turn.active_span_refs.get("turn_span_id")
+        if not turn_span_id:
             return
-        turn.telemetry.status = AgentState.FAILED
-        record_error(session.telemetry, turn.telemetry, scope="turn", error_type="pipeline_error")
+        turn_telemetry = self._get_turn_telemetry(session.session_id, turn_span_id)
+        if turn_telemetry is None:
+            return
+        turn_telemetry.status = AgentState.FAILED
+        session_telemetry = self._get_session_telemetry(session.session_id)
+        record_error(session_telemetry, turn_telemetry, scope="turn", error_type="pipeline_error")
 
     # ------------------------------------------------------------------
     # LLM lifecycle
@@ -259,28 +262,31 @@ class MonitorPipeline:
         update turn tele
 
         """
-        telemetry = turn.telemetry
+        turn_span_id = turn.active_span_refs.get("turn_span_id")
+        telemetry = self._get_turn_telemetry(session.session_id, turn_span_id) if turn_span_id else None
+        if telemetry is None:
+            return
         prompt_tokens = int(kwargs.get("prompt_tokens", 0) or 0)
         projected_total_tokens = int(kwargs.get("projected_total_tokens", 0) or 0)
         telemetry.token_count = prompt_tokens
         telemetry.token_usage = projected_total_tokens
 
         metric_collector = self._metric_collectors.get(session.session_id)
-        if metric_collector:
-            metric_collector.update_turn(telemetry)
+        if metric_collector and turn_span_id:
+            metric_collector.update_turn(turn_span_id, telemetry)
 
-        record_context_metrics(session.telemetry, telemetry)
+        session_telemetry = self._get_session_telemetry(session.session_id)
+        record_context_metrics(session_telemetry, telemetry)
 
         llm_span_id = _new_span_id()
-        turn.active_span_refs["llm_span_id"] = llm_span_id
-        turn.active_span_refs["llm_started_at"] = time.perf_counter()
-        turn.active_span_refs["llm_started_at_utc"] = _utcnow()
+        started_utc = _utcnow()
+        turn.add_turn_span_id("llm_span_id", llm_span_id)
 
         collector = self._span_collectors.get(session.session_id)
         if collector:
             collector.add(SpanRecord(
                 span_id=llm_span_id,
-                parent_span_id=turn.active_span_refs.get("turn_span_id"),
+                parent_span_id=turn_span_id,
                 trace_id=session.trace_id,
                 session_id=session.session_id,
                 app_id=session.app_id,
@@ -288,7 +294,7 @@ class MonitorPipeline:
                 request_id=session.request_id,
                 step_counter=turn.step_counter,
                 operation_type=OperationType.LLM.value,
-                start_time=turn.active_span_refs["llm_started_at_utc"],
+                start_time=started_utc,
                 status="running",
                 attributes={"llm.prompt_tokens": prompt_tokens},
             ))
@@ -299,55 +305,56 @@ class MonitorPipeline:
         update llm span record
 
         """
-        telemetry = turn.telemetry
+        turn_span_id = turn.active_span_refs.get("turn_span_id")
+        telemetry = self._get_turn_telemetry(session.session_id, turn_span_id) if turn_span_id else None
         usage = dict(kwargs.get("usage") or {})
-        started_perf = turn.active_span_refs.pop("llm_started_at", None)
-        turn.active_span_refs.pop("llm_started_at_utc", None)
-        llm_span_id = turn.active_span_refs.pop("llm_span_id", None)
-        total_ms = max(0, int((time.perf_counter() - started_perf) * 1000)) if started_perf else 0
-        ended_utc = _utcnow()
+        llm_span_id = turn.pop_turn_span("llm_span_id")
 
-        telemetry.total_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        telemetry.total_completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        telemetry.total_tokens = telemetry.total_prompt_tokens + telemetry.total_completion_tokens
+        if telemetry is not None:
+            telemetry.total_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            telemetry.total_completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+            telemetry.total_tokens = telemetry.total_prompt_tokens + telemetry.total_completion_tokens
         first_token_ms = int(usage.get("first_token_ms", 0) or 0)
 
         metric_collector = self._metric_collectors.get(session.session_id)
-        if metric_collector:
-            metric_collector.update_turn(telemetry)
+        if metric_collector and turn_span_id and telemetry is not None:
+            metric_collector.update_turn(turn_span_id, telemetry)
 
         collector = self._span_collectors.get(session.session_id)
+        total_ms = 0
         if llm_span_id and collector:
-            collector.update_end(
+            span = collector.update_end(
                 llm_span_id,
-                end_time=ended_utc,
-                duration_ms=total_ms,
                 status="ok",
                 attributes={
-                    "llm.prompt_tokens": telemetry.total_prompt_tokens,
-                    "llm.completion_tokens": telemetry.total_completion_tokens,
+                    "llm.prompt_tokens": telemetry.total_prompt_tokens if telemetry else 0,
+                    "llm.completion_tokens": telemetry.total_completion_tokens if telemetry else 0,
                     "llm.first_token_ms": first_token_ms,
-                    "llm.total_ms": total_ms,
+                    "llm.recovery_count": telemetry.llm_recovery_count if telemetry else 0,
+                    "llm.recovery_kind": telemetry.last_recovery_kind if telemetry else "",
+                    "llm.is_error": False,
                 },
             )
+            if span:
+                total_ms = span.duration_ms or 0
 
-        record_llm_call(session.telemetry, telemetry, is_error=False, total_ms=total_ms, first_token_ms=first_token_ms)
-        record_llm_last_latency(session.telemetry, telemetry, total_ms / 1000)
+        session_telemetry = self._get_session_telemetry(session.session_id)
+        record_llm_call(session_telemetry, telemetry, is_error=False, total_ms=total_ms, first_token_ms=first_token_ms)
 
-        if session.telemetry:
+        if session_telemetry:
             tracker = get_alert_streak_tracker()
-            labels = _base_labels(session.telemetry, telemetry)
+            labels = _base_labels(session_telemetry, telemetry)
             tracker.track_llm_outcome(
                 session_id=session.session_id,
                 labels=labels,
-                recovery_count=telemetry.llm_recovery_count,
+                recovery_count=telemetry.llm_recovery_count if telemetry else 0,
                 latency_s=total_ms / 1000,
             )
             tracker.track_context_breach(
                 session_id=session.session_id,
                 labels=labels,
-                token_usage=telemetry.token_usage,
-                is_compress=telemetry.context_is_compress,
+                token_usage=telemetry.token_usage if telemetry else 0,
+                is_compress=telemetry.context_is_compress if telemetry else False,
             )
 
     # ------------------------------------------------------------------
@@ -360,12 +367,7 @@ class MonitorPipeline:
 
         tool_span_id = _new_span_id()
         started_utc = _utcnow()
-        turn.active_span_refs.setdefault("tool", {})[tool_id] = {
-            "tool_name": tool_name,
-            "tool_span_id": tool_span_id,
-            "started_at": time.perf_counter(),
-            "started_at_utc": started_utc,
-        }
+        turn.active_span_refs.setdefault("tool", {})[tool_id] = tool_span_id
 
         collector = self._span_collectors.get(session.session_id)
         if collector:
@@ -392,48 +394,50 @@ class MonitorPipeline:
         result: Any,
     ) -> None:
         tool_id = str(tool_call.get("id") or tool_call.get("name") or "")
-        tool_state = turn.active_span_refs.setdefault("tool", {}).pop(tool_id, {})
-        tool_name = str(tool_state.get("tool_name") or tool_call.get("name") or "unknown")
-        started_perf = tool_state.get("started_at")
-        tool_span_id = tool_state.get("tool_span_id")
-        latency_ms = max(0, int((time.perf_counter() - started_perf) * 1000)) if started_perf else 0
+        tool_span_id = turn.active_span_refs.get("tool", {}).pop(tool_id, None)
+        tool_name = str(tool_call.get("name") or "unknown")
         status = _tool_status(result)
-        ended_utc = _utcnow()
 
-        telemetry = turn.telemetry
-        telemetry.total_tool_calls += 1
-        if status == TelemetryStatus.ERROR:
-            telemetry.total_tool_call_errors += 1
+        turn_span_id = turn.active_span_refs.get("turn_span_id")
+        telemetry = self._get_turn_telemetry(session.session_id, turn_span_id) if turn_span_id else None
+        if telemetry is not None:
+            telemetry.total_tool_calls += 1
+            if status == AgentState.ERROR:
+                telemetry.total_tool_call_errors += 1
 
         collector = self._span_collectors.get(session.session_id)
+        latency_ms = 0
         if tool_span_id and collector:
-            collector.update_end(
+            span = collector.update_end(
                 tool_span_id,
-                end_time=ended_utc,
-                duration_ms=latency_ms,
-                status="error" if status == TelemetryStatus.ERROR else "ok",
-                attributes={"tool.name": tool_name, "tool.latency_ms": latency_ms},
+                status="error" if status == AgentState.ERROR else "ok",
+                attributes={"tool.name": tool_name},
             )
+            if span:
+                latency_ms = span.duration_ms or 0
 
         if tool_name in MEMORY_TOOL_NAMES:
             hits = _memory_hits(result)
-            telemetry.total_memory_hits += hits
-            record_memory_hits(session.telemetry, telemetry, hits)
+            if telemetry is not None:
+                telemetry.total_memory_hits += hits
+            session_telemetry = self._get_session_telemetry(session.session_id)
+            record_memory_hits(session_telemetry, telemetry, hits)
 
+        session_telemetry = self._get_session_telemetry(session.session_id)
         record_tool_call(
-            session.telemetry, telemetry,
+            session_telemetry, telemetry,
             tool_name=tool_name,
-            is_error=(status == TelemetryStatus.ERROR),
+            is_error=(status == AgentState.ERROR),
             latency_ms=latency_ms,
         )
 
-        if session.telemetry:
+        if session_telemetry:
             tracker = get_alert_streak_tracker()
-            labels = _base_labels(session.telemetry, telemetry)
+            labels = _base_labels(session_telemetry, telemetry)
             tracker.track_tool_outcome(
                 session_id=session.session_id,
                 labels=labels,
-                is_error=(status == TelemetryStatus.ERROR),
+                is_error=(status == AgentState.ERROR),
             )
 
     # ------------------------------------------------------------------

@@ -12,6 +12,7 @@ Usage:
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from monitor.telemetry_schema import OperationType, SpanRecord, TurnTelemetry
@@ -24,43 +25,45 @@ class SpanCollector:
     """In-memory span buffer for one agent session."""
 
     def __init__(self) -> None:
-        self._buffer: list[SpanRecord] = []
+        self._buffer: OrderedDict[str, SpanRecord] = OrderedDict()
 
     # ------------------------------------------------------------------
     # Mutation
     # ------------------------------------------------------------------
 
     def add(self, record: SpanRecord) -> None:
-        self._buffer.append(record)
+        self._buffer[record.span_id] = record
 
     def update_end(
         self,
         span_id: str,
         *,
-        end_time: Any,
-        duration_ms: int,
         status: str,
         attributes: dict[str, Any] | None = None,
-    ) -> None:
-        """Mutate an existing buffered span with completion data."""
-        for span in reversed(self._buffer):
-            if span.span_id == span_id:
-                span.end_time = end_time
-                span.duration_ms = duration_ms
-                span.status = status
-                if attributes:
-                    span.attributes.update(attributes)
-                return
+    ) -> SpanRecord | None:
+        """Mutate an existing buffered span with completion data.
+
+        end_time and duration_ms are computed from span.start_time.
+        Returns the span so callers can read the computed timing.
+        """
+        span = self._buffer.get(span_id)
+        if span is None:
+            return None
+        SpanRecord.set_end_info(span)
+        span.status = status
+        if attributes:
+            span.attributes.update(attributes)
+        return span
 
     # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------
 
     def get_turn_spans(self, turn_id: str) -> list[SpanRecord]:
-        return [s for s in self._buffer if s.request_id == turn_id]
+        return [s for s in self._buffer.values() if s.request_id == turn_id]
 
     def get_all(self) -> list[SpanRecord]:
-        return list(self._buffer)
+        return list(self._buffer.values())
 
     def clear(self) -> None:
         self._buffer.clear()
@@ -99,5 +102,3 @@ class SpanCollector:
             "ended_at": turn_telemetry.ended_at,
             "duration_ms": turn_telemetry.duration_ms,
         }
-
-
