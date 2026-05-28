@@ -5,7 +5,6 @@ import { message } from 'ant-design-vue'
 import { ArrowRightOutlined, EditOutlined, MessageOutlined, PlusOutlined, RocketOutlined } from '@ant-design/icons-vue'
 import { listMyAppVoByPage } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
-import { formatCodeGenType } from '@/utils/codeGenTypes'
 import { formatRelativeTime, formatTime } from '@/utils/time'
 
 const router = useRouter()
@@ -164,7 +163,6 @@ watch(
           <div class="app-body">
             <div class="app-heading">
               <h3 class="app-name">{{ app.appName || '未命名应用' }}</h3>
-              <a-tag color="blue">{{ formatCodeGenType(app.codeGenType) }}</a-tag>
             </div>
 
             <p class="app-prompt">{{ app.initPrompt || '暂无应用描述' }}</p>

@@ -60,15 +60,6 @@
             <div class="form-tip">初始提示词不可修改</div>
           </a-form-item>
 
-          <a-form-item label="生成类型" name="codeGenType">
-            <a-input
-              :value="formatCodeGenType(formData.codeGenType)"
-              placeholder="生成类型"
-              disabled
-            />
-            <div class="form-tip">生成类型不可修改</div>
-          </a-form-item>
-
           <a-form-item v-if="formData.deployKey" label="部署密钥" name="deployKey">
             <a-input v-model:value="formData.deployKey" placeholder="部署密钥" disabled />
             <div class="form-tip">部署密钥不可修改</div>
@@ -122,7 +113,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { getAppVoById, updateApp, updateAppByAdmin } from '@/api/appController'
-import { formatCodeGenType } from '@/utils/codeGenTypes'
 import { formatTime } from '@/utils/time'
 import UserInfo from '@/components/UserInfo.vue'
 import { getStaticPreviewUrl } from '@/config/env'

@@ -20,6 +20,6 @@ export const getStaticPreviewUrl = (deployKey: string) => {
   return `${STATIC_BASE_URL}/${deployKey}/`
 }
 
-export const getGeneratedPreviewUrl = (appId: string | number, codeGenType: string) => {
-  return `${API_BASE_URL}/api/app/preview/${encodeURIComponent(codeGenType)}/${encodeURIComponent(String(appId))}/`
+export const getGeneratedPreviewUrl = (appId: string | number) => {
+  return `${API_BASE_URL}/api/app/preview/${encodeURIComponent(String(appId))}/`
 }

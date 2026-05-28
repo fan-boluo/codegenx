@@ -6,7 +6,6 @@ aiomysql
 redis
 python-dotenv
 pydantic-settings
-stripe
 greenlet
 tzdata
 loguru

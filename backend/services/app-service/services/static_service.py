@@ -6,7 +6,6 @@ from pathlib import Path
 from shared.constants import get_code_dir, get_deploy_dir
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
-from shared.enums.code_gen_type import CodeGenTypeEnum
 
 
 class StaticResourceService:
@@ -20,19 +19,10 @@ class StaticResourceService:
         base_dir = get_deploy_dir(deploy_key).resolve()
         return self._resolve_file(base_dir, resource_path, not_found_message="部署资源不存在")
 
-    def resolve_preview_resource(self, code_gen_type: str, app_id: int, resource_path: str | None = None) -> tuple[Path, str]:
+    def resolve_preview_resource(self, app_id: int, resource_path: str | None = None) -> tuple[Path, str]:
         if app_id <= 0:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "appId 非法")
-        code_type = CodeGenTypeEnum.get_enum_by_value(code_gen_type)
-        if code_type is None:
-            raise BusinessException(ErrorCode.PARAMS_ERROR, "不支持的代码类型")
-
         base_dir = get_code_dir(app_id).resolve()
-        if code_type == CodeGenTypeEnum.VUE_PROJECT:
-            dist_dir = (base_dir / "dist").resolve()
-            if dist_dir.exists() and dist_dir.is_dir():
-                base_dir = dist_dir
-
         return self._resolve_file(base_dir, resource_path, not_found_message="预览资源不存在")
 
     def _resolve_file(self, base_dir: Path, resource_path: str | None, *, not_found_message: str) -> tuple[Path, str]:

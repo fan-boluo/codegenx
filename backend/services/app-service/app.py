@@ -306,14 +306,14 @@ async def serve_static_resource(deploy_key: str, resource_path: str = ""):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.get("/api/preview/{code_gen_type}/{app_id}")
-@app.get("/api/preview/{code_gen_type}/{app_id}/{resource_path:path}")
-async def serve_preview_resource(code_gen_type: str, app_id: int, resource_path: str = ""):
+@app.get("/api/preview/{app_id}")
+@app.get("/api/preview/{app_id}/{resource_path:path}")
+async def serve_preview_resource(app_id: int, resource_path: str = ""):
     try:
-        file_path, media_type = static_resource_service.resolve_preview_resource(code_gen_type, app_id, resource_path)
+        file_path, media_type = static_resource_service.resolve_preview_resource(app_id, resource_path)
         return FileResponse(path=str(file_path), media_type=media_type)
     except Exception as exc:
-        log.exception("serve preview resource failed codeGenType={} appId={} resourcePath={}", code_gen_type, app_id, resource_path)
+        log.exception("serve preview resource failed appId={} resourcePath={}", app_id, resource_path)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

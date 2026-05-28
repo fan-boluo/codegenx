@@ -3,9 +3,6 @@
     <div class="header-bar">
       <div class="header-left">
         <h1 class="app-name">{{ appInfo?.appName || '新建应用对话' }}</h1>
-        <a-tag v-if="appInfo?.codeGenType" color="blue" class="code-gen-type-tag">
-          {{ formatCodeGenType(appInfo.codeGenType) }}
-        </a-tag>
       </div>
       <div v-if="appId" class="header-right">
         <a-button type="default" @click="showAppDetail">
@@ -290,7 +287,6 @@ import {
   getAppVoById,
 } from '@/api/appController'
 import { listAppChatHistory } from '@/api/chatHistoryController'
-import { formatCodeGenType } from '@/utils/codeGenTypes'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
@@ -1026,7 +1022,7 @@ const updatePreview = () => {
   }
 
   if (appId.value && appInfo.value?.codeGenType) {
-    previewUrl.value = getGeneratedPreviewUrl(appId.value, appInfo.value.codeGenType)
+    previewUrl.value = getGeneratedPreviewUrl(appId.value)
     previewReady.value = false
     previewVersion.value += 1
     return

@@ -1,4 +1,4 @@
-from enum import StrEnum, Enum
+from enum import StrEnum
 from pathlib import Path
 
 
@@ -29,19 +29,11 @@ DEFAULT_PAGE_SIZE = 10
 MAX_PAGE_SIZE = 100
 
 
-class CodeGenType(Enum):
-    HTML = "html"
-    MULTI_FILE = "multi_file"
-    VUE_PROJECT = "vue_project"
-
 class ChatHistoryMessageType:
     USER = "user"
     AI = "ai"
 
 # 调用大模型
-API_KEY_PREFIX = "sk-"
-API_KEY_STATUS_ACTIVE = "active"
-API_KEY_STATUS_REVOKED = "revoked"
 REQUEST_STATUS_SUCCESS = "success"
 REQUEST_STATUS_FAILED = "failed"
 CHAT_OBJECT = "chat.completion"
@@ -84,11 +76,6 @@ SCORE_LATENCY_WEIGHT = 0.3
 SCORE_SUCCESS_RATE_WEIGHT = 0.2
 SCORE_PRIORITY_WEIGHT = 0.2
 
-
-# Code generation types
-CODE_GEN_TYPE_HTML = 0
-CODE_GEN_TYPE_MULTI_FILE = 1
-CODE_GEN_TYPE_VUE_PROJECT = 2
 
 # Chat memory_bak settings
 CHAT_MEMORY_MAX_TURNS = 50
