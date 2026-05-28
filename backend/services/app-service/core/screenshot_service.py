@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from shared.constants import CODE_DEPLOY_ROOT_DIR
+from shared.constants import get_deploy_dir
 from shared.config.log_config import log
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
@@ -13,7 +13,6 @@ from shared.exceptions.error_code import ErrorCode
 class ScreenshotService:
     def __init__(self) -> None:
         self.web_screenshot_service: Any | None = None
-        self.deploy_root_dir = Path(CODE_DEPLOY_ROOT_DIR)
 
     def generate_and_upload_screenshot(self, web_url: str, deploy_key: str) -> str:
         normalized_url = web_url.strip()
@@ -44,7 +43,7 @@ class ScreenshotService:
         if not local_screenshot_path.exists():
             raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "截图文件不存在")
 
-        deploy_dir = self.deploy_root_dir / deploy_key
+        deploy_dir = get_deploy_dir(deploy_key)
         if not deploy_dir.exists() or not deploy_dir.is_dir():
             raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "部署目录不存在，请先部署应用")
 

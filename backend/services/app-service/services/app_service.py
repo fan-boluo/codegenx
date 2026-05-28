@@ -14,19 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config.config import get_settings
 from shared.config.log_config import log
-from shared.constants import CODE_DEPLOY_HOST, DEFAULT_APP_PRIORITY, get_code_dir
-from shared.enums.code_gen_type import CodeGenTypeEnum
+from shared.constants import DEFAULT_APP_PRIORITY, get_code_dir, get_deploy_dir
 from shared.exceptions.error_code import ErrorCode
 from shared.exceptions.throw_utils import ThrowUtils
 from shared.orm.app import App
 from shared.schema.app import AppAddRequest, AppAdminUpdateRequest, AppDeployRequest, AppQueryRequest, AppUpdateRequest, AppVO
 from shared.schema.common import PageData
-from shared.schema.code import GeneratedCodeSaveRequest
 
 from core.auth_proxy import JWTUser
-from core.code_generator_facade import CodePersistenceFacade
 from chat_history import ChatHistoryService
-from core.saver import CodeFileSaverExecutor
 from core.screenshot_service import ScreenshotService
 
 
@@ -36,7 +32,6 @@ settings = get_settings()
 class AppService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
-        self.code_persistence_facade = CodePersistenceFacade()
         self.screenshot_service = ScreenshotService()
 
     async def create_app(self, app_add_request: AppAddRequest, login_user: JWTUser, trace_id: str | None = None) -> int:
@@ -62,53 +57,17 @@ class AppService:
         log.info("app-service create app completed traceId={} userId={} appId={}", trace_id, login_user.user_id, app.id)
         return app.id
 
-    async def save_generated_code(self, request: GeneratedCodeSaveRequest) -> dict[str, str | None]:
-        app = await self._get_existing_app(request.app_id)
-        request_type = CodeGenTypeEnum.get_enum_by_value(request.code_gen_type)
-        ThrowUtils.throw_if(request.code_gen_type is not None and request_type is None, ErrorCode.PARAMS_ERROR, "应用代码生成类型错误")
-        existing_type = CodeGenTypeEnum.get_enum_by_value(app.code_gen_type)
-        code_gen_type = self.code_persistence_facade.detect_code_gen_type(
-            request.content,
-            preferred=request_type or existing_type,
-        )
-        log.info(
-            "app-service persist code start appId={} codeGenType={} contentLen={} preview={}",
-            request.app_id,
-            code_gen_type.value,
-            len(request.content),
-            _preview_text(request.content),
-        )
-        persisted = self.code_persistence_facade.save_generated_code(request.content, code_gen_type, app.id)
-        app.code_gen_type = code_gen_type.value
-        app.edit_time = datetime.utcnow()
-        preview_source_dir = Path(persisted.get("buildDir") or persisted.get("savedDir") or "")
-        if preview_source_dir:
-            deploy_key = app.deploy_key or secrets.token_urlsafe(6)[:6]
-            CodeFileSaverExecutor.deploy_saved_code(preview_source_dir, deploy_key)
-            app.deploy_key = deploy_key
-            await self.db.commit()
-            persisted["deployKey"] = deploy_key
-            log.info(
-                "app-service preview refreshed appId={} deployKey={} previewSourceDir={}",
-                app.id,
-                deploy_key,
-                preview_source_dir,
-            )
-        log.info("app-service persist code completed appId={} result={}", app.id, persisted)
-        return persisted
-
     async def deploy_app(self, request: AppDeployRequest, login_user: JWTUser) -> dict[str, str | None]:
         app = await self._get_owned_app(request.app_id, login_user)
         deploy_key = app.deploy_key or secrets.token_urlsafe(6)[:6]
         source_dir = get_code_dir(app.id)
         ThrowUtils.throw_if(not source_dir.exists(), ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码")
-        deploy_source = source_dir
-        if app.code_gen_type == CodeGenTypeEnum.VUE_PROJECT.value:
-            dist_dir = source_dir / "dist"
-            if not dist_dir.exists():
-                dist_dir = CodeFileSaverExecutor.build_vue_project(source_dir)
-            deploy_source = dist_dir
-        CodeFileSaverExecutor.deploy_saved_code(deploy_source, deploy_key)
+
+        deploy_dir = get_deploy_dir(deploy_key)
+        if deploy_dir.exists():
+            shutil.rmtree(deploy_dir)
+        shutil.copytree(source_dir, deploy_dir)
+
         deploy_url = self._build_deploy_url(deploy_key)
         screenshot_url = None
         try:
@@ -336,7 +295,8 @@ class AppService:
         ThrowUtils.throw_if(login_user.user_role != "admin", ErrorCode.NO_AUTH_ERROR, "仅管理员可执行该操作")
 
     def _build_deploy_url(self, deploy_key: str) -> str:
-        return f"{CODE_DEPLOY_HOST.rstrip('/')}/api/app/static/{deploy_key}/"
+        base_path = settings.app_base_path.rstrip("/")
+        return f"http://{settings.app_host}:{settings.app_port}{base_path}/app/static/{deploy_key}/"
 
     def _build_internal_deploy_url(self, deploy_key: str) -> str:
         return f"http://127.0.0.1:{settings.app_service_http_port}/api/static/{deploy_key}/"

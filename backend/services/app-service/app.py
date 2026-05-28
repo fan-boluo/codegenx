@@ -23,15 +23,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth_proxy import JWTUser, require_login, require_role
 from core.service_registry import AppServiceRegistry
-from core.static_service import StaticResourceService
 from infra.mysql.session import get_db_session
 from shared.config.log_config import log
 from shared.constants import UserRole
 from shared.schema.app import AppAddRequest, AppAdminUpdateRequest, AppDeployRequest, AppQueryRequest, AppUpdateRequest, AppVO
 from shared.schema.common import BaseResponse, DeleteRequest, PageData
-from shared.schema.code import GeneratedCodeSaveRequest
 from shared.utils.result_utils import success
 from app_service import AppService
+from services.static_service import StaticResourceService
 from chat_history_api import router as chat_history_router
 
 app = FastAPI(title="CodeGenX App Service", version="1.0.0")
@@ -98,30 +97,6 @@ async def add_app(
         return success(app_id)
     except Exception as exc:
         log.exception("add app failed traceId={} userId={}", trace_id, current_user.user_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.post("/internal/app/code/save", response_model=BaseResponse[dict[str, str | None]])
-async def save_generated_code(
-    payload: GeneratedCodeSaveRequest,
-    http_request: Request,
-    db: AsyncSession = Depends(get_db_session),
-) -> BaseResponse[dict[str, str | None]]:
-    trace_id = getattr(http_request.state, "trace_id", None)
-    log.info(
-        "app-service save code request traceId={} appId={} codeGenType={} contentLen={} preview={}",
-        trace_id,
-        payload.app_id,
-        payload.code_gen_type,
-        len(payload.content),
-        _preview_text(payload.content),
-    )
-    try:
-        result = await AppService(db).save_generated_code(payload)
-        log.info("app-service save code completed traceId={} appId={} result={}", trace_id, payload.app_id, result)
-        return success(result)
-    except Exception as exc:
-        log.exception("save generated code failed traceId={} appId={}", trace_id, payload.app_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

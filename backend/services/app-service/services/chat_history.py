@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import threading
-import time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +19,6 @@ from shared.constants import (
     UserRole,
     get_session_dir,
 )
-from shared.enums.chat_history_message_type import ChatHistoryMessageTypeEnum
 from shared.exceptions.error_code import ErrorCode
 from shared.exceptions.throw_utils import ThrowUtils
 from shared.orm.app import App
@@ -197,25 +195,6 @@ class ChatHistoryService:
             reverse=reverse,
         )
 
-    async def add_chat_message(self, app_id: int, message: str, message_type: str, user_id: int) -> bool:
-        ThrowUtils.throw_if(app_id <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空")
-        ThrowUtils.throw_if(not message.strip(), ErrorCode.PARAMS_ERROR, "消息内容不能为空")
-        ThrowUtils.throw_if(ChatHistoryMessageTypeEnum.get_enum_by_value(message_type) is None, ErrorCode.PARAMS_ERROR, "不支持的消息类型")
-        ThrowUtils.throw_if(user_id <= 0, ErrorCode.PARAMS_ERROR, "用户ID不能为空")
-
-        now = self._utc_now()
-        record = ChatHistoryRecord(
-            id=time.time_ns(),
-            message=message,
-            message_type=message_type,
-            app_id=app_id,
-            user_id=user_id,
-            create_time=now,
-            update_time=now,
-        )
-        self._append_record(record)
-        return True
-
     async def delete_by_app_id(self, app_id: int) -> bool:
         ThrowUtils.throw_if(app_id <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空")
         history_files = self._history_files(app_id)
@@ -251,19 +230,6 @@ class ChatHistoryService:
             records = [item for item in records if item.create_time < last_create_time]
         records = self._sort_records(records, "create_time", "descend")
         return records[:page_size]
-
-    async def load_chat_history_to_memory(self, app_id: int, max_count: int = 20) -> list[dict[str, str]]:
-        cached_records = self._cache_records(app_id)
-        if cached_records and max_count <= CHAT_HISTORY_CACHE_TURNS:
-            records = self._sort_records(cached_records, "create_time", "descend")[:max_count]
-        else:
-            records = self._sort_records(self._read_app_records(app_id), "create_time", "descend")[:max_count]
-        records.reverse()
-        messages: list[dict[str, str]] = []
-        for history in records:
-            role = "assistant" if history.message_type == ChatHistoryMessageTypeEnum.AI.value else "user"
-            messages.append({"role": role, "content": history.message})
-        return messages
 
     async def list_all_chat_history_by_page(self, query_request: ChatHistoryQueryRequest) -> list[ChatHistoryRecord]:
         records = [item for item in self._read_all_records() if self._match_query(item, query_request)]
