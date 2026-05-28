@@ -23,6 +23,7 @@ from api.user import router as user_router
 from api.app import router as app_router
 from api.chat_history import router as chat_history_router
 from api.stats import router as stats_router
+from api.blacklist import router as blacklist_router
 from shared.utils.result_utils import error
 from shared.exceptions.error_code import ErrorCode
 from shared.config.log_config import log
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_history_router, prefix=settings.app_base_path)
     app.include_router(health_router, prefix=settings.app_base_path)
     app.include_router(stats_router, prefix=settings.app_base_path)
+    app.include_router(blacklist_router, prefix=settings.app_base_path)
 
     return app
 
