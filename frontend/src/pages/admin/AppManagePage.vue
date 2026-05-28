@@ -102,11 +102,6 @@ const columns = [
     width: 200,
   },
   {
-    title: '生成类型',
-    dataIndex: 'codeGenType',
-    width: 100,
-  },
-  {
     title: '优先级',
     dataIndex: 'priority',
     width: 80,

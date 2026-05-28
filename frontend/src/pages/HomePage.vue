@@ -15,9 +15,9 @@ const apps = ref<API.AppVO[]>([])
 const total = ref(0)
 
 const promptExamples = [
-  '做一个极简风的待办事项网页，支持新增、勾选和筛选',
-  '生成一个宠物医院官网首页，包含服务介绍、预约入口和联系方式',
-  '做一个活动报名页，包含日程、嘉宾、报名表单和 FAQ',
+  '生成一个销售数据看板，按区域和时间维度展示营收、利润和 Top 10 产品',
+  '做一个 A/B 实验分析报告页，展示实验组对照组的核心指标对比和置信区间',
+  '帮我搭一个 API 调用量监控面板，展示 QPS、P99 延迟和错误率趋势',
 ]
 
 const isLoggedIn = computed(() => Boolean(loginUserStore.loginUser.id))

@@ -893,7 +893,6 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
         sessionId: currentSessionId,
         requestId,
         traceId: createClientId(),
-        codeGenType: appInfo.value?.codeGenType || undefined,
       }),
       signal: controller.signal,
     })
@@ -1021,7 +1020,7 @@ const updatePreview = () => {
     return
   }
 
-  if (appId.value && appInfo.value?.codeGenType) {
+  if (appId.value) {
     previewUrl.value = getGeneratedPreviewUrl(appId.value)
     previewReady.value = false
     previewVersion.value += 1

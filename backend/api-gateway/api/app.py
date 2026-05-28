@@ -321,12 +321,12 @@ async def serve_static_resource(deploy_key: str, resource_path: str = ""):
     )
 
 
-@router.get("/preview/{code_gen_type}/{app_id}")
-@router.get("/preview/{code_gen_type}/{app_id}/{resource_path:path}")
-async def serve_preview_resource(code_gen_type: str, app_id: int, resource_path: str = ""):
+@router.get("/preview/{app_id}")
+@router.get("/preview/{app_id}/{resource_path:path}")
+async def serve_preview_resource(app_id: int, resource_path: str = ""):
     proxy = AppProxy()
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        upstream_path = f"/api/preview/{code_gen_type}/{app_id}/{resource_path}" if resource_path else f"/api/preview/{code_gen_type}/{app_id}"
+        upstream_path = f"/api/preview/{app_id}/{resource_path}" if resource_path else f"/api/preview/{app_id}"
         upstream_url = await proxy.build_url(upstream_path)
         response = await client.get(url=upstream_url)
 

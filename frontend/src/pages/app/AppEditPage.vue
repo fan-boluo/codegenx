@@ -134,8 +134,7 @@ const formData = reactive({
   cover: '',
   priority: 0,
   initPrompt: '',
-  codeGenType: '',
-  deployKey: '',
+    { required: true, message: '请输入应用名称', trigger: 'blur' },
 })
 
 // 是否为管理员
@@ -180,7 +179,6 @@ const fetchAppInfo = async () => {
       formData.cover = appInfo.value.cover || ''
       formData.priority = appInfo.value.priority || 0
       formData.initPrompt = appInfo.value.initPrompt || ''
-      formData.codeGenType = appInfo.value.codeGenType || ''
       formData.deployKey = appInfo.value.deployKey || ''
     } else {
       message.error('获取应用信息失败')

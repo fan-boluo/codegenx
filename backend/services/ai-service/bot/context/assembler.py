@@ -50,7 +50,6 @@ class ContextAssembler:
             "os_name": (platform.system() or "Windows").lower(),
             "project_skeleton": self.build_directory_skeleton(code_dir),
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-            # "code_gen_type": str(session.request.code_gen_type or "")
         }
 
         self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format(code_dir=self.workspace_metadata.get("code_dir"))
@@ -85,7 +84,6 @@ class ContextAssembler:
             workspace_prompt += f"- 安全路径列表：{', '.join(self.workspace_metadata['safe_paths'])}\n"
             workspace_prompt += f"- 允许读写的目录：{', '.join(self.workspace_metadata['allowed_rw_dirs'])}\n"
             workspace_prompt += f"- 操作系统类型：{self.workspace_metadata['os_name']}\n"
-            workspace_prompt += f"- 代码生成类型：{self.workspace_metadata.get('code_gen_type', '')}\n"
             workspace_prompt += "- 项目目录结构：\n" + self.workspace_metadata["project_skeleton"] + "\n"
             workspace_prompt += "- 元数据生成时间：" + str(self.workspace_metadata["timestamp"])
 
