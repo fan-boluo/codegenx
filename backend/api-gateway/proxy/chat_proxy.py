@@ -126,7 +126,7 @@ class ChatProxy:
                     total_latency_ms,
                 )
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(event_stream(), media_type="text/plain")
 
     async def request_json(
         self,

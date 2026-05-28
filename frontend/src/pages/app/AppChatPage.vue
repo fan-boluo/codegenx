@@ -320,11 +320,6 @@ interface Message {
   createTime?: string
 }
 
-type ParsedSseEvent = {
-  event: string
-  data: string
-}
-
 const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
@@ -344,10 +339,8 @@ const messagesContainer = ref<HTMLElement>()
 const activeGenerationRequestId = ref('')
 const activeGenerationSessionId = ref('')
 const activeGenerationMessageIndex = ref<number | null>(null)
-const websocket = ref<WebSocket | null>(null)
-const websocketConnecting = ref(false)
-const websocketConnected = ref(false)
 const stopRequested = ref(false)
+const abortController = ref<AbortController | null>(null)
 
 const loadingHistory = ref(false)
 const hasMoreHistory = ref(false)
@@ -512,24 +505,19 @@ const createClientId = () => {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-const getWebSocketUrl = () => {
-  const baseURL = request.defaults.baseURL || API_BASE_URL
-  try {
-    const url = new URL(baseURL)
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-    url.pathname = '/ws/ai/codegen'
-    url.search = ''
-    return url.toString()
-  } catch {
-    return baseURL.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:') + '/ws/ai/codegen'
+const applyMessageChunk = (chunk: unknown) => {
+  if (chunk === undefined || chunk === null) {
+    return
   }
-}
 
-const closeWebSocket = () => {
-  websocket.value?.close()
-  websocket.value = null
-  websocketConnecting.value = false
-  websocketConnected.value = false
+  const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
+  if (!targetMessage) {
+    return
+  }
+
+  targetMessage.content = `${targetMessage.content || ''}${String(chunk)}`
+  targetMessage.loading = false
+  scrollToBottom()
 }
 
 const getAppSessionStorageKey = (currentAppId: string) => `codegenx:app-chat-session:${currentAppId}`
@@ -555,80 +543,6 @@ const ensureChatSessionId = (currentAppId?: string) => {
   localStorage.setItem(storageKey, createdSessionId)
   sessionId.value = createdSessionId
   return createdSessionId
-}
-
-const parseWebSocketEvent = (text: string) => {
-  try {
-    return JSON.parse(text)
-  } catch (error) {
-    console.error('解析 WebSocket 事件失败:', error, text)
-    return null
-  }
-}
-
-const ensureWebSocketConnected = async () => {
-  if (websocket.value && websocket.value.readyState === WebSocket.OPEN) {
-    return
-  }
-  if (websocketConnecting.value) {
-    return new Promise<void>((resolve, reject) => {
-      const checkReady = () => {
-        if (websocket.value && websocket.value.readyState === WebSocket.OPEN) {
-          resolve()
-        } else if (websocket.value && websocket.value.readyState === WebSocket.CLOSED) {
-          reject(new Error('WebSocket 连接失败'))
-        } else {
-          setTimeout(checkReady, 50)
-        }
-      }
-      checkReady()
-    })
-  }
-
-  websocketConnecting.value = true
-  return new Promise<void>((resolve, reject) => {
-    try {
-      closeWebSocket()
-      const ws = new WebSocket(getWebSocketUrl())
-      websocket.value = ws
-
-      ws.onopen = () => {
-        websocketConnecting.value = false
-        websocketConnected.value = true
-        resolve()
-      }
-
-      ws.onmessage = (event: MessageEvent) => {
-        const payload = parseWebSocketEvent(event.data)
-        if (!payload || typeof payload.type !== 'string') {
-          return
-        }
-        handleWebSocketEvent(payload)
-      }
-
-      ws.onclose = () => {
-        websocketConnecting.value = false
-        websocketConnected.value = false
-        websocket.value = null
-      }
-
-      ws.onerror = (error) => {
-        console.error('WebSocket 错误:', error)
-      }
-    } catch (error) {
-      websocketConnecting.value = false
-      websocketConnected.value = false
-      websocket.value = null
-      reject(error)
-    }
-  })
-}
-
-const sendWebSocketMessage = (payload: Record<string, unknown>) => {
-  if (!websocket.value || websocket.value.readyState !== WebSocket.OPEN) {
-    throw new Error('WebSocket 未连接')
-  }
-  websocket.value.send(JSON.stringify(payload))
 }
 
 const applyMessageChunk = (chunk: unknown) => {
@@ -658,10 +572,9 @@ const finishStream = () => {
   }, 1000)
 }
 
-const handleWebSocketEvent = (envelope: { type: string; data: any }) => {
-  const eventType = envelope.type
-  const eventPayload = envelope.data
-  const eventData = eventPayload?.data ?? eventPayload
+const handleStreamEvent = (event: { event_type: string; data: any; state?: string }) => {
+  const eventType = event.event_type
+  const eventData = event.data
 
   if (eventType === 'LLM_Response_Chunk') {
     applyMessageChunk(eventData)
@@ -679,16 +592,6 @@ const handleWebSocketEvent = (envelope: { type: string; data: any }) => {
     return
   }
 
-  if (eventType === 'StopResponse') {
-    if (eventData?.accepted === false) {
-      message.error('停止请求未被接受，请重试。')
-    } else {
-      message.info('已发送停止请求')
-    }
-    isStoppingGeneration.value = false
-    return
-  }
-
   if (eventType === 'Error') {
     const errorText = typeof eventData === 'string' ? eventData : eventData?.message || JSON.stringify(eventData)
     const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
@@ -701,11 +604,7 @@ const handleWebSocketEvent = (envelope: { type: string; data: any }) => {
     return
   }
 
-  if (eventType === 'pong') {
-    return
-  }
-
-  console.debug('收到未处理的 WebSocket 事件:', eventType, eventPayload)
+  console.debug('收到未处理的事件:', eventType, eventData)
 }
 
 const isOwner = computed(() => {
@@ -979,32 +878,86 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
   stopRequested.value = false
   isStoppingGeneration.value = false
 
-  try {
-    await ensureWebSocketConnected()
-  } catch (error) {
-    console.error('WebSocket 连接失败：', error)
-    handleError(error, aiMessageIndex, requestId)
-    return
-  }
-
-  const payload: Record<string, unknown> = {
-    type: 'request',
-    appId: Number(appId.value),
-    message: userMessage,
-    sessionId: currentSessionId,
-    requestId,
-    traceId: createClientId(),
-  }
-
-  if (appInfo.value?.codeGenType) {
-    payload.codeGenType = appInfo.value.codeGenType
-  }
+  const controller = new AbortController()
+  abortController.value = controller
 
   try {
-    sendWebSocketMessage(payload)
-  } catch (error) {
-    console.error('发送 WebSocket 请求失败：', error)
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const url = `${baseURL}/api/app/chat/gen/code`
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify({
+        appId: Number(appId.value),
+        message: userMessage,
+        sessionId: currentSessionId,
+        requestId,
+        traceId: createClientId(),
+        codeGenType: appInfo.value?.codeGenType || undefined,
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      throw new Error('No response body')
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const event = JSON.parse(trimmed)
+          if (event.event_type) {
+            handleStreamEvent(event)
+          }
+        } catch {
+          // skip malformed lines
+        }
+      }
+    }
+
+    // Process remaining buffer
+    if (buffer.trim()) {
+      try {
+        const event = JSON.parse(buffer.trim())
+        if (event.event_type) {
+          handleStreamEvent(event)
+        }
+      } catch {
+        // skip
+      }
+    }
+
+    finishStream()
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      return
+    }
     handleError(error, aiMessageIndex, requestId)
+  } finally {
+    if (abortController.value === controller) {
+      abortController.value = null
+    }
   }
 }
 
@@ -1031,22 +984,28 @@ const stopGeneration = async () => {
     return
   }
 
-  if (!websocket.value || websocket.value.readyState !== WebSocket.OPEN) {
-    message.error('WebSocket 未连接，无法停止生成')
-    return
-  }
-
   isStoppingGeneration.value = true
   stopRequested.value = true
 
   try {
-    sendWebSocketMessage({
-      type: 'stop',
-      appId: Number(appId.value),
-      sessionId: activeGenerationSessionId.value,
-      requestId: activeGenerationRequestId.value,
-      traceId: createClientId(),
-      reason: 'user-stop',
+    abortController.value?.abort()
+
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const url = `${baseURL}/api/app/chat/stop`
+
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify({
+        appId: Number(appId.value),
+        sessionId: activeGenerationSessionId.value,
+        requestId: activeGenerationRequestId.value,
+        traceId: createClientId(),
+        reason: 'user-stop',
+      }),
     })
     message.info('停止请求已发送')
   } catch (error) {
@@ -1284,7 +1243,7 @@ watch(
 
 onUnmounted(() => {
   window.removeEventListener('message', handleWindowMessage)
-  closeWebSocket()
+  abortController.value?.abort()
 })
 </script>
 
