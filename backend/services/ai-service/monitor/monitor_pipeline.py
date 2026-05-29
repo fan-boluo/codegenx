@@ -177,7 +177,6 @@ class MonitorPipeline:
         turn_telemetry = TurnTelemetry.new_tel(session_telemetry)
         turn_telemetry.turn_number = turn.step_counter
         turn_telemetry.turn_id = session.request_id
-        turn_telemetry.request_id = session.request_id
 
         turn_span_id = _new_span_id()
         turn_started_utc = _utcnow()

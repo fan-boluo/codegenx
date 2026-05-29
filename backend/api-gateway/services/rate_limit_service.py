@@ -1,7 +1,13 @@
 import time
 
 from redis.asyncio import Redis
-from core.constants import RATE_LIMIT_IP_PREFIX, CHAT_USER_RATE_LIMIT_PER_SECOND
+from core.constants import (
+    RATE_LIMIT_IP_PREFIX,
+    RATE_LIMIT_API_PREFIX,
+    CHAT_USER_RATE_LIMIT_PER_SECOND,
+    API_RATE_LIMIT_MAX,
+    API_RATE_LIMIT_WINDOW_SECONDS,
+)
 
 
 class RateLimitService:
@@ -30,8 +36,8 @@ class RateLimitService:
         key = f"{RATE_LIMIT_IP_PREFIX}{ip}"
         return await self.try_acquire(key, limit, window_seconds)
 
-    async def check_api_rate_limit(self, api_path: str, limit: int = 100, window_seconds: int = 60) -> bool:
-        key = f"rate_limit:api:{api_path}"
+    async def check_api_rate_limit(self, api_path: str, limit: int = API_RATE_LIMIT_MAX, window_seconds: int = API_RATE_LIMIT_WINDOW_SECONDS) -> bool:
+        key = f"{RATE_LIMIT_API_PREFIX}{api_path}"
         return await self.try_acquire(key, limit, window_seconds)
 
     # 下面是使用滑动窗口的

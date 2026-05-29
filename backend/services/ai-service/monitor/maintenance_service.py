@@ -144,7 +144,7 @@ async def _periodic_maintenance_loop(*, interval_seconds: int) -> None:
             result = await service.cleanup_history(retention_days=7, dry_run=False)
             log.info(
                 "Periodic maintenance: DB cleanup status={} deletedRows={}",
-                result.status, result.deletedRows,
+                result.status, result.deleted_rows,
             )
 
             # 2) Alert streak stale-entry cleanup

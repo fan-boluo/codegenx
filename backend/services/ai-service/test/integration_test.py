@@ -21,7 +21,6 @@ STREAM_BODY = {
     "app_id": "1",
     "user_id": "test-user",
     "message": "帮我写一个Python hello world程序",
-    "code_gen_type": "agent",
 }
 
 STOP_BODY = {

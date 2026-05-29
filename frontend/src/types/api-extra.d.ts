@@ -5,7 +5,6 @@ declare namespace API {
     appName?: string
     cover?: string
     initPrompt?: string
-    codeGenType?: string
     priority?: number
     deployKey?: string
     deployedTime?: string
@@ -22,7 +21,6 @@ declare namespace API {
     id?: number
     userId?: number
     appName?: string
-    codeGenType?: string
     priority?: number
   }
 

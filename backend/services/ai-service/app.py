@@ -70,11 +70,10 @@ app = FastAPI(title="CodeGenX AI Service", version="1.0.0", lifespan=lifespan)
 async def generate_code_stream(request: AiServiceGenerateRequest):
 	trace_id, request_id, session_id = _validate_call_context(request)
 	log.info(
-		"ai-service public stream request traceId={} requestId={} appId={} requestedCodeGenType={} messageLen={} preview={}",
+		"ai-service public stream request traceId={} requestId={} appId={} messageLen={} preview={}",
 		trace_id,
 		request_id,
 		request.app_id,
-		request.code_gen_type,
 		len(request.message),
 		request.message[:80],
 	)
@@ -89,13 +88,12 @@ async def generate_code_stream(request: AiServiceGenerateRequest):
 		return StreamingResponse(event_stream(), media_type="text/plain")
 	except Exception as exc:
 		log.exception(
-			"ai-service public stream failed traceId={} requestId={} appId={} requestedCodeGenType= {}",
+			"ai-service public stream failed traceId={} requestId={} appId={}",
 			trace_id,
 			request_id,
 			request.app_id,
-			request.code_gen_type,
 		)
-		raise HTTPException(status_code=500, detail=str(exc)) from exc
+		raise
 
 
 @app.post("/api/ai/codegen/stop", response_model=AiServiceStopResponse)
