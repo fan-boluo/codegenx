@@ -74,10 +74,16 @@ class SessionContext:
 
 
     def add_user_message(self,message):
-        self.chat_messages.append({"role":"user","content":message})
+        if isinstance(message,dict):
+            self.chat_messages.append(message)
+        if isinstance(message,str):
+            self.chat_messages.append({"role":"user","content":message})
 
     def add_assistant_message(self, message):
-        self.chat_messages.append({"role": "assistant", "content": message})
+        if isinstance(message,dict):
+            self.chat_messages.append(message)
+        if isinstance(message,str):
+            self.chat_messages.append({"role": "assistant", "content": message})
 
     def add_tool_message(self, message):
         if isinstance(message,dict):
