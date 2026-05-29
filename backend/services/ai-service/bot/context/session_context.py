@@ -44,7 +44,7 @@ class SessionContext:
 
     def __post_init__(self) -> None:
         self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id)
-        self.task = TaskManager(app_id=self.app_id)
+        self.task = TaskManager(app_id=self.app_id, session_id=self.session_id)
         self._session_memory = SessionMemory(session_id=self.session_id,app_id=self.app_id)
         self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_memory)
         self.system_prompt = ""

@@ -18,8 +18,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from bot.utils.context_utils import ensure_app_workdir
 from shared.config.log_config import log
+from shared.constants import get_current_session_dir
 
 # ------------------------------------------------------------------ constants
 
@@ -39,13 +39,13 @@ _STATUS_MARKER: dict[str, str] = {
 class TaskManager:
     """Per-app-id persistent task graph.
 
-    Scope: one ``TaskManager`` per ``app_id``; disk-backed so tasks survive
+    Scope: one ``TaskManager`` per ``app_id``/``session_id``; disk-backed so tasks survive
     session restarts.  Multiple sessions for the same ``app_id`` share the
     same board transparently.
     """
 
-    def __init__(self, app_id: str) -> None:
-        self._tasks_dir: Path = ensure_app_workdir(app_id) / ".tasks"
+    def __init__(self, app_id: str, session_id: str = "") -> None:
+        self._tasks_dir: Path = get_current_session_dir(app_id, session_id) / ".tasks"
         self._tasks_dir.mkdir(parents=True, exist_ok=True)
         self._counter_file: Path = self._tasks_dir / "_counter.json"
 

@@ -467,12 +467,6 @@ class AgentRuntime(LLMRecoveryMixin):
         self._raise_if_stop_requested(session_state)
         messages = await session_state.context_manager.assemble()
         prompt_tokens = self._estimate_message_tokens(messages)
-        session_telemetry = session_state.telemetry
-        projected_total_tokens = prompt_tokens
-        if session_telemetry is not None:
-            projected_total_tokens += int(
-                session_telemetry.total_prompt_tokens or 0
-            ) + int(session_telemetry.total_completion_tokens or 0)
 
         await self.hook_runner.dispatch(
             "PreLLMCall",
@@ -480,7 +474,7 @@ class AgentRuntime(LLMRecoveryMixin):
             session=session_state,
             messages=messages,
             prompt_tokens=prompt_tokens,
-            projected_total_tokens=projected_total_tokens,
+            projected_total_tokens=prompt_tokens,
         )
         await self._publish_runtime_event(
             session_state,

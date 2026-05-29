@@ -213,6 +213,8 @@ class MonitorPipeline:
         started_at_ts = float(turn.started_at or finished_at)
         telemetry.duration_ms = max(0, int((finished_at - started_at_ts) * 1000))
         telemetry.status = _session_status(turn.state)
+        telemetry.llm_recovery_count = getattr(turn, "llm_recovery_count", 0) or 0
+        telemetry.last_recovery_kind = getattr(turn, "last_recovery_kind", "") or ""
 
         collector = self._span_collectors.get(session.session_id)
         if turn_span_id and collector:

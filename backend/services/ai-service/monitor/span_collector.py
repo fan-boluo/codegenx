@@ -78,7 +78,6 @@ class SpanCollector:
             "turn_id": turn_telemetry.turn_id,
             "session_id": turn_telemetry.session_id,
             "trace_id": turn_telemetry.trace_id,
-            "request_id": turn_telemetry.request_id,
             "app_id": turn_telemetry.app_id,
             "user_id": turn_telemetry.user_id,
             "model": turn_telemetry.model,

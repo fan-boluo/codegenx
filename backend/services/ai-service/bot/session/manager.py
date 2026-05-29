@@ -47,7 +47,7 @@ class Message(BaseModel):
 class Session(BaseModel):
     session_id: str
     messages: list[Message] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    # metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -146,7 +146,7 @@ class SessionManager:
             try:
                 with open(session_file, "w", encoding="utf-8") as f:
                     json.dump(session.to_dict(), f, ensure_ascii=False, indent=2)
-                log.debug(f"session 已保存到磁盘: {session_id}")
+                log.debug(f"session 已保存到磁盘: {session_file}")
             except IOError as e:
                 log.error(f"保存 session 失败: {session_id}, 错误: {str(e)}")
 

@@ -33,6 +33,9 @@ class ActivateTurn:
     started_at: float = 0.0
     finished_at: float = 0.0
     active_span_refs:dict = field(default_factory=dict)
+    llm_recovery_count: int = 0
+    last_recovery_kind: str = ""
+    error_text: str = ""
 
     def add_turn_span_id(self, key: str, span_id: str) -> None:
         """Register an active span id for the current turn (e.g. 'turn_span_id', 'llm_span_id')."""
