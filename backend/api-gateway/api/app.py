@@ -14,7 +14,6 @@ from proxy.app_proxy import AppProxy
 router = APIRouter(prefix="/app", tags=["app"])
 
 
-@router.post("/add")
 @router.post("/create")
 async def add_app(
     request: Request,

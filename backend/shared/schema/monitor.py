@@ -169,3 +169,18 @@ class MonitorCleanupSummary(CamelBaseModel):
     deleted_rows: int = Field(default=0, alias="deletedRows")
     executed_at: datetime | None = Field(default=None, alias="executedAt")
     table_results: list[MonitorCleanupTableResult] = Field(default_factory=list, alias="tableResults")
+
+
+class TokenUsageQueryRequest(PageRequest):
+    start_time: datetime | None = Field(default=None, alias="startTime")
+    end_time: datetime | None = Field(default=None, alias="endTime")
+    user_id: str | None = Field(default=None, alias="userId")
+
+
+class TokenUsageItem(CamelBaseModel):
+    user_id: str = Field(alias="userId")
+    model_name: str = Field(alias="modelName")
+    total_prompt_tokens: int = Field(default=0, alias="totalPromptTokens")
+    total_completion_tokens: int = Field(default=0, alias="totalCompletionTokens")
+    total_tokens: int = Field(default=0, alias="totalTokens")
+    ended_at: datetime | None = Field(default=None, alias="endedAt")

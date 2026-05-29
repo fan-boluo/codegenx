@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path as _Path
 import shutil
 from pathlib import Path
@@ -33,7 +34,14 @@ from app_service import AppService
 from services.static_service import StaticResourceService
 from chat_history_api import router as chat_history_router
 
-app = FastAPI(title="CodeGenX App Service", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    await service_registry.startup()
+    yield
+    await service_registry.shutdown()
+
+
+app = FastAPI(title="CodeGenX App Service", version="1.0.0", lifespan=_lifespan)
 static_resource_service = StaticResourceService()
 service_registry = AppServiceRegistry()
 app.include_router(chat_history_router)
@@ -65,17 +73,6 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 app.add_middleware(TraceIdMiddleware)
 
 
-@app.on_event("startup")
-async def _startup_event() -> None:
-    await service_registry.startup()
-
-
-@app.on_event("shutdown")
-async def _shutdown_event() -> None:
-    await service_registry.shutdown()
-
-
-@app.post("/api/app/add", response_model=BaseResponse[int])
 @app.post("/api/app/create", response_model=BaseResponse[int])
 async def add_app(
     payload: AppAddRequest,

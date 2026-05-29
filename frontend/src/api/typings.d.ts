@@ -56,10 +56,6 @@ declare namespace API {
     requestId?: string
   }
 
-  type deleteAppApiAppDeleteParams = {
-    appId: number
-  }
-
   type DeleteRequest = {
     /** Id */
     id: number

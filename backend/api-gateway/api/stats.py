@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from middleware.auth import require_role
+from middleware.auth import require_login, require_role
 from middleware.jwt_auth import JWTUser
 from proxy.ai_monitor_proxy import AiMonitorProxy
 from shared.constants import UserRole
@@ -15,6 +15,8 @@ from shared.schema.monitor import (
     MonitorSessionDetail,
     MonitorSessionSummary,
     MonitorTurnSummary,
+    TokenUsageItem,
+    TokenUsageQueryRequest,
 )
 from shared.utils.result_utils import success
 
@@ -122,3 +124,22 @@ async def get_monitor_metrics(
         trace_id=getattr(request.state, "trace_id", None),
     )
     return PlainTextResponse(payload)
+
+
+@router.post("/token-usage/query", response_model=BaseResponse[PageData[TokenUsageItem]])
+async def query_token_usage(
+    request: Request,
+    payload: TokenUsageQueryRequest,
+    login_user: JWTUser = Depends(require_login),
+) -> BaseResponse[PageData[TokenUsageItem]]:
+    # admin 可传 userId 查所有用户；普通用户 gateway 层过滤
+    if login_user.user_role != UserRole.ADMIN.value:
+        payload.user_id = str(login_user.user_id)
+
+    result = await AiMonitorProxy().request_json(
+        method="POST",
+        path="/internal/token-usage/query",
+        json_body=payload.model_dump(by_alias=True),
+        trace_id=getattr(request.state, "trace_id", None),
+    )
+    return success(PageData[TokenUsageItem].model_validate(result))

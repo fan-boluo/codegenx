@@ -22,6 +22,8 @@ from shared.schema.monitor import (
     MonitorStatusCount,
     MonitorToolCallDetail,
     MonitorTurnSummary,
+    TokenUsageItem,
+    TokenUsageQueryRequest,
 )
 from utils.config import load_config
 
@@ -275,6 +277,57 @@ class MonitorQueryService:
             totalRow=total_row,
         )
 
+    async def query_token_usage(self, query: TokenUsageQueryRequest) -> PageData[TokenUsageItem]:
+        page_num, page_size = self._normalize_page(query.page_num, query.page_size)
+        where_clauses, params = self._build_token_usage_filters(query)
+        offset = (page_num - 1) * page_size
+
+        async with self._db_session_factory() as session:
+            total_row = int(
+                (
+                    await session.execute(
+                        text(f"SELECT COUNT(*) FROM turn_metrics {where_clauses}"),
+                        params,
+                    )
+                ).scalar_one()
+                or 0
+            )
+            rows = (
+                await session.execute(
+                    text(
+                        f"""
+                        SELECT user_id, model, total_prompt_tokens, total_completion_tokens,
+                               total_tokens, ended_at
+                        FROM turn_metrics
+                        {where_clauses}
+                        ORDER BY ended_at DESC
+                        LIMIT :limit OFFSET :offset
+                        """
+                    ),
+                    {**params, "limit": page_size, "offset": offset},
+                )
+            ).mappings().all()
+
+        records = [
+            TokenUsageItem(
+                userId=str(row.get("user_id") or ""),
+                modelName=str(row.get("model") or "unknown"),
+                totalPromptTokens=int(row.get("total_prompt_tokens") or 0),
+                totalCompletionTokens=int(row.get("total_completion_tokens") or 0),
+                totalTokens=int(row.get("total_tokens") or 0),
+                endedAt=row.get("ended_at"),
+            )
+            for row in rows
+        ]
+        total_page = (total_row + page_size - 1) // page_size if total_row else 0
+        return PageData[TokenUsageItem](
+            records=records,
+            pageNumber=page_num,
+            pageSize=page_size,
+            totalPage=total_page,
+            totalRow=total_row,
+        )
+
     async def get_monitor_config(self) -> dict[str, Any]:
         return load_config().monitor.model_dump(mode="json", by_alias=True)
 
@@ -407,6 +460,21 @@ class MonitorQueryService:
             resolvedAt=row.get("resolved_at"),
             payload=normalized_payload,
         )
+
+    @staticmethod
+    def _build_token_usage_filters(query: TokenUsageQueryRequest) -> tuple[str, dict[str, Any]]:
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if query.user_id:
+            clauses.append("user_id = :user_id")
+            params["user_id"] = query.user_id
+        if query.start_time:
+            clauses.append("ended_at >= :start_time")
+            params["start_time"] = query.start_time
+        if query.end_time:
+            clauses.append("ended_at <= :end_time")
+            params["end_time"] = query.end_time
+        return (f"WHERE {' AND '.join(clauses)}" if clauses else "", params)
 
     @staticmethod
     def _parse_tool_calls_detail(raw_value: Any) -> list[MonitorToolCallDetail]:

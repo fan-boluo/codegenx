@@ -2,21 +2,6 @@
 /* eslint-disable */
 import request from '@/request'
 
-/** Delete App DELETE /api/app */
-export async function deleteAppApiAppDelete(
-  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
-  params: API.deleteAppApiAppDeleteParams,
-  options?: { [key: string]: any }
-) {
-  return request<any>('/api/app', {
-    method: 'DELETE',
-    params: {
-      ...params,
-    },
-    ...(options || {}),
-  })
-}
-
 /** Get App GET /api/app/${param0} */
 export async function getAppApiAppAppIdGet(
   // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
@@ -27,21 +12,6 @@ export async function getAppApiAppAppIdGet(
   return request<any>(`/api/app/${param0}`, {
     method: 'GET',
     params: { ...queryParams },
-    ...(options || {}),
-  })
-}
-
-/** Add App POST /api/app/add */
-export async function addAppApiAppAddPost(
-  body: Record<string, any>,
-  options?: { [key: string]: any }
-) {
-  return request<any>('/api/app/add', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    data: body,
     ...(options || {}),
   })
 }

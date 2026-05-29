@@ -28,11 +28,11 @@ from shared.config.config import get_settings
 from shared.config.log_config import log
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
-from shared.schema.monitor import MonitorSessionQueryRequest
+from shared.schema.monitor import MonitorSessionQueryRequest, TokenUsageQueryRequest
 from shared.schema.ai_service import (
     AiServiceGenerateRequest,
-	AiServiceStopRequest,
-	AiServiceStopResponse
+    AiServiceStopRequest,
+    AiServiceStopResponse
 )
 
 
@@ -181,6 +181,12 @@ async def internal_get_monitor_config():
 	return await get_monitor_query_service().get_monitor_config()
 
 
+# token消耗查询（内部端点，由 gateway 转发，auth 已在 gateway 层处理）
+@app.post("/internal/token-usage/query")
+async def internal_query_token_usage(query: TokenUsageQueryRequest):
+    return await get_monitor_query_service().query_token_usage(query)
+
+
 @app.get("/metrics", response_class=PlainTextResponse)
 async def get_metrics():
     """Prometheus metrics endpoint (scraped by Prometheus — internal network only)."""
@@ -212,4 +218,3 @@ def _validate_stop_context(request: AiServiceStopRequest) -> tuple[str, str, str
 	if not session_id:
 		raise BusinessException(ErrorCode.PARAMS_ERROR, "sessionId 不能为空")
 	return trace_id, request_id, session_id
-

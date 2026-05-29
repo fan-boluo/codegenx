@@ -36,6 +36,7 @@ class AiMonitorProxy:
         method: str,
         path: str,
         params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
         upstream_instance = await self.resolve_base_url()
@@ -43,8 +44,10 @@ class AiMonitorProxy:
         headers: dict[str, str] = {}
         if trace_id:
             headers["X-Trace-Id"] = trace_id
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
 
-        response = await self._request(method=method, path=path, params=params, trace_id=trace_id)
+        response = await self._request(method=method, path=path, params=params, json_body=json_body, trace_id=trace_id)
         return response.json()
 
     async def request_text(
@@ -64,6 +67,7 @@ class AiMonitorProxy:
         method: str,
         path: str,
         params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ) -> httpx.Response:
         upstream_instance = await self.resolve_base_url()
@@ -71,6 +75,8 @@ class AiMonitorProxy:
         headers: dict[str, str] = {}
         if trace_id:
             headers["X-Trace-Id"] = trace_id
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -79,6 +85,7 @@ class AiMonitorProxy:
                     url=url,
                     headers=headers,
                     params=params,
+                    json=json_body,
                 )
         except Exception as exc:
             invocation_error = ServiceInvocationError(
