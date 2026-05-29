@@ -879,7 +879,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
 
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
-    const url = `${baseURL}/api/app/chat/gen/code`
+    const url = `${baseURL}/api/chat/gen/code`
 
     const response = await fetch(url, {
       method: 'POST',
@@ -986,7 +986,7 @@ const stopGeneration = async () => {
     abortController.value?.abort()
 
     const baseURL = request.defaults.baseURL || API_BASE_URL
-    const url = `${baseURL}/api/app/chat/stop`
+    const url = `${baseURL}/api/chat/stop`
 
     await fetch(url, {
       method: 'POST',
