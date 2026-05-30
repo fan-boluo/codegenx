@@ -24,38 +24,12 @@ declare namespace API {
     priority?: number
   }
 
-  type ChatHistory = {
-    id?: number
-    appId?: number
-    userId?: number
-    message?: string
-    messageType?: string
-    createTime?: string
-  }
-
-  type ChatHistoryQueryRequest = {
-    pageNum?: number
-    pageSize?: number
-    sortField?: string
-    sortOrder?: string
-    id?: number
-    appId?: number
-    userId?: number
-    messageType?: string
-    message?: string
-  }
-
   type AppChatRequest = {
     appId: number
     message: string
     sessionId?: string
     requestId?: string
     stream?: boolean
-  }
-
-  type listAppChatHistoryParams = {
-    appId: number
-    sessionId?: string
   }
 
   type UserSummaryStatsVO = {

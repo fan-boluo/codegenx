@@ -1,245 +1,206 @@
 <template>
-  <div id="appChatPage">
-    <div class="header-bar">
-      <div class="header-left">
-        <div class="header-indicator"></div>
-        <h1 class="app-name">{{ appInfo?.appName || '新建项目对话' }}</h1>
-        <span v-if="appId" class="app-id-badge">#{{ appId }}</span>
+  <div id="appChatPage" class="ide-layout">
+    <!-- Left Sidebar -->
+    <div v-if="appId" class="left-sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-project-icon">
+          <AppstoreOutlined />
+        </div>
+        <span class="sidebar-project-name" :title="appInfo?.appName || '项目'">
+          {{ appInfo?.appName || '项目' }}
+        </span>
       </div>
-      <div v-if="appId" class="header-right">
-        <a-button size="small" @click="showAppDetail">
-          <template #icon><InfoCircleOutlined /></template>
-          项目详情
-        </a-button>
 
-        <a-popconfirm
-          title="新会话将从空白上下文开始，历史消息仍保留。确定？"
-          @confirm="startNewSession"
-          ok-text="确定"
-          cancel-text="取消"
+      <div class="sidebar-tabs">
+        <div
+          class="sidebar-tab"
+          :class="{ active: leftPanelTab === 'data' }"
+          @click="leftPanelTab = 'data'"
         >
-          <a-button size="small" :disabled="isGenerating">
-            <template #icon><ReloadOutlined /></template>
-            新会话
-          </a-button>
-        </a-popconfirm>
-
-        <a-button v-if="previewUrl" size="small" @click="openInNewTab">
-          <template #icon><ExportOutlined /></template>
-          预览网页
-        </a-button>
-
-        <a-button size="small" @click="openSourceDrawer" :loading="loadingSourceTree">
-          <template #icon><CodeOutlined /></template>
-         查看源码
-        </a-button>
-
-        <a-tooltip v-if="!canOperateApp" :title="readOnlyTooltip" placement="bottom">
-          <span>
-            <a-button size="small" :loading="downloading" disabled>
-              <template #icon><DownloadOutlined /></template>
-              下载代码
-            </a-button>
-          </span>
-        </a-tooltip>
-        <a-button v-else size="small" @click="downloadCode" :loading="downloading">
-          <template #icon><DownloadOutlined /></template>
-          下载代码
-        </a-button>
-
-        <a-tooltip v-if="!canOperateApp" :title="readOnlyTooltip" placement="bottom">
-          <span>
-            <a-button type="primary" size="small" :loading="deploying" disabled>
-              <template #icon><CloudUploadOutlined /></template>
-              部署
-            </a-button>
-          </span>
-        </a-tooltip>
-        <a-button v-else type="primary" size="small" @click="deployApp" :loading="deploying">
-          <template #icon><CloudUploadOutlined /></template>
-          部署
-        </a-button>
-      </div>
-    </div>
-
-    <div class="main-content">
-      <div v-if="appId" class="left-panel">
-        <div class="panel-tabs">
-          <div
-            class="panel-tab"
-            :class="{ active: leftPanelTab === 'data' }"
-            @click="leftPanelTab = 'data'"
-          >
-            <DatabaseOutlined />
-            <span>数据表</span>
-          </div>
-          <div
-            class="panel-tab"
-            :class="{ active: leftPanelTab === 'files' }"
-            @click="switchToFilesTab"
-          >
-            <FolderOutlined />
-            <span>项目文件</span>
-          </div>
+          <DatabaseOutlined />
+          <span>数据表</span>
         </div>
-
-        <div class="panel-content">
-          <template v-if="leftPanelTab === 'data'">
-            <div v-if="loadingDbTables" class="panel-loading">
-              <a-spin size="small" />
-            </div>
-            <div v-else-if="!dbTables.length" class="panel-empty">
-              <p>{{ appInfo?.dbName ? '暂无数据表' : '未配置项目库' }}</p>
-            </div>
-            <a-tree
-              v-else
-              :tree-data="dbTableTree"
-              :default-expand-all="true"
-              class="panel-tree"
-            />
-          </template>
-
-          <template v-else>
-            <div v-if="loadingSourceTree" class="panel-loading">
-              <a-spin size="small" />
-            </div>
-            <div v-else-if="!sourceFileTree.length" class="panel-empty">
-              <p>暂无项目文件</p>
-            </div>
-            <a-tree
-              v-else
-              :tree-data="sourceFileTree"
-              :selected-keys="selectedSourceFile ? [selectedSourceFile] : []"
-              :default-expand-all="true"
-              @select="handleSourceFileSelect"
-              class="panel-tree"
-            />
-          </template>
-        </div>
-      </div>
-
-      <div class="chat-section">
-        <div class="messages-container" ref="messagesContainer">
-
-          <div v-if="!appId && !messages.length" class="create-mode-hint">
-            <div class="hint-icon">
-              <MessageOutlined />
-            </div>
-            <p class="hint-title">开始新项目对话</p>
-            <p class="hint-description">
-              请先在首页点击「创建项目」新建项目，或从项目列表进入已有项目。
-            </p>
-          </div>
-
-          <div v-for="(messageItem, index) in messages" :key="index" class="message-item">
-            <div v-if="messageItem.type === 'user'" class="user-message">
-              <div class="message-bubble user-bubble">
-                {{ messageItem.content }}
-              </div>
-              <div class="message-avatar">
-                <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="28" />
-              </div>
-            </div>
-            <div v-else-if="messageItem.type === 'event'" class="event-message">
-              <div class="event-tag" :class="'event-' + (messageItem.eventState || 'running')">
-                <span class="event-label">{{ messageItem.content }}</span>
-                <span v-if="messageItem.eventData" class="event-detail">{{ formatEventData(messageItem.eventType ?? '', messageItem.eventData) }}</span>
-              </div>
-            </div>
-            <div v-else class="ai-message">
-              <div class="message-avatar">
-                <a-avatar :src="aiAvatar" :size="28" />
-              </div>
-              <div class="message-bubble ai-bubble">
-                <MarkdownRenderer v-if="messageItem.content" :content="messageItem.content" />
-                <div v-if="messageItem.loading" class="loading-indicator">
-                  <a-spin size="small" />
-                  <span>AI 正在思考...</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <a-alert
-          v-if="selectedElementInfo"
-          class="selected-element-alert"
-          type="info"
-          closable
-          @close="clearSelectedElement"
+        <div
+          class="sidebar-tab"
+          :class="{ active: leftPanelTab === 'files' }"
+          @click="switchToFilesTab"
         >
-          <template #message>
-            <div class="selected-element-info">
-              <div class="element-header">
-                <span class="element-tag">{{ selectedElementInfo.tagName.toLowerCase() }}</span>
-                <span v-if="selectedElementInfo.id" class="element-id">#{{ selectedElementInfo.id }}</span>
-                <span v-if="selectedElementInfo.className" class="element-class">.{{ selectedElementInfo.className.split(' ').join('.') }}</span>
-              </div>
-              <div class="element-details">
-                <div v-if="selectedElementInfo.textContent" class="element-item">
-                  内容: {{ selectedElementInfo.textContent.substring(0, 50) }}{{ selectedElementInfo.textContent.length > 50 ? '...' : '' }}
-                </div>
-                <div v-if="selectedElementInfo.pagePath" class="element-item">页面路径: {{ selectedElementInfo.pagePath }}</div>
-                <div class="element-item">选择器: <code class="element-selector-code">{{ selectedElementInfo.selector }}</code></div>
-              </div>
-            </div>
-          </template>
-        </a-alert>
-
-        <div class="input-container">
-          <div class="input-wrapper">
-            <a-textarea
-              v-model:value="userInput"
-              :placeholder="getInputPlaceholder()"
-              :rows="3"
-              :maxlength="1000"
-              @keydown.enter.prevent="sendMessage"
-              :disabled="isGenerating || isCreatingApp || !canOperateApp"
-              class="chat-input"
-            />
-            <div class="input-actions">
-              <a-button v-if="isGenerating" danger @click="stopGeneration" :loading="isStoppingGeneration" size="small">
-                <template #icon><StopOutlined /></template>
-              </a-button>
-              <a-button v-else type="primary" @click="sendMessage" :loading="isCreatingApp" :disabled="!canOperateApp" size="small">
-                <template #icon><SendOutlined /></template>
-              </a-button>
-            </div>
-          </div>
+          <FolderOutlined />
+          <span>项目文件</span>
         </div>
       </div>
-    </div>
 
-    <a-drawer
-      :open="sourceDrawerOpen"
-      title="源码查看"
-      placement="right"
-      :width="800"
-      @close="sourceDrawerOpen = false"
-    >
-      <div class="source-drawer-content">
-        <div class="source-tree-panel">
-          <div v-if="loadingSourceTree" class="source-tree-loading"><a-spin size="small" /></div>
-          <div v-else-if="!sourceFileTree.length" class="source-tree-empty"><p>暂无源码文件</p></div>
+      <div class="sidebar-content">
+        <template v-if="leftPanelTab === 'data'">
+          <div v-if="loadingDbTables" class="sidebar-loading">
+            <a-spin size="small" />
+          </div>
+          <div v-else-if="!dbTables.length" class="sidebar-empty">
+            <p>{{ appInfo?.dbName ? '暂无数据表' : '未配置项目库' }}</p>
+          </div>
+          <a-tree
+            v-else
+            :tree-data="dbTableTree"
+            :default-expand-all="true"
+            class="sidebar-tree"
+          />
+        </template>
+        <template v-else>
+          <div v-if="loadingSourceTree" class="sidebar-loading">
+            <a-spin size="small" />
+          </div>
+          <div v-else-if="!sourceFileTree.length" class="sidebar-empty">
+            <p>暂无项目文件</p>
+          </div>
           <a-tree
             v-else
             :tree-data="sourceFileTree"
-            :selected-keys="selectedSourceFile ? [selectedSourceFile] : []"
+            :selected-keys="activeFileTab ? [activeFileTab] : []"
             :default-expand-all="true"
             @select="handleSourceFileSelect"
+            class="sidebar-tree"
           />
-        </div>
-        <div class="source-code-panel">
-          <div v-if="!selectedSourceFile" class="source-placeholder">
-            <p>点击左侧文件查看源码</p>
-          </div>
-          <div v-else-if="loadingSourceFile" class="source-loading">
-            <a-spin size="small" /><span>加载中...</span>
-          </div>
-          <pre v-else class="source-code-pre"><code class="hljs" v-html="highlightedContent"></code></pre>
+        </template>
+      </div>
+
+      <div class="sidebar-actions">
+        <a-tooltip title="项目详情" placement="right">
+          <a-button type="text" size="small" @click="showAppDetail">
+            <template #icon><QuestionCircleOutlined /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip :title="canOperateApp ? '下载代码' : readOnlyTooltip" placement="right">
+          <a-button type="text" size="small" @click="downloadCode" :loading="downloading" :disabled="!canOperateApp">
+            <template #icon><DownloadOutlined /></template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip :title="canOperateApp ? '部署' : readOnlyTooltip" placement="right">
+          <a-button type="text" size="small" @click="deployApp" :loading="deploying" :disabled="!canOperateApp">
+            <template #icon><CloudUploadOutlined /></template>
+          </a-button>
+        </a-tooltip>
+      </div>
+    </div>
+
+    <!-- Center Work Area -->
+    <div class="center-work-area">
+      <div class="file-tab-bar">
+        <div
+          v-for="tab in fileTabs"
+          :key="tab.path"
+          class="file-tab"
+          :class="{ active: tab.path === activeFileTab }"
+          @click="activateFileTab(tab.path)"
+        >
+          <span class="file-tab-name">{{ tab.name }}</span>
+          <span class="file-tab-close" @click.stop="closeFileTab(tab.path)">
+            <CloseOutlined />
+          </span>
         </div>
       </div>
-    </a-drawer>
+
+      <div class="file-content">
+        <div v-if="!fileTabs.length" class="center-empty">
+          <div class="center-empty-icon">
+            <FileTextOutlined />
+          </div>
+          <p class="center-empty-title">暂无打开的文件</p>
+          <p class="center-empty-hint">从左侧「项目文件」中点击文件查看源码</p>
+        </div>
+
+        <div v-else-if="activeTabData?.isLoading" class="center-loading">
+          <a-spin size="small" />
+          <span>加载中...</span>
+        </div>
+
+        <pre v-else class="code-pre"><code class="hljs" v-html="highlightedActiveContent"></code></pre>
+      </div>
+    </div>
+
+    <!-- Right Chat Panel -->
+    <div class="right-chat-panel">
+      <div class="messages-container" ref="messagesContainer">
+        <div v-if="!appId && !messages.length" class="create-mode-hint">
+          <div class="hint-icon">
+            <MessageOutlined />
+          </div>
+          <p class="hint-title">开始新项目对话</p>
+          <p class="hint-description">
+            请先在首页点击「创建项目」新建项目，或从项目列表进入已有项目。
+          </p>
+        </div>
+
+        <div v-for="(messageItem, index) in messages" :key="index" class="message-item">
+          <div v-if="messageItem.type === 'user'" class="user-message">
+            <div class="message-bubble user-bubble">
+              {{ messageItem.content }}
+            </div>
+            <div class="message-avatar">
+              <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="28" />
+            </div>
+          </div>
+          <div v-else class="ai-message">
+            <div class="message-avatar">
+              <a-avatar :src="aiAvatar" :size="28" />
+            </div>
+            <div class="message-bubble ai-bubble">
+              <MarkdownRenderer v-if="messageItem.content" :content="messageItem.content" />
+              <div v-if="messageItem.loading" class="loading-indicator">
+                <a-spin size="small" />
+                <span>AI 正在思考...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <a-alert
+        v-if="selectedElementInfo"
+        class="selected-element-alert"
+        type="info"
+        closable
+        @close="clearSelectedElement"
+      >
+        <template #message>
+          <div class="selected-element-info">
+            <div class="element-header">
+              <span class="element-tag">{{ selectedElementInfo.tagName.toLowerCase() }}</span>
+              <span v-if="selectedElementInfo.id" class="element-id">#{{ selectedElementInfo.id }}</span>
+              <span v-if="selectedElementInfo.className" class="element-class">.{{ selectedElementInfo.className.split(' ').join('.') }}</span>
+            </div>
+            <div class="element-details">
+              <div v-if="selectedElementInfo.textContent" class="element-item">
+                内容: {{ selectedElementInfo.textContent.substring(0, 50) }}{{ selectedElementInfo.textContent.length > 50 ? '...' : '' }}
+              </div>
+              <div v-if="selectedElementInfo.pagePath" class="element-item">页面路径: {{ selectedElementInfo.pagePath }}</div>
+              <div class="element-item">选择器: <code class="element-selector-code">{{ selectedElementInfo.selector }}</code></div>
+            </div>
+          </div>
+        </template>
+      </a-alert>
+
+      <div class="input-container">
+        <div class="input-wrapper">
+          <a-textarea
+            v-model:value="userInput"
+            :placeholder="getInputPlaceholder()"
+            :rows="3"
+            :maxlength="1000"
+            @keydown.enter.prevent="sendMessage"
+            :disabled="isGenerating || isCreatingApp || !canOperateApp"
+            class="chat-input"
+          />
+          <div class="input-actions">
+            <a-button v-if="isGenerating" danger @click="stopGeneration" :loading="isStoppingGeneration" size="small">
+              <template #icon><StopOutlined /></template>
+            </a-button>
+            <a-button v-else type="primary" @click="sendMessage" :loading="isCreatingApp" :disabled="!canOperateApp" size="small">
+              <template #icon><SendOutlined /></template>
+            </a-button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <AppDetailModal v-model:open="appDetailVisible" :app="appInfo" :show-actions="isOwner || isAdmin" @edit="editApp" @delete="deleteApp" />
     <DeploySuccessModal v-model:open="deployModalVisible" :deploy-url="deployUrl" @open-site="openDeployedSite" />
@@ -256,6 +217,7 @@ import {
   deployApp as deployAppApi,
   getAppVoById,
 } from '@/api/appController'
+import { listAppChatHistory } from '@/api/chatHistoryController'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
@@ -267,27 +229,35 @@ import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
 import hljs from 'highlight.js'
 
 import {
+  AppstoreOutlined,
+  CloseOutlined,
   CloudUploadOutlined,
-  CodeOutlined,
   DatabaseOutlined,
   DownloadOutlined,
-  ExportOutlined,
+  FileTextOutlined,
   FolderOutlined,
-  InfoCircleOutlined,
   MessageOutlined,
-  ReloadOutlined,
+  QuestionCircleOutlined,
   SendOutlined,
   StopOutlined,
 } from '@ant-design/icons-vue'
 
 interface Message {
-  type: 'user' | 'ai' | 'event'
+  type: 'user' | 'ai'
   content: string
   loading?: boolean
-  eventType?: string
-  eventData?: any
-  eventState?: string
+  createTime?: string
 }
+
+interface FileTab {
+  path: string
+  name: string
+  content: string
+  isLoading: boolean
+  lastAccessed: number
+}
+
+const MAX_OPEN_TABS = 5
 
 const route = useRoute()
 const router = useRouter()
@@ -309,6 +279,9 @@ const activeGenerationSessionId = ref('')
 const activeGenerationMessageIndex = ref<number | null>(null)
 const stopRequested = ref(false)
 const abortController = ref<AbortController | null>(null)
+
+const loadingHistory = ref(false)
+const historyLoaded = ref(false)
 
 const previewUrl = ref('')
 const previewReady = ref(false)
@@ -343,35 +316,20 @@ const visualEditor = new VisualEditor({
 const appDetailVisible = ref(false)
 const readOnlyTooltip = '无法在别人的作品下操作哦~'
 
-const leftPanelTab = ref<'data' | 'files'>('files')
+const leftPanelTab = ref<'data' | 'files'>('data')
 const sourceFileTree = ref<any[]>([])
-const selectedSourceFile = ref('')
-const sourceFileContent = ref('')
 const loadingSourceTree = ref(false)
-const loadingSourceFile = ref(false)
-const sourceDrawerOpen = ref(false)
 
-const openSourceDrawer = async () => {
-  sourceDrawerOpen.value = true
-  selectedSourceFile.value = ''
-  sourceFileContent.value = ''
-  await loadSourceTree()
-}
+const fileTabs = ref<FileTab[]>([])
+const activeFileTab = ref<string>('')
 
-const dbTables = ref<any[]>([])
-const loadingDbTables = ref(false)
-
-const dbTableTree = computed(() => {
-  return dbTables.value.map((t) => ({
-    key: t.name,
-    title: t.name,
-    isLeaf: true,
-  }))
+const activeTabData = computed(() => {
+  return fileTabs.value.find(t => t.path === activeFileTab.value)
 })
 
-const highlightedContent = computed(() => {
-  if (!sourceFileContent.value) return ''
-  const ext = selectedSourceFile.value.split('.').pop() ?? ''
+const highlightedActiveContent = computed(() => {
+  if (!activeTabData.value?.content) return ''
+  const ext = activeFileTab.value.split('.').pop() ?? ''
   const langMap: Record<string, string> = {
     js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
     vue: 'xml', html: 'html', css: 'css', scss: 'scss', less: 'less',
@@ -382,12 +340,23 @@ const highlightedContent = computed(() => {
   const lang = langMap[ext.toLowerCase()]
   try {
     if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(sourceFileContent.value, { language: lang, ignoreIllegals: true }).value
+      return hljs.highlight(activeTabData.value.content, { language: lang, ignoreIllegals: true }).value
     }
-    return hljs.highlightAuto(sourceFileContent.value).value
+    return hljs.highlightAuto(activeTabData.value.content).value
   } catch {
-    return sourceFileContent.value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    return activeTabData.value.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   }
+})
+
+const dbTables = ref<any[]>([])
+const loadingDbTables = ref(false)
+
+const dbTableTree = computed(() => {
+  return dbTables.value.map((t) => ({
+    key: t.name,
+    title: t.name,
+    isLeaf: true,
+  }))
 })
 
 const buildSourceTree = (nodes: any[]): any[] => {
@@ -444,27 +413,88 @@ const switchToFilesTab = async () => {
   }
 }
 
+const loadFileContent = async (filePath: string): Promise<string> => {
+  const baseURL = request.defaults.baseURL || API_BASE_URL
+  const res = await request.get(`${baseURL}/api/app/code/file/${appId.value}`, { params: { path: filePath } })
+  if (res.data.code === 0) {
+    return res.data.data ?? ''
+  }
+  throw new Error(res.data.message || '读取文件失败')
+}
+
+const openFileInTab = async (filePath: string, fileName: string) => {
+  const existing = fileTabs.value.find(t => t.path === filePath)
+  if (existing) {
+    existing.lastAccessed = Date.now()
+    activeFileTab.value = filePath
+    return
+  }
+
+  if (fileTabs.value.length >= MAX_OPEN_TABS) {
+    let oldest = fileTabs.value[0]
+    for (let i = 1; i < fileTabs.value.length; i++) {
+      if (fileTabs.value[i].lastAccessed < oldest.lastAccessed) {
+        oldest = fileTabs.value[i]
+      }
+    }
+    const idx = fileTabs.value.indexOf(oldest)
+    fileTabs.value.splice(idx, 1)
+  }
+
+  const newTab: FileTab = {
+    path: filePath,
+    name: fileName,
+    content: '',
+    isLoading: true,
+    lastAccessed: Date.now(),
+  }
+  fileTabs.value.push(newTab)
+  activeFileTab.value = filePath
+
+  try {
+    newTab.content = await loadFileContent(filePath)
+  } catch (error: any) {
+    console.error('读取文件失败:', error)
+    message.error('读取文件失败：' + (error.message || '未知错误'))
+    closeFileTab(filePath)
+  } finally {
+    newTab.isLoading = false
+  }
+}
+
+const activateFileTab = (path: string) => {
+  const tab = fileTabs.value.find(t => t.path === path)
+  if (tab) {
+    tab.lastAccessed = Date.now()
+    activeFileTab.value = path
+  }
+}
+
+const closeFileTab = (path: string) => {
+  const idx = fileTabs.value.findIndex(t => t.path === path)
+  if (idx === -1) return
+  fileTabs.value.splice(idx, 1)
+
+  if (activeFileTab.value === path) {
+    if (fileTabs.value.length > 0) {
+      let mostRecent = fileTabs.value[0]
+      for (const t of fileTabs.value) {
+        if (t.lastAccessed > mostRecent.lastAccessed) {
+          mostRecent = t
+        }
+      }
+      activeFileTab.value = mostRecent.path
+    } else {
+      activeFileTab.value = ''
+    }
+  }
+}
+
 const handleSourceFileSelect = async (_keys: string[], { node }: any) => {
   if (!node.isLeaf) return
   const filePath: string = node.key
-  if (filePath === selectedSourceFile.value) return
-  selectedSourceFile.value = filePath
-  sourceFileContent.value = ''
-  loadingSourceFile.value = true
-  try {
-    const baseURL = request.defaults.baseURL || API_BASE_URL
-    const res = await request.get(`${baseURL}/api/app/code/file/${appId.value}`, { params: { path: filePath } })
-    if (res.data.code === 0) {
-      sourceFileContent.value = res.data.data ?? ''
-    } else {
-      message.error('读取文件失败：' + res.data.message)
-    }
-  } catch (error) {
-    console.error('读取文件失败:', error)
-    message.error('读取文件失败')
-  } finally {
-    loadingSourceFile.value = false
-  }
+  const fileName: string = node.title
+  await openFileInTab(filePath, fileName)
 }
 
 const normalizeUserId = (userId?: string | number | null) => {
@@ -519,50 +549,8 @@ const finishStream = () => {
   setTimeout(async () => { await refreshAfterGeneration() }, 1000)
 }
 
-const eventLabel = (eventType: string): string => {
-  const map: Record<string, string> = {
-    OnTurnStart: '开始执行',
-    LLM_Thinking_Start: 'LLM 思考中',
-    ToolExecutionStart: '工具调用',
-    ToolExecutionEnd: '工具完成',
-    CompactEvent: '上下文压缩',
-    RequestCompleted: '请求完成',
-    RequestStopped: '已停止',
-    Error: '错误',
-  }
-  return map[eventType] ?? eventType
-}
-
-const formatEventData = (eventType: string, data: any): string => {
-  if (eventType === 'OnTurnStart') {
-    return `步骤 ${data?.step_counter ?? ''}`
-  }
-  if (eventType === 'LLM_Thinking_Start') {
-    return `prompt tokens: ${data?.prompt_tokens ?? '?'}, 消息数: ${data?.message_count ?? '?'}`
-  }
-  if (eventType === 'ToolExecutionStart') {
-    return data?.description ?? `调用 ${data?.tool_name ?? ''}`
-  }
-  if (eventType === 'ToolExecutionEnd') {
-    return data?.description ?? `${data?.tool_name ?? ''} 完成`
-  }
-  if (eventType === 'CompactEvent') {
-    return `tokens: ${data?.tokens_before ?? '?'} → ${data?.tokens_after ?? '?'}, 移除 ${data?.messages_removed ?? 0} 条消息`
-  }
-  if (eventType === 'RequestCompleted') {
-    return `request_id: ${data?.request_id ?? ''}`
-  }
-  if (eventType === 'RequestStopped') {
-    return data?.reason ?? '已停止'
-  }
-  if (eventType === 'Error') {
-    return typeof data === 'string' ? data : JSON.stringify(data)
-  }
-  return ''
-}
-
 const refreshAfterGeneration = async () => {
-  await fetchAppInfo({ autoGenerateInitialMessage: false })
+  await fetchAppInfo()
   updatePreview()
   if (leftPanelTab.value === 'files') {
     await loadSourceTree()
@@ -572,65 +560,21 @@ const refreshAfterGeneration = async () => {
 const handleStreamEvent = (event: { event_type: string; data: any; state?: string }) => {
   const eventType = event.event_type
   const eventData = event.data
-  const eventState = event.state ?? ''
-
-  if (eventType === 'LLM_Response_Chunk') {
-    applyMessageChunk(eventData)
-    return
-  }
-
+  if (eventType === 'LLM_Response_Chunk') { applyMessageChunk(eventData); return }
   if (eventType === 'RequestCompleted' || eventType === 'RequestStopped') {
     if (stopRequested.value) {
       const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
       if (targetMessage && !targetMessage.content) { targetMessage.content = '已停止本次生成。' }
     }
-    messages.value.push({
-      type: 'event',
-      content: eventLabel(eventType),
-      eventType,
-      eventData,
-      eventState,
-    })
-    scrollToBottom()
-    finishStream()
-    return
+    finishStream(); return
   }
-
   if (eventType === 'Error') {
     const errorText = typeof eventData === 'string' ? eventData : eventData?.message || JSON.stringify(eventData)
     const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
     if (targetMessage) { targetMessage.content = '抱歉，当前生成失败，请重试。'; targetMessage.loading = false }
-    messages.value.push({
-      type: 'event',
-      content: errorText,
-      eventType: 'Error',
-      eventData,
-      eventState: 'failed',
-    })
-    scrollToBottom()
-    message.error(errorText)
-    finishStream()
-    return
+    message.error(errorText); finishStream(); return
   }
-
-  // 非终端事件，折叠显示
-  const lastEvent = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null
-  if (lastEvent && lastEvent.type === 'event' && lastEvent.eventType === eventType && eventType === 'ToolExecutionStart') {
-    lastEvent.eventData = eventData
-    return
-  }
-  if (lastEvent && lastEvent.type === 'event' && lastEvent.eventType === eventType && eventType === 'ToolExecutionEnd') {
-    lastEvent.eventData = eventData
-    return
-  }
-  messages.value.push({
-    type: 'event',
-    content: eventLabel(eventType),
-    eventType,
-    eventData,
-    eventState,
-  })
-  scrollToBottom()
+  console.debug('收到未处理的事件:', eventType, eventData)
 }
 
 const isOwner = computed(() => {
@@ -645,17 +589,6 @@ const canOperateApp = computed(() => isOwner.value)
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
 const showAppDetail = () => { appDetailVisible.value = true }
 
-const startNewSession = () => {
-  if (!appId.value) return
-  const storageKey = getAppSessionStorageKey(appId.value)
-  localStorage.removeItem(storageKey)
-  const newSessionId = createClientId()
-  localStorage.setItem(storageKey, newSessionId)
-  sessionId.value = newSessionId
-  messages.value = []
-  message.success('已切换到新会话')
-}
-
 const clearActiveGeneration = (requestId?: string) => {
   if (requestId && activeGenerationRequestId.value && activeGenerationRequestId.value !== requestId) return
   activeGenerationRequestId.value = ''
@@ -665,6 +598,32 @@ const clearActiveGeneration = (requestId?: string) => {
   isStoppingGeneration.value = false
 }
 
+const loadChatHistory = async () => {
+  if (!appId.value || loadingHistory.value) return
+  loadingHistory.value = true
+  try {
+    const params: API.listAppChatHistoryParams = { appId: Number(appId.value), sessionId: sessionId.value ?? '' }
+    const res = await listAppChatHistory(params)
+    if (res.data.code === 0 && res.data.data) {
+      const rawData = res.data.data
+      const chatHistories = Array.isArray(rawData) ? rawData : rawData.records || []
+      if (chatHistories.length > 0) {
+        const historyMessages: Message[] = chatHistories
+          .map((chat: API.ChatHistory) => ({
+            type: (chat.messageType === 'user' ? 'user' : 'ai') as 'user' | 'ai',
+            content: chat.message || '',
+            createTime: chat.createTime,
+          }))
+          .reverse()
+        messages.value = historyMessages
+      }
+      historyLoaded.value = true
+    }
+  } catch (error) {
+    console.error('加载对话历史失败：', error)
+    message.error('加载对话历史失败')
+  } finally { loadingHistory.value = false }
+}
 
 const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessage?: boolean }) => {
   const id = options?.appId ?? (route.params.id as string | undefined)
@@ -672,6 +631,7 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
   if (!id) {
     appId.value = undefined; clearChatSessionId(); appInfo.value = {}
     messages.value = []; previewUrl.value = ''; previewReady.value = false
+    historyLoaded.value = true
     return
   }
   appId.value = id; ensureChatSessionId(id)
@@ -679,8 +639,9 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
+      await loadChatHistory()
       if (messages.value.length >= 2) { updatePreview() }
-      if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && autoGenerateInitialMessage) {
+      if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && historyLoaded.value && autoGenerateInitialMessage) {
         await sendInitialMessage(appInfo.value.initPrompt)
       }
       await loadSourceTree()
@@ -831,7 +792,6 @@ const deployApp = async () => {
   finally { deploying.value = false }
 }
 
-const openInNewTab = () => { if (previewUrl.value) { window.open(previewUrl.value, '_blank') } }
 const openDeployedSite = () => { if (deployUrl.value) { window.open(deployUrl.value, '_blank') } }
 
 const editApp = () => { if (appInfo.value?.id) { router.push(`/app/edit/${appInfo.value.id}`) } }
@@ -862,6 +822,8 @@ watch(() => route.params.id, async (newId, oldId) => {
   if (newId === oldId) return
   const shouldAutoGenerate = !suppressAutoInitialMessage.value
   suppressAutoInitialMessage.value = false
+  fileTabs.value = []
+  activeFileTab.value = ''
   await fetchAppInfo({ appId: typeof newId === 'string' ? newId : undefined, autoGenerateInitialMessage: shouldAutoGenerate })
 })
 
@@ -871,86 +833,60 @@ onUnmounted(() => { abortController.value?.abort() })
 </script>
 
 <style scoped>
-#appChatPage {
-  height: calc(100vh - 64px);
+#appChatPage.ide-layout {
+  height: 100vh;
   display: flex;
-  flex-direction: column;
-  padding: 16px;
-}
-
-/* Header Bar */
-.header-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 20px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
-  margin-bottom: 12px;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.header-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #22C55E;
-}
-
-.app-name {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.app-id-badge {
-  font-size: 12px;
-  color: var(--text-muted);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-
-.header-right {
-  display: flex;
-  gap: 8px;
-}
-
-/* Main Content Layout */
-.main-content {
-  flex: 1;
-  display: flex;
-  gap: 12px;
   overflow: hidden;
+  background: var(--bg-page);
 }
 
-/* Left Panel */
-.left-panel {
+/* ====== Left Sidebar ====== */
+.left-sidebar {
   width: 260px;
   min-width: 200px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
-  overflow: hidden;
+  border-right: 1px solid var(--border-default);
 }
 
-.panel-tabs {
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.sidebar-project-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--accent-primary-subtle);
+  color: var(--accent-primary);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.sidebar-project-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-tabs {
   display: flex;
   border-bottom: 1px solid var(--border-default);
 }
 
-.panel-tab {
+.sidebar-tab {
   flex: 1;
   display: flex;
   align-items: center;
@@ -964,30 +900,30 @@ onUnmounted(() => { abortController.value?.abort() })
   border-bottom: 2px solid transparent;
 }
 
-.panel-tab:hover {
+.sidebar-tab:hover {
   color: var(--text-primary);
   background: var(--bg-page);
 }
 
-.panel-tab.active {
+.sidebar-tab.active {
   color: var(--accent-primary);
   border-bottom-color: var(--accent-primary);
   font-weight: 600;
 }
 
-.panel-content {
+.sidebar-content {
   flex: 1;
   overflow-y: auto;
   padding: 4px 0;
 }
 
-.panel-loading {
+.sidebar-loading {
   display: flex;
   justify-content: center;
   padding: 24px;
 }
 
-.panel-empty {
+.sidebar-empty {
   display: flex;
   justify-content: center;
   padding: 24px 16px;
@@ -995,31 +931,201 @@ onUnmounted(() => { abortController.value?.abort() })
   font-size: 13px;
 }
 
-.panel-empty p {
+.sidebar-empty p {
   margin: 0;
 }
 
-.panel-tree {
+.sidebar-tree {
   padding: 4px 8px;
 }
 
-.panel-tree :deep(.ant-tree-node-content-wrapper) {
+.sidebar-tree :deep(.ant-tree-node-content-wrapper) {
   font-size: 13px;
 }
 
-/* Chat Section */
-.chat-section {
+.sidebar-actions {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-subtle);
+}
+
+.sidebar-actions :deep(.ant-btn-text) {
+  color: var(--text-muted);
+}
+
+.sidebar-actions :deep(.ant-btn-text:hover) {
+  color: var(--accent-primary);
+  background: var(--accent-primary-subtle);
+}
+
+/* ====== Center Work Area ====== */
+.center-work-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
+  overflow: hidden;
+}
+
+.file-tab-bar {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-default);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.file-tab-bar::-webkit-scrollbar {
+  height: 0;
+}
+
+.file-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 100%;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--border-default);
+  white-space: nowrap;
+  transition: background 0.15s;
+  user-select: none;
+}
+
+.file-tab:hover {
+  background: var(--bg-hover);
+}
+
+.file-tab.active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.file-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent-primary);
+}
+
+.file-tab-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s;
+}
+
+.file-tab:hover .file-tab-close {
+  opacity: 0.6;
+}
+
+.file-tab-close:hover {
+  opacity: 1 !important;
+  background: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+}
+
+.file-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+}
+
+.center-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.center-empty-icon {
+  font-size: 48px;
+  color: var(--border-strong);
+}
+
+.center-empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.center-empty-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.center-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  color: var(--text-muted);
+}
+
+.code-pre {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  background: var(--bg-page);
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  border: none;
+}
+
+.code-pre code {
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+  border: none;
+  white-space: pre;
+  color: var(--text-primary);
+}
+
+/* ====== Right Chat Panel ====== */
+.right-chat-panel {
+  width: 380px;
+  min-width: 300px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-default);
   overflow: hidden;
 }
 
 .messages-container {
-  flex: 0.9;
+  flex: 1;
   padding: 16px;
   overflow-y: auto;
   scroll-behavior: smooth;
@@ -1032,7 +1138,6 @@ onUnmounted(() => { abortController.value?.abort() })
   margin-bottom: 4px;
 }
 
-/* Message Bubbles */
 .user-message {
   display: flex;
   justify-content: flex-end;
@@ -1055,7 +1160,7 @@ onUnmounted(() => { abortController.value?.abort() })
 }
 
 .user-bubble {
-  max-width: 65%;
+  max-width: 80%;
   background: var(--accent-primary-subtle);
   border: 1px solid var(--accent-primary-light);
   color: var(--text-primary);
@@ -1063,7 +1168,7 @@ onUnmounted(() => { abortController.value?.abort() })
 }
 
 .ai-bubble {
-  max-width: 75%;
+  max-width: 85%;
   background: var(--bg-page);
   border: 1px solid var(--border-default);
   color: var(--text-primary);
@@ -1074,63 +1179,6 @@ onUnmounted(() => { abortController.value?.abort() })
   flex-shrink: 0;
 }
 
-/* Event Message */
-.event-message {
-  display: flex;
-  justify-content: center;
-  padding: 2px 0;
-}
-
-.event-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 10px;
-  border-radius: 10px;
-  font-size: 12px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-  color: var(--text-muted);
-}
-
-.event-tag.event-running {
-  color: var(--accent-primary);
-  border-color: var(--accent-primary-light);
-  background: var(--accent-primary-subtle);
-}
-
-.event-tag.event-completed {
-  color: #22C55E;
-  border-color: #22C55E;
-  background: rgba(34, 197, 94, 0.08);
-}
-
-.event-tag.event-stopped {
-  color: #F59E0B;
-  border-color: #F59E0B;
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.event-tag.event-failed {
-  color: #EF4444;
-  border-color: #EF4444;
-  background: rgba(239, 68, 68, 0.08);
-}
-
-.event-label {
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.event-detail {
-  opacity: 0.75;
-  max-width: 400px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Loading */
 .loading-indicator {
   display: flex;
   align-items: center;
@@ -1138,7 +1186,6 @@ onUnmounted(() => { abortController.value?.abort() })
   color: var(--text-muted);
 }
 
-/* Create Mode Hint */
 .create-mode-hint {
   margin-bottom: 20px;
   padding: 20px;
@@ -1167,7 +1214,6 @@ onUnmounted(() => { abortController.value?.abort() })
   color: var(--text-secondary);
 }
 
-/* Input Container */
 .input-container {
   padding: 12px 16px 16px;
   background: var(--bg-page);
@@ -1200,88 +1246,7 @@ onUnmounted(() => { abortController.value?.abort() })
   gap: 8px;
 }
 
-/* Source Drawer */
-.source-drawer-content {
-  display: flex;
-  height: 100%;
-  overflow: hidden;
-}
-
-.source-tree-panel {
-  width: 240px;
-  min-width: 160px;
-  border-right: 1px solid var(--border-default);
-  overflow-y: auto;
-  padding: 8px 0;
-  flex-shrink: 0;
-  background: var(--bg-page);
-}
-
-.source-tree-loading,
-.source-tree-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px 16px;
-  color: var(--text-muted);
-}
-.source-tree-empty p { margin: 0; font-size: 13px; }
-
-.source-code-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.source-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-muted);
-}
-
-.source-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  height: 100%;
-  color: var(--text-muted);
-}
-
-.source-code-pre {
-  flex: 1;
-  margin: 0;
-  padding: 16px;
-  overflow: auto;
-  background: var(--bg-page);
-  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  border: none;
-}
-
-.source-code-pre code {
-  font-family: inherit;
-  background: transparent;
-  padding: 0;
-  border: none;
-  white-space: pre;
-  color: var(--text-primary);
-}
-
-.source-file-path {
-  font-size: 11px;
-  color: var(--text-muted);
-  max-width: 400px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Selected Element Alert */
+/* ====== Selected Element Alert ====== */
 .selected-element-alert {
   margin: 0 16px;
 }
@@ -1308,38 +1273,49 @@ onUnmounted(() => { abortController.value?.abort() })
   font-size: 12px;
 }
 
-/* Responsive */
+/* ====== Responsive ====== */
+@media (max-width: 1280px) {
+  .right-chat-panel {
+    width: 320px;
+    min-width: 280px;
+  }
+}
+
 @media (max-width: 1024px) {
-  .main-content {
+  .left-sidebar {
+    width: 48px;
+    min-width: 48px;
+  }
+  .left-sidebar .sidebar-project-name,
+  .left-sidebar .sidebar-tab span,
+  .left-sidebar .sidebar-actions :deep(.ant-btn-text) {
+    display: none;
+  }
+  .sidebar-header {
+    justify-content: center;
+    padding: 14px 8px;
+  }
+  .sidebar-tab {
+    padding: 10px 4px;
+    justify-content: center;
+  }
+  .sidebar-actions {
     flex-direction: column;
+    align-items: center;
   }
-  .left-panel {
-    width: 100%;
-    max-height: 200px;
-    flex-shrink: 0;
-  }
-  .chat-section {
-    flex: none;
-    height: 0;
-    flex: 1;
+  .right-chat-panel {
+    width: 300px;
+    min-width: 260px;
   }
 }
 
 @media (max-width: 768px) {
-  .header-bar {
-    padding: 10px 14px;
-  }
-  .app-name {
-    font-size: 14px;
+  #appChatPage.ide-layout {
+    min-width: 768px;
+    overflow-x: auto;
   }
   .message-bubble {
-    max-width: 85%;
-  }
-  .user-bubble {
-    max-width: 75%;
-  }
-  .ai-bubble {
-    max-width: 85%;
+    max-width: 90%;
   }
 }
 </style>

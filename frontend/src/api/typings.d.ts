@@ -113,12 +113,6 @@ declare namespace API {
     detail?: ValidationError[]
   }
 
-  type listAppChatHistoryApiChatHistoryAppAppIdGetParams = {
-    app_id: number
-    pageSize?: number
-    lastCreateTime?: string | null
-  }
-
   type LoginUserVO = {
     /** Id */
     id?: string | null

@@ -11,3 +11,6 @@ cc/
 learn-claudecode/
 /backend/services/ai-service/bak/
 /.data/
+/.claude/
+/.data/
+/.vite/

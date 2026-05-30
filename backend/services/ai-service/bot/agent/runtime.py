@@ -300,7 +300,7 @@ class AgentRuntime(LLMRecoveryMixin):
                         session_state.session_manager.save_history(
                             session_state.session_id,
                             session_state.context_manager.chat_messages,
-                            user_id=session_state.user_id,
+                            user_id=session_state.user_id
                         )
         finally:
             async with session_state.request_lock:
