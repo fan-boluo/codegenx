@@ -217,7 +217,6 @@ import {
   deployApp as deployAppApi,
   getAppVoById,
 } from '@/api/appController'
-import { listAppChatHistory } from '@/api/chatHistoryController'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
@@ -279,9 +278,6 @@ const activeGenerationSessionId = ref('')
 const activeGenerationMessageIndex = ref<number | null>(null)
 const stopRequested = ref(false)
 const abortController = ref<AbortController | null>(null)
-
-const loadingHistory = ref(false)
-const historyLoaded = ref(false)
 
 const previewUrl = ref('')
 const previewReady = ref(false)
@@ -598,40 +594,12 @@ const clearActiveGeneration = (requestId?: string) => {
   isStoppingGeneration.value = false
 }
 
-const loadChatHistory = async () => {
-  if (!appId.value || loadingHistory.value) return
-  loadingHistory.value = true
-  try {
-    const params: API.listAppChatHistoryParams = { appId: Number(appId.value), sessionId: sessionId.value ?? '' }
-    const res = await listAppChatHistory(params)
-    if (res.data.code === 0 && res.data.data) {
-      const rawData = res.data.data
-      const chatHistories = Array.isArray(rawData) ? rawData : rawData.records || []
-      if (chatHistories.length > 0) {
-        const historyMessages: Message[] = chatHistories
-          .map((chat: API.ChatHistory) => ({
-            type: (chat.messageType === 'user' ? 'user' : 'ai') as 'user' | 'ai',
-            content: chat.message || '',
-            createTime: chat.createTime,
-          }))
-          .reverse()
-        messages.value = historyMessages
-      }
-      historyLoaded.value = true
-    }
-  } catch (error) {
-    console.error('加载对话历史失败：', error)
-    message.error('加载对话历史失败')
-  } finally { loadingHistory.value = false }
-}
-
 const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessage?: boolean }) => {
   const id = options?.appId ?? (route.params.id as string | undefined)
   const autoGenerateInitialMessage = options?.autoGenerateInitialMessage ?? false
   if (!id) {
     appId.value = undefined; clearChatSessionId(); appInfo.value = {}
     messages.value = []; previewUrl.value = ''; previewReady.value = false
-    historyLoaded.value = true
     return
   }
   appId.value = id; ensureChatSessionId(id)
@@ -639,9 +607,8 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
-      await loadChatHistory()
       if (messages.value.length >= 2) { updatePreview() }
-      if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && historyLoaded.value && autoGenerateInitialMessage) {
+      if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && autoGenerateInitialMessage) {
         await sendInitialMessage(appInfo.value.initPrompt)
       }
       await loadSourceTree()
