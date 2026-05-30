@@ -58,13 +58,6 @@ export async function getMonitorConfig(options?: { [key: string]: any }) {
   })
 }
 
-export async function getMonitorHealth(options?: { [key: string]: any }) {
-  return request('/api/stats/admin/monitor/health', {
-    method: 'GET',
-    ...(options || {}),
-  })
-}
-
 export async function cleanupMonitorHistory(
   params?: { retentionDays?: number; dryRun?: boolean },
   options?: { [key: string]: any }

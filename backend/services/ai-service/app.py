@@ -33,11 +33,9 @@ from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
 from shared.schema.monitor import (
     MonitorAlertQueryRequest,
-    MonitorComponentHealth,
-    MonitorHealthStatus,
     MonitorSessionQueryRequest,
+    TokenUsageQueryRequest,
 )
-from shared.schema.monitor import MonitorSessionQueryRequest, TokenUsageQueryRequest
 from shared.schema.ai_service import (
     AiServiceGenerateRequest,
     AiServiceStopRequest,
@@ -219,32 +217,6 @@ async def internal_cleanup_monitor_history(
     return await get_monitor_maintenance_service().cleanup_history(
         retention_days=retention_days, dry_run=dry_run
     )
-
-
-@app.get("/internal/monitor/health")
-async def internal_get_monitor_health():
-    from infra.mysql.session import engine
-    from sqlalchemy import text
-
-    components: list[MonitorComponentHealth] = []
-    now = datetime.now(timezone.utc)
-    degraded = False
-
-    # MySQL connectivity
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        components.append(MonitorComponentHealth(
-            name="mysql", status="healthy", checkedAt=now, latencyMs=0, consecutiveFailures=0,
-        ))
-    except Exception as exc:
-        components.append(MonitorComponentHealth(
-            name="mysql", status="unhealthy", message=str(exc), checkedAt=now, latencyMs=0, consecutiveFailures=1,
-        ))
-        degraded = True
-
-    overall = "degraded" if degraded else "healthy"
-    return MonitorHealthStatus(overallStatus=overall, degraded=degraded, checkedAt=now, components=components)
 
 
 # token消耗查询（内部端点，由 gateway 转发，auth 已在 gateway 层处理）

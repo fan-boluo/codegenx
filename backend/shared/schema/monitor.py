@@ -100,14 +100,6 @@ class MonitorAlertRecordVO(CamelBaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class MonitorStatusCount(CamelBaseModel):
-    status: str
-    count: int = 0
-
-
-class MonitorRuleCount(CamelBaseModel):
-    rule_name: str = Field(alias="ruleName")
-    count: int = 0
 
 
 class MonitorOverviewStats(CamelBaseModel):
@@ -123,35 +115,14 @@ class MonitorOverviewStats(CamelBaseModel):
     avg_context_token_usage: float = Field(default=0, alias="avgContextTokenUsage")
     total_tool_calls: int = Field(default=0, alias="totalToolCalls")
     total_memory_hits: int = Field(default=0, alias="totalMemoryHits")
+    total_tokens: int = Field(default=0, alias="totalTokens")
     open_alerts: int = Field(default=0, alias="openAlerts")
-    status_breakdown: list[MonitorStatusCount] = Field(default_factory=list, alias="statusBreakdown")
-    alert_breakdown: list[MonitorRuleCount] = Field(default_factory=list, alias="alertBreakdown")
 
 
 class MonitorSessionDetail(CamelBaseModel):
     session: MonitorSessionSummary
     turns: list[MonitorTurnSummary] = Field(default_factory=list)
     alerts: list[MonitorAlertRecordVO] = Field(default_factory=list)
-
-
-class MonitorComponentHealth(CamelBaseModel):
-    name: str
-    status: str = "unknown"
-    message: str = ""
-    checked_at: datetime | None = Field(default=None, alias="checkedAt")
-    latency_ms: int = Field(default=0, alias="latencyMs")
-    consecutive_failures: int = Field(default=0, alias="consecutiveFailures")
-    last_success_at: datetime | None = Field(default=None, alias="lastSuccessAt")
-    last_error_at: datetime | None = Field(default=None, alias="lastErrorAt")
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class MonitorHealthStatus(CamelBaseModel):
-    enabled: bool = True
-    overall_status: str = Field(default="unknown", alias="overallStatus")
-    degraded: bool = False
-    checked_at: datetime | None = Field(default=None, alias="checkedAt")
-    components: list[MonitorComponentHealth] = Field(default_factory=list)
 
 
 class MonitorCleanupTableResult(CamelBaseModel):

@@ -15,12 +15,9 @@ from shared.schema.monitor import (
     MonitorAlertQueryRequest,
     MonitorAlertRecordVO,
     MonitorOverviewStats,
-    MonitorRuleCount,
     MonitorSessionDetail,
     MonitorSessionQueryRequest,
     MonitorSessionSummary,
-    MonitorStatusCount,
-    MonitorToolCallDetail,
     MonitorTurnSummary,
     TokenUsageItem,
     TokenUsageQueryRequest,
@@ -73,16 +70,16 @@ class MonitorQueryService:
                     text("SELECT COUNT(*) FROM monitor_alerts WHERE status = 'open'")
                 )
             ).scalar_one()
-            status_rows = (
+            total_tokens = (
                 await session.execute(
-                    text("SELECT status, COUNT(*) AS count FROM session_metrics GROUP BY status ORDER BY count DESC")
+                    text("SELECT COALESCE(SUM(total_tokens), 0) FROM session_metrics")
                 )
-            ).mappings().all()
-            alert_rows = (
+            ).scalar_one()
+            llm_latency = (
                 await session.execute(
-                    text("SELECT rule_name, COUNT(*) AS count FROM monitor_alerts GROUP BY rule_name ORDER BY count DESC")
+                    text("SELECT COALESCE(AVG(duration_ms), 0) FROM spans WHERE operation_type LIKE 'llm%'")
                 )
-            ).mappings().all()
+            ).scalar_one()
 
         return MonitorOverviewStats(
             totalSessions=int(sessions_row["total_sessions"] or 0),
@@ -91,15 +88,14 @@ class MonitorQueryService:
             errorSessions=int(sessions_row["error_sessions"] or 0),
             totalTurns=int(turns_row["total_turns"] or 0),
             avgTurnDurationMs=float(turns_row["avg_turn_duration_ms"] or 0),
-            avgLlmLatencyMs=0.0,
+            avgLlmLatencyMs=float(llm_latency or 0),
             avgFirstTokenMs=0.0,
             avgContextTokens=float(turns_row["avg_context_tokens"] or 0),
             avgContextTokenUsage=float(turns_row["avg_context_token_usage"] or 0),
             totalToolCalls=int(turns_row["total_tool_calls"] or 0),
             totalMemoryHits=int(turns_row["total_memory_hits"] or 0),
+            totalTokens=int(total_tokens or 0),
             openAlerts=int(open_alerts or 0),
-            statusBreakdown=[MonitorStatusCount(status=row["status"], count=int(row["count"] or 0)) for row in status_rows],
-            alertBreakdown=[MonitorRuleCount(ruleName=row["rule_name"], count=int(row["count"] or 0)) for row in alert_rows],
         )
 
     async def list_sessions(self, query: MonitorSessionQueryRequest) -> PageData[MonitorSessionSummary]:
