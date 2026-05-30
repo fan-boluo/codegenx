@@ -24,9 +24,14 @@
           </a-button>
         </a-popconfirm>
 
-        <a-button size="small" @click="toggleSourceView" :loading="loadingSourceTree">
+        <a-button v-if="previewUrl" size="small" @click="openInNewTab">
+          <template #icon><ExportOutlined /></template>
+          预览网页
+        </a-button>
+
+        <a-button size="small" @click="openSourceDrawer" :loading="loadingSourceTree">
           <template #icon><CodeOutlined /></template>
-          {{ rightPanelMode === 'source' ? '返回预览' : '查看源码' }}
+          查看源码
         </a-button>
 
         <a-tooltip v-if="!canOperateApp" :title="readOnlyTooltip" placement="bottom">
@@ -58,6 +63,61 @@
     </div>
 
     <div class="main-content">
+      <div v-if="appId" class="left-panel">
+        <div class="panel-tabs">
+          <div
+            class="panel-tab"
+            :class="{ active: leftPanelTab === 'data' }"
+            @click="leftPanelTab = 'data'"
+          >
+            <DatabaseOutlined />
+            <span>数据表</span>
+          </div>
+          <div
+            class="panel-tab"
+            :class="{ active: leftPanelTab === 'files' }"
+            @click="switchToFilesTab"
+          >
+            <FolderOutlined />
+            <span>项目文件</span>
+          </div>
+        </div>
+
+        <div class="panel-content">
+          <template v-if="leftPanelTab === 'data'">
+            <div v-if="loadingDbTables" class="panel-loading">
+              <a-spin size="small" />
+            </div>
+            <div v-else-if="!dbTables.length" class="panel-empty">
+              <p>{{ appInfo?.dbName ? '暂无数据表' : '未配置项目库' }}</p>
+            </div>
+            <a-tree
+              v-else
+              :tree-data="dbTableTree"
+              :default-expand-all="true"
+              class="panel-tree"
+            />
+          </template>
+
+          <template v-else>
+            <div v-if="loadingSourceTree" class="panel-loading">
+              <a-spin size="small" />
+            </div>
+            <div v-else-if="!sourceFileTree.length" class="panel-empty">
+              <p>暂无项目文件</p>
+            </div>
+            <a-tree
+              v-else
+              :tree-data="sourceFileTree"
+              :selected-keys="selectedSourceFile ? [selectedSourceFile] : []"
+              :default-expand-all="true"
+              @select="handleSourceFileSelect"
+              class="panel-tree"
+            />
+          </template>
+        </div>
+      </div>
+
       <div class="chat-section">
         <div class="messages-container" ref="messagesContainer">
           <div v-if="hasMoreHistory" class="load-more-container">
@@ -70,11 +130,10 @@
             <div class="hint-icon">
               <MessageOutlined />
             </div>
-            <p class="hint-title">直接开始对话</p>
+            <p class="hint-title">开始新项目对话</p>
             <p class="hint-description">
-              在下方输入需求并发送，系统会先创建项目，再进入与你已有项目相同的生成对话页面。
+              请先在首页点击「创建项目」新建项目，或从项目列表进入已有项目。
             </p>
-            <a-tag v-if="pendingPrompt" color="blue" class="hint-badge">已带入示例提示词</a-tag>
           </div>
 
           <div v-for="(messageItem, index) in messages" :key="index" class="message-item">
@@ -148,60 +207,38 @@
           </div>
         </div>
       </div>
-
-      <div class="preview-section">
-        <template v-if="rightPanelMode === 'source'">
-          <div class="preview-header">
-            <h3>源码文件</h3>
-            <div class="preview-actions">
-              <span v-if="selectedSourceFile" class="source-file-path">{{ selectedSourceFile }}</span>
-            </div>
-          </div>
-          <div class="source-content">
-            <div class="source-tree-panel">
-              <div v-if="loadingSourceTree" class="source-tree-loading"><a-spin size="small" /></div>
-              <div v-else-if="!sourceFileTree.length" class="source-tree-empty"><p>暂无源码文件</p></div>
-              <a-tree v-else :tree-data="sourceFileTree" :selected-keys="selectedSourceFile ? [selectedSourceFile] : []" :default-expand-all="true" @select="handleSourceFileSelect" />
-            </div>
-            <div class="source-code-panel">
-              <div v-if="!selectedSourceFile" class="source-placeholder">
-                <p>点击左侧文件查看源码</p>
-              </div>
-              <div v-else-if="loadingSourceFile" class="source-loading"><a-spin size="small" /><span>加载中...</span></div>
-              <pre v-else class="source-code-pre"><code class="hljs" v-html="highlightedContent"></code></pre>
-            </div>
-          </div>
-        </template>
-
-        <template v-else>
-          <div class="preview-header">
-            <h3>生成后的网页展示</h3>
-            <div class="preview-actions">
-              <a-button v-if="canOperateApp && previewUrl" type="link" :danger="isEditMode" @click="toggleEditMode"
-                :class="{ 'edit-mode-active': isEditMode }" size="small">
-                <template #icon><EditOutlined /></template>
-                {{ isEditMode ? '退出编辑' : '编辑模式' }}
-              </a-button>
-              <a-button v-if="previewUrl" type="link" @click="openInNewTab" size="small">
-                <template #icon><ExportOutlined /></template>
-                新窗口打开
-              </a-button>
-            </div>
-          </div>
-          <div class="preview-content">
-            <div v-if="!previewUrl" class="preview-placeholder">
-              <p>网站文件生成完成后将在这里展示</p>
-            </div>
-            <div v-else class="preview-frame-shell">
-              <div v-if="previewLoading" class="preview-loading preview-loading-overlay">
-                <a-spin size="large" /><p>正在加载最新页面...</p>
-              </div>
-              <iframe :key="previewFrameUrl" :src="previewFrameUrl" class="preview-iframe" frameborder="0" @load="onIframeLoad"></iframe>
-            </div>
-          </div>
-        </template>
-      </div>
     </div>
+
+    <a-drawer
+      :open="sourceDrawerOpen"
+      title="源码查看"
+      placement="right"
+      :width="800"
+      @close="sourceDrawerOpen = false"
+    >
+      <div class="source-drawer-content">
+        <div class="source-tree-panel">
+          <div v-if="loadingSourceTree" class="source-tree-loading"><a-spin size="small" /></div>
+          <div v-else-if="!sourceFileTree.length" class="source-tree-empty"><p>暂无源码文件</p></div>
+          <a-tree
+            v-else
+            :tree-data="sourceFileTree"
+            :selected-keys="selectedSourceFile ? [selectedSourceFile] : []"
+            :default-expand-all="true"
+            @select="handleSourceFileSelect"
+          />
+        </div>
+        <div class="source-code-panel">
+          <div v-if="!selectedSourceFile" class="source-placeholder">
+            <p>点击左侧文件查看源码</p>
+          </div>
+          <div v-else-if="loadingSourceFile" class="source-loading">
+            <a-spin size="small" /><span>加载中...</span>
+          </div>
+          <pre v-else class="source-code-pre"><code class="hljs" v-html="highlightedContent"></code></pre>
+        </div>
+      </div>
+    </a-drawer>
 
     <AppDetailModal v-model:open="appDetailVisible" :app="appInfo" :show-actions="isOwner || isAdmin" @edit="editApp" @delete="deleteApp" />
     <DeploySuccessModal v-model:open="deployModalVisible" :deploy-url="deployUrl" @open-site="openDeployedSite" />
@@ -214,7 +251,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
 import {
-  addApp,
   deleteApp as deleteAppApi,
   deployApp as deployAppApi,
   getAppVoById,
@@ -233,9 +269,10 @@ import hljs from 'highlight.js'
 import {
   CloudUploadOutlined,
   CodeOutlined,
+  DatabaseOutlined,
   DownloadOutlined,
-  EditOutlined,
   ExportOutlined,
+  FolderOutlined,
   InfoCircleOutlined,
   MessageOutlined,
   ReloadOutlined,
@@ -257,7 +294,6 @@ const loginUserStore = useLoginUserStore()
 const appInfo = ref<API.AppVO>({})
 const appId = ref<string>()
 const sessionId = ref('')
-const pendingPrompt = ref('')
 const isCreatingApp = ref(false)
 const suppressAutoInitialMessage = ref(false)
 
@@ -287,8 +323,6 @@ const deployUrl = ref('')
 
 const downloading = ref(false)
 
-const previewLoading = computed(() => Boolean(previewUrl.value) && !previewReady.value)
-
 const previewFrameUrl = computed(() => {
   if (!previewUrl.value) return ''
   try {
@@ -312,12 +346,31 @@ const visualEditor = new VisualEditor({
 const appDetailVisible = ref(false)
 const readOnlyTooltip = '无法在别人的作品下操作哦~'
 
-const rightPanelMode = ref<'preview' | 'source'>('preview')
+const leftPanelTab = ref<'data' | 'files'>('files')
 const sourceFileTree = ref<any[]>([])
 const selectedSourceFile = ref('')
 const sourceFileContent = ref('')
 const loadingSourceTree = ref(false)
 const loadingSourceFile = ref(false)
+const sourceDrawerOpen = ref(false)
+
+const openSourceDrawer = async () => {
+  sourceDrawerOpen.value = true
+  selectedSourceFile.value = ''
+  sourceFileContent.value = ''
+  await loadSourceTree()
+}
+
+const dbTables = ref<any[]>([])
+const loadingDbTables = ref(false)
+
+const dbTableTree = computed(() => {
+  return dbTables.value.map((t) => ({
+    key: t.name,
+    title: t.name,
+    isLeaf: true,
+  }))
+})
 
 const highlightedContent = computed(() => {
   if (!sourceFileContent.value) return ''
@@ -368,6 +421,32 @@ const loadSourceTree = async () => {
   }
 }
 
+const loadDbTables = async () => {
+  if (!appId.value) return
+  loadingDbTables.value = true
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const res = await request.get(`${baseURL}/api/app/db/tables/${appId.value}`)
+    if (res.data.code === 0) {
+      dbTables.value = res.data.data || []
+    } else {
+      dbTables.value = []
+    }
+  } catch (error) {
+    console.error('获取数据表失败:', error)
+    dbTables.value = []
+  } finally {
+    loadingDbTables.value = false
+  }
+}
+
+const switchToFilesTab = async () => {
+  leftPanelTab.value = 'files'
+  if (!sourceFileTree.value.length) {
+    await loadSourceTree()
+  }
+}
+
 const handleSourceFileSelect = async (_keys: string[], { node }: any) => {
   if (!node.isLeaf) return
   const filePath: string = node.key
@@ -389,17 +468,6 @@ const handleSourceFileSelect = async (_keys: string[], { node }: any) => {
   } finally {
     loadingSourceFile.value = false
   }
-}
-
-const toggleSourceView = async () => {
-  if (rightPanelMode.value === 'source') {
-    rightPanelMode.value = 'preview'
-    return
-  }
-  rightPanelMode.value = 'source'
-  selectedSourceFile.value = ''
-  sourceFileContent.value = ''
-  await loadSourceTree()
 }
 
 const normalizeUserId = (userId?: string | number | null) => {
@@ -451,7 +519,15 @@ const finishStream = () => {
   isStoppingGeneration.value = false
   stopRequested.value = false
   clearActiveGeneration(activeGenerationRequestId.value)
-  setTimeout(async () => { await fetchAppInfo(); updatePreview() }, 1000)
+  setTimeout(async () => { await refreshAfterGeneration() }, 1000)
+}
+
+const refreshAfterGeneration = async () => {
+  await fetchAppInfo()
+  updatePreview()
+  if (leftPanelTab.value === 'files') {
+    await loadSourceTree()
+  }
 }
 
 const handleStreamEvent = (event: { event_type: string; data: any; state?: string }) => {
@@ -548,10 +624,9 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
     appId.value = undefined; clearChatSessionId(); appInfo.value = {}
     messages.value = []; previewUrl.value = ''; previewReady.value = false
     hasMoreHistory.value = false; historyLoaded.value = true; lastCreateTime.value = undefined
-    pendingPrompt.value = typeof route.query.prompt === 'string' ? route.query.prompt : ''
     return
   }
-  appId.value = id; ensureChatSessionId(id); pendingPrompt.value = ''
+  appId.value = id; ensureChatSessionId(id)
   try {
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
@@ -561,6 +636,8 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
       if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && historyLoaded.value && autoGenerateInitialMessage) {
         await sendInitialMessage(appInfo.value.initPrompt)
       }
+      await loadSourceTree()
+      await loadDbTables()
       return
     }
     message.error('获取项目信息失败'); router.push('/')
@@ -589,7 +666,10 @@ const sendMessage = async () => {
     if (selectedElementInfo.value.textContent) { elementContext += `\n- 当前内容: ${selectedElementInfo.value.textContent.substring(0, 100)}` }
     outgoingMessage += elementContext
   }
-  if (!appId.value) { await createAppAndStartChat(outgoingMessage); return }
+  if (!appId.value) {
+    message.info('请先创建项目再开始对话')
+    return
+  }
   userInput.value = ''
   messages.value.push({ type: 'user', content: outgoingMessage })
   if (selectedElementInfo.value) { clearSelectedElement(); if (isEditMode.value) { toggleEditMode() } }
@@ -598,26 +678,6 @@ const sendMessage = async () => {
   await nextTick(); scrollToBottom()
   isGenerating.value = true
   await generateCode(outgoingMessage, aiMessageIndex)
-}
-
-const createAppAndStartChat = async (initPrompt: string) => {
-  isCreatingApp.value = true
-  try {
-    const createRes = await addApp({ initPrompt })
-    if (createRes.data.code !== 0 || !createRes.data.data) { message.error(`创建项目失败，${createRes.data.message ?? '请稍后重试'}`); return }
-    const createdAppId = String(createRes.data.data)
-    appId.value = createdAppId; suppressAutoInitialMessage.value = true
-    await router.replace(`/app/chat/${createdAppId}`)
-    await fetchAppInfo({ appId: createdAppId, autoGenerateInitialMessage: false })
-    userInput.value = ''
-    messages.value.push({ type: 'user', content: initPrompt })
-    const aiMessageIndex = messages.value.length
-    messages.value.push({ type: 'ai', content: '', loading: true })
-    await nextTick(); scrollToBottom()
-    isGenerating.value = true
-    await generateCode(initPrompt, aiMessageIndex)
-  } catch (error) { console.error('创建项目失败：', error); message.error('创建项目失败') }
-  finally { isCreatingApp.value = false }
 }
 
 const generateCode = async (userMessage: string, aiMessageIndex: number) => {
@@ -727,12 +787,6 @@ const deployApp = async () => {
 const openInNewTab = () => { if (previewUrl.value) { window.open(previewUrl.value, '_blank') } }
 const openDeployedSite = () => { if (deployUrl.value) { window.open(deployUrl.value, '_blank') } }
 
-const onIframeLoad = () => {
-  previewReady.value = true
-  const iframe = document.querySelector('.preview-iframe') as HTMLIFrameElement
-  if (iframe) { visualEditor.init(iframe); visualEditor.onIframeLoad() }
-}
-
 const editApp = () => { if (appInfo.value?.id) { router.push(`/app/edit/${appInfo.value.id}`) } }
 const deleteApp = async () => {
   if (!appInfo.value?.id) return
@@ -745,29 +799,17 @@ const deleteApp = async () => {
 
 const toggleEditMode = () => {
   if (!canOperateApp.value) { message.warning(readOnlyTooltip); return }
-  const iframe = document.querySelector('.preview-iframe') as HTMLIFrameElement
-  if (!iframe || !previewReady.value) { message.warning('请等待页面加载完成'); return }
-  isEditMode.value = visualEditor.toggleEditMode()
+  message.info('编辑模式需要网页预览，请先点击"预览网页"在新窗口打开后再编辑')
 }
 
 const clearSelectedElement = () => { selectedElementInfo.value = null; visualEditor.clearSelection() }
 
 const getInputPlaceholder = () => {
-  if (!appId.value) return '先输入你的需求并发送，系统会自动创建项目并开始生成'
+  if (!appId.value) return '请先创建项目，再开始对话'
   if (!canOperateApp.value) return readOnlyTooltip
   if (selectedElementInfo.value) return `正在编辑 ${selectedElementInfo.value.tagName.toLowerCase()} 元素，描述您想要的修改...`
   return '请描述你想生成的网站，越详细效果越好哦'
 }
-
-watch(() => route.query.prompt, (prompt) => {
-  if (appId.value) return
-  pendingPrompt.value = typeof prompt === 'string' ? prompt : ''
-  if (pendingPrompt.value) { userInput.value = pendingPrompt.value }
-}, { immediate: true })
-
-const handleWindowMessage = (event: MessageEvent) => { visualEditor.handleIframeMessage(event) }
-
-onMounted(() => { fetchAppInfo(); window.addEventListener('message', handleWindowMessage) })
 
 watch(() => route.params.id, async (newId, oldId) => {
   if (newId === oldId) return
@@ -776,7 +818,9 @@ watch(() => route.params.id, async (newId, oldId) => {
   await fetchAppInfo({ appId: typeof newId === 'string' ? newId : undefined, autoGenerateInitialMessage: shouldAutoGenerate })
 })
 
-onUnmounted(() => { window.removeEventListener('message', handleWindowMessage); abortController.value?.abort() })
+onMounted(() => { fetchAppInfo() })
+
+onUnmounted(() => { abortController.value?.abort() })
 </script>
 
 <style scoped>
@@ -841,9 +885,84 @@ onUnmounted(() => { window.removeEventListener('message', handleWindowMessage); 
   overflow: hidden;
 }
 
+/* Left Panel */
+.left-panel {
+  width: 260px;
+  min-width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.panel-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.panel-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  border-bottom: 2px solid transparent;
+}
+
+.panel-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-page);
+}
+
+.panel-tab.active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.panel-loading {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+.panel-empty {
+  display: flex;
+  justify-content: center;
+  padding: 24px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.panel-empty p {
+  margin: 0;
+}
+
+.panel-tree {
+  padding: 4px 8px;
+}
+
+.panel-tree :deep(.ant-tree-node-content-wrapper) {
+  font-size: 13px;
+}
+
 /* Chat Section */
 .chat-section {
-  flex: 2;
+  flex: 1;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
@@ -951,10 +1070,6 @@ onUnmounted(() => { window.removeEventListener('message', handleWindowMessage); 
   color: var(--text-secondary);
 }
 
-.hint-badge {
-  font-size: 11px;
-}
-
 /* Input Container */
 .input-container {
   padding: 12px 16px 16px;
@@ -988,83 +1103,10 @@ onUnmounted(() => { window.removeEventListener('message', handleWindowMessage); 
   gap: 8px;
 }
 
-/* Preview Section */
-.preview-section {
-  flex: 3;
+/* Source Drawer */
+.source-drawer-content {
   display: flex;
-  flex-direction: column;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.preview-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border-default);
-}
-
-.preview-header h3 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.preview-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.preview-content {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
-}
-
-.preview-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   height: 100%;
-  color: var(--text-muted);
-}
-
-.preview-frame-shell {
-  position: relative;
-  width: 100%;
-  height: 100%;
-}
-
-.preview-loading-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(248, 250, 252, 0.9);
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-.preview-loading p {
-  margin-top: 12px;
-}
-
-.preview-iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-  background: #fff;
-}
-
-/* Source View */
-.source-content {
-  display: flex;
-  flex: 1;
   overflow: hidden;
 }
 
@@ -1174,10 +1216,15 @@ onUnmounted(() => { window.removeEventListener('message', handleWindowMessage); 
   .main-content {
     flex-direction: column;
   }
-  .chat-section,
-  .preview-section {
+  .left-panel {
+    width: 100%;
+    max-height: 200px;
+    flex-shrink: 0;
+  }
+  .chat-section {
     flex: none;
-    height: 50vh;
+    height: 0;
+    flex: 1;
   }
 }
 

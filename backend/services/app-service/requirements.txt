@@ -5,3 +5,4 @@ Pillow==10.4.0
 selenium==4.33.0
 webdriver-manager==4.0.2
 cos-python-sdk-v5==1.9.37
+pymysql==1.1.1

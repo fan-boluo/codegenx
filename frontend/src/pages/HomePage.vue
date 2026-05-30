@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowRightOutlined, EditOutlined, MessageOutlined, PlusOutlined, RocketOutlined } from '@ant-design/icons-vue'
-import { listMyAppVoByPage } from '@/api/appController'
+import { addApp, listMyAppVoByPage } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { formatRelativeTime, formatTime } from '@/utils/time'
 
@@ -51,15 +51,58 @@ const fetchMyApps = async () => {
   }
 }
 
+const createModalVisible = ref(false)
+const createForm = ref({ appName: '', dbName: '', initPrompt: '' })
+const isCreating = ref(false)
+const pendingPromptExample = ref('')
+
 const openCreateChat = (prompt?: string) => {
   if (!isLoggedIn.value) {
     router.push('/user/login')
     return
   }
-  router.push({
-    path: '/app/chat',
-    query: prompt ? { prompt } : undefined,
-  })
+  createForm.value = { appName: '', dbName: '', initPrompt: prompt || '' }
+  pendingPromptExample.value = prompt || ''
+  createModalVisible.value = true
+}
+
+const handleCreateProject = async () => {
+  if (!createForm.value.appName.trim()) {
+    message.warning('请输入项目名称')
+    return
+  }
+  if (createForm.value.appName.trim().length > 20) {
+    message.warning('项目名称不能超过20个字')
+    return
+  }
+  if (!createForm.value.initPrompt.trim()) {
+    message.warning('请输入项目需求描述')
+    return
+  }
+  isCreating.value = true
+  try {
+    const payload: Record<string, any> = {
+      appName: createForm.value.appName.trim(),
+      initPrompt: createForm.value.initPrompt.trim(),
+    }
+    const dbName = createForm.value.dbName.trim()
+    if (dbName) {
+      payload.dbName = 'prj_' + dbName
+    }
+    const createRes = await addApp(payload)
+    if (createRes.data.code !== 0 || !createRes.data.data) {
+      message.error(`创建项目失败，${createRes.data.message ?? '请稍后重试'}`)
+      return
+    }
+    const createdAppId = String(createRes.data.data)
+    createModalVisible.value = false
+    router.push(`/app/chat/${createdAppId}`)
+  } catch (error) {
+    console.error('创建项目失败:', error)
+    message.error('创建项目失败')
+  } finally {
+    isCreating.value = false
+  }
 }
 
 const selectPromptExample = (example: string) => {
@@ -197,6 +240,50 @@ watch(
         </a-card>
       </div>
     </section>
+
+    <a-modal
+      v-model:open="createModalVisible"
+      title="新建项目"
+      :confirm-loading="isCreating"
+      @ok="handleCreateProject"
+      ok-text="创建项目"
+      cancel-text="取消"
+      :mask-closable="false"
+    >
+      <a-form layout="vertical" style="margin-top: 16px">
+        <a-form-item label="项目名称" required>
+          <a-input
+            v-model:value="createForm.appName"
+            placeholder="请输入项目名称"
+            :maxlength="20"
+            show-count
+          />
+        </a-form-item>
+        <a-form-item label="项目库">
+          <a-input-group compact>
+            <a-input
+              style="width: 60px; background: var(--bg-subtle); color: var(--text-muted); text-align: right;"
+              value="prj_"
+              disabled
+            />
+            <a-input
+              v-model:value="createForm.dbName"
+              placeholder="自定义库名后缀"
+              style="width: calc(100% - 60px)"
+            />
+          </a-input-group>
+        </a-form-item>
+        <a-form-item label="项目需求描述" required>
+          <a-textarea
+            v-model:value="createForm.initPrompt"
+            placeholder="描述您的项目需求..."
+            :rows="4"
+            :maxlength="1000"
+            show-count
+          />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 

@@ -1,4 +1,36 @@
 declare namespace API {
+  type AppChatRequest = {
+    appId: number
+    message: string
+    sessionId?: string
+    requestId?: string
+    traceId?: string
+  }
+
+  type AppVO = {
+    id?: number | null
+    appName?: string | null
+    cover?: string | null
+    initPrompt?: string | null
+    codeGenType?: string | null
+    deployKey?: string | null
+    deployedTime?: string | null
+    priority?: number | null
+    userId?: number | null
+    dbName?: string | null
+    createTime?: string | null
+    updateTime?: string | null
+  }
+
+  type ChatHistory = {
+    messageId?: number | null
+    appId?: number | null
+    sessionId?: string | null
+    messageType?: string | null
+    message?: string | null
+    createTime?: string | null
+  }
+
   type BaseResponseBool_ = {
     /** Code */
     code: number

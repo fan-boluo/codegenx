@@ -9,7 +9,9 @@ from shared.schema.user import UserVO
 
 
 class AppAddRequest(CamelBaseModel):
+    app_name: str = Field(alias="appName")
     init_prompt: str = Field(alias="initPrompt")
+    db_name: str | None = Field(default=None, alias="dbName")
 
 
 class AppUpdateRequest(CamelBaseModel):
@@ -75,6 +77,7 @@ class AppVO(LongIdModel, TimeModel):
     priority: int | None = None
     user_id: int | None = Field(default=None, alias="userId")
     user: UserVO | None = None
+    db_name: str | None = Field(default=None, alias="dbName")
 
 
 class AppDeployResponse(CamelBaseModel):

@@ -90,6 +90,21 @@ async def get_app_code_file(
     )
 
 
+@router.get("/db/tables/{app_id}")
+async def get_app_db_tables(
+    request: Request,
+    app_id: int,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    proxy = AppProxy()
+    return await proxy.request_json(
+        method="GET",
+        path=f"/api/app/db/tables/{app_id}",
+        authorization=authorization,
+        trace_id=getattr(request.state, "trace_id", None),
+    )
+
+
 @router.get("/{app_id}")
 async def get_app(
     app_id: int,
