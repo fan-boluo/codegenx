@@ -50,7 +50,7 @@ class SessionManager:
                 except Exception as exc:
                     log.warning("rotate_files: failed to delete {} error={}", old_file, exc)
 
-    def save_history(self, session_id: str, history: list[dict[str, Any]], app_id: str = "", user_id: str = "", request_id: str = "") -> None:
+    def save_history(self, session_id: str, history: list[dict[str, Any]],  user_id: str = "") -> None:
         """完整写入历史记录，超出 1MB 自动轮转到 _N.jsonl。"""
         self._rotate_files(session_id)
         now = datetime.utcnow().isoformat()
@@ -61,9 +61,7 @@ class SessionManager:
             try:
                 for idx, msg in enumerate(history):
                     record = dict(msg)
-                    record["id"] = idx + 1
-                    record["turn_id"] = request_id
-                    record["app_id"] = app_id
+
                     record["user_id"] = user_id
                     record["create_time"] = now
                     line = json.dumps(record, ensure_ascii=False) + "\n"
@@ -103,3 +101,10 @@ class SessionManager:
 
     def _memory_log_file(self, session_id: str) -> Path:
         return self.session_dir / f"memory_log_{session_id}.jsonl"
+
+    def save_turn_snapshot(self, turn_id: str, snapshot: dict[str, Any]) -> Path:
+        snapshot_file = self._turn_snapshot_file(turn_id)
+        with self._lock:
+            with open(snapshot_file, "w", encoding="utf-8") as file:
+                json.dump(snapshot, file, ensure_ascii=False, indent=2)
+        return snapshot_file

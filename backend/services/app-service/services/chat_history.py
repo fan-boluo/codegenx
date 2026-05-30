@@ -38,13 +38,9 @@ def _extract_session_id(filename: str) -> str:
 
 @dataclass(slots=True)
 class ChatHistoryRecord:
-    id: int
     message: str
     message_type: str
-    app_id: int
-    user_id: int
     create_time: datetime
-    update_time: datetime
 
 
 class ChatHistoryService:
@@ -63,30 +59,49 @@ class ChatHistoryService:
         return datetime.now(UTC).replace(tzinfo=None)
 
     def _record_from_payload(self, payload: dict[str, object]) -> ChatHistoryRecord:
-        # 兼容旧格式 {"role": "user"/"assistant", "content": "..."}
-        if "id" not in payload and "role" in payload:
+        create_time = payload.get("create_time")
+
+        # 格式1: {"message": "...", "message_type": "user"/"ai"} — 旧 ChatHistoryVO 包装格式
+        if "message" in payload and "message_type" in payload:
+            return ChatHistoryRecord(
+                message=str(payload.get("message", "")),
+                message_type=str(payload.get("message_type", "")),
+                create_time=datetime.fromisoformat(str(create_time)) if create_time else self._utc_now(),
+                )
+
+        # 格式2: {"role": "user"/"assistant"/"tool", "content": "..."} — LLM 消息格式
+        if "role" in payload and "content" in payload:
             role = str(payload.get("role", "user"))
-            message_type = "user" if role in ("user", "human") else "assistant"
+            msg_type = "user" if role in ("user", "human") else "ai"
             now = self._utc_now()
             return ChatHistoryRecord(
-                id=0,
                 message=str(payload.get("content", "")),
-                message_type=message_type,
-                app_id=0,
-                user_id=0,
-                create_time=now,
-                update_time=now,
+                message_type=msg_type,
+                create_time=datetime.fromisoformat(str(create_time)) if create_time else now
             )
-        create_time = payload.get("create_time")
-        update_time = payload.get("update_time")
+
+        # 格式3: 请求元数据 AiServiceGenerateRequest.model_dump() — 包含 message 字段
+        if "message" in payload:
+            return ChatHistoryRecord(
+                id=record_id,
+                message=str(payload.get("message", "")),
+                message_type="user",
+                app_id=app_id,
+                user_id=user_id,
+                create_time=datetime.fromisoformat(str(create_time)) if create_time else self._utc_now(),
+                update_time=datetime.fromisoformat(str(update_time)) if update_time else self._utc_now(),
+            )
+
+        # 兜底
+        now = self._utc_now()
         return ChatHistoryRecord(
-            id=int(payload.get("id", 0)),
-            message=str(payload.get("message", "")),
-            message_type=str(payload.get("message_type", "")),
-            app_id=int(payload.get("app_id", 0)),
-            user_id=int(payload.get("user_id", 0)),
-            create_time=datetime.fromisoformat(str(create_time)) if create_time else self._utc_now(),
-            update_time=datetime.fromisoformat(str(update_time)) if update_time else self._utc_now(),
+            id=record_id,
+            message=str(payload.get("message", payload.get("content", ""))),
+            message_type=str(payload.get("message_type", payload.get("role", ""))),
+            app_id=app_id,
+            user_id=user_id,
+            create_time=datetime.fromisoformat(str(create_time)) if create_time else now,
+            update_time=datetime.fromisoformat(str(update_time)) if update_time else now,
         )
 
     def _read_records_from_files(self, files: list[Path]) -> list[ChatHistoryRecord]:

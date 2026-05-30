@@ -22,15 +22,6 @@ declare namespace API {
     updateTime?: string | null
   }
 
-  type ChatHistory = {
-    messageId?: number | null
-    appId?: number | null
-    sessionId?: string | null
-    messageType?: string | null
-    message?: string | null
-    createTime?: string | null
-  }
-
   type BaseResponseBool_ = {
     /** Code */
     code: number

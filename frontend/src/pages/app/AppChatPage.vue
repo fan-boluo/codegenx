@@ -31,7 +31,7 @@
 
         <a-button size="small" @click="openSourceDrawer" :loading="loadingSourceTree">
           <template #icon><CodeOutlined /></template>
-          查看源码
+         查看源码
         </a-button>
 
         <a-tooltip v-if="!canOperateApp" :title="readOnlyTooltip" placement="bottom">
@@ -138,6 +138,12 @@
               </div>
               <div class="message-avatar">
                 <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="28" />
+              </div>
+            </div>
+            <div v-else-if="messageItem.type === 'event'" class="event-message">
+              <div class="event-tag" :class="'event-' + (messageItem.eventState || 'running')">
+                <span class="event-label">{{ messageItem.content }}</span>
+                <span v-if="messageItem.eventData" class="event-detail">{{ formatEventData(messageItem.eventType ?? '', messageItem.eventData) }}</span>
               </div>
             </div>
             <div v-else class="ai-message">
@@ -250,7 +256,6 @@ import {
   deployApp as deployAppApi,
   getAppVoById,
 } from '@/api/appController'
-import { listAppChatHistory } from '@/api/chatHistoryController'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
@@ -276,10 +281,12 @@ import {
 } from '@ant-design/icons-vue'
 
 interface Message {
-  type: 'user' | 'ai'
+  type: 'user' | 'ai' | 'event'
   content: string
   loading?: boolean
-  createTime?: string
+  eventType?: string
+  eventData?: any
+  eventState?: string
 }
 
 const route = useRoute()
@@ -302,9 +309,6 @@ const activeGenerationSessionId = ref('')
 const activeGenerationMessageIndex = ref<number | null>(null)
 const stopRequested = ref(false)
 const abortController = ref<AbortController | null>(null)
-
-const loadingHistory = ref(false)
-const historyLoaded = ref(false)
 
 const previewUrl = ref('')
 const previewReady = ref(false)
@@ -515,8 +519,50 @@ const finishStream = () => {
   setTimeout(async () => { await refreshAfterGeneration() }, 1000)
 }
 
+const eventLabel = (eventType: string): string => {
+  const map: Record<string, string> = {
+    OnTurnStart: '开始执行',
+    LLM_Thinking_Start: 'LLM 思考中',
+    ToolExecutionStart: '工具调用',
+    ToolExecutionEnd: '工具完成',
+    CompactEvent: '上下文压缩',
+    RequestCompleted: '请求完成',
+    RequestStopped: '已停止',
+    Error: '错误',
+  }
+  return map[eventType] ?? eventType
+}
+
+const formatEventData = (eventType: string, data: any): string => {
+  if (eventType === 'OnTurnStart') {
+    return `步骤 ${data?.step_counter ?? ''}`
+  }
+  if (eventType === 'LLM_Thinking_Start') {
+    return `prompt tokens: ${data?.prompt_tokens ?? '?'}, 消息数: ${data?.message_count ?? '?'}`
+  }
+  if (eventType === 'ToolExecutionStart') {
+    return data?.description ?? `调用 ${data?.tool_name ?? ''}`
+  }
+  if (eventType === 'ToolExecutionEnd') {
+    return data?.description ?? `${data?.tool_name ?? ''} 完成`
+  }
+  if (eventType === 'CompactEvent') {
+    return `tokens: ${data?.tokens_before ?? '?'} → ${data?.tokens_after ?? '?'}, 移除 ${data?.messages_removed ?? 0} 条消息`
+  }
+  if (eventType === 'RequestCompleted') {
+    return `request_id: ${data?.request_id ?? ''}`
+  }
+  if (eventType === 'RequestStopped') {
+    return data?.reason ?? '已停止'
+  }
+  if (eventType === 'Error') {
+    return typeof data === 'string' ? data : JSON.stringify(data)
+  }
+  return ''
+}
+
 const refreshAfterGeneration = async () => {
-  await fetchAppInfo()
+  await fetchAppInfo({ autoGenerateInitialMessage: false })
   updatePreview()
   if (leftPanelTab.value === 'files') {
     await loadSourceTree()
@@ -526,21 +572,65 @@ const refreshAfterGeneration = async () => {
 const handleStreamEvent = (event: { event_type: string; data: any; state?: string }) => {
   const eventType = event.event_type
   const eventData = event.data
-  if (eventType === 'LLM_Response_Chunk') { applyMessageChunk(eventData); return }
+  const eventState = event.state ?? ''
+
+  if (eventType === 'LLM_Response_Chunk') {
+    applyMessageChunk(eventData)
+    return
+  }
+
   if (eventType === 'RequestCompleted' || eventType === 'RequestStopped') {
     if (stopRequested.value) {
       const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
       if (targetMessage && !targetMessage.content) { targetMessage.content = '已停止本次生成。' }
     }
-    finishStream(); return
+    messages.value.push({
+      type: 'event',
+      content: eventLabel(eventType),
+      eventType,
+      eventData,
+      eventState,
+    })
+    scrollToBottom()
+    finishStream()
+    return
   }
+
   if (eventType === 'Error') {
     const errorText = typeof eventData === 'string' ? eventData : eventData?.message || JSON.stringify(eventData)
     const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
     if (targetMessage) { targetMessage.content = '抱歉，当前生成失败，请重试。'; targetMessage.loading = false }
-    message.error(errorText); finishStream(); return
+    messages.value.push({
+      type: 'event',
+      content: errorText,
+      eventType: 'Error',
+      eventData,
+      eventState: 'failed',
+    })
+    scrollToBottom()
+    message.error(errorText)
+    finishStream()
+    return
   }
-  console.debug('收到未处理的事件:', eventType, eventData)
+
+  // 非终端事件，折叠显示
+  const lastEvent = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null
+  if (lastEvent && lastEvent.type === 'event' && lastEvent.eventType === eventType && eventType === 'ToolExecutionStart') {
+    lastEvent.eventData = eventData
+    return
+  }
+  if (lastEvent && lastEvent.type === 'event' && lastEvent.eventType === eventType && eventType === 'ToolExecutionEnd') {
+    lastEvent.eventData = eventData
+    return
+  }
+  messages.value.push({
+    type: 'event',
+    content: eventLabel(eventType),
+    eventType,
+    eventData,
+    eventState,
+  })
+  scrollToBottom()
 }
 
 const isOwner = computed(() => {
@@ -563,7 +653,6 @@ const startNewSession = () => {
   localStorage.setItem(storageKey, newSessionId)
   sessionId.value = newSessionId
   messages.value = []
-  historyLoaded.value = true
   message.success('已切换到新会话')
 }
 
@@ -576,32 +665,6 @@ const clearActiveGeneration = (requestId?: string) => {
   isStoppingGeneration.value = false
 }
 
-const loadChatHistory = async () => {
-  if (!appId.value || loadingHistory.value) return
-  loadingHistory.value = true
-  try {
-    const params: API.listAppChatHistoryParams = { appId: Number(appId.value), sessionId: sessionId.value ?? '' }
-    const res = await listAppChatHistory(params)
-    if (res.data.code === 0 && res.data.data) {
-      const rawData = res.data.data
-      const chatHistories = Array.isArray(rawData) ? rawData : rawData.records || []
-      if (chatHistories.length > 0) {
-        const historyMessages: Message[] = chatHistories
-          .map((chat: API.ChatHistory) => ({
-            type: (chat.messageType === 'user' ? 'user' : 'ai') as 'user' | 'ai',
-            content: chat.message || '',
-            createTime: chat.createTime,
-          }))
-          .reverse()
-        messages.value = historyMessages
-      }
-      historyLoaded.value = true
-    }
-  } catch (error) {
-    console.error('加载对话历史失败：', error)
-    message.error('加载对话历史失败')
-  } finally { loadingHistory.value = false }
-}
 
 const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessage?: boolean }) => {
   const id = options?.appId ?? (route.params.id as string | undefined)
@@ -609,7 +672,6 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
   if (!id) {
     appId.value = undefined; clearChatSessionId(); appInfo.value = {}
     messages.value = []; previewUrl.value = ''; previewReady.value = false
-    historyLoaded.value = true
     return
   }
   appId.value = id; ensureChatSessionId(id)
@@ -617,9 +679,8 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
-      await loadChatHistory()
       if (messages.value.length >= 2) { updatePreview() }
-      if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && historyLoaded.value && autoGenerateInitialMessage) {
+      if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && autoGenerateInitialMessage) {
         await sendInitialMessage(appInfo.value.initPrompt)
       }
       await loadSourceTree()
@@ -1011,6 +1072,62 @@ onUnmounted(() => { abortController.value?.abort() })
 
 .message-avatar {
   flex-shrink: 0;
+}
+
+/* Event Message */
+.event-message {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0;
+}
+
+.event-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+}
+
+.event-tag.event-running {
+  color: var(--accent-primary);
+  border-color: var(--accent-primary-light);
+  background: var(--accent-primary-subtle);
+}
+
+.event-tag.event-completed {
+  color: #22C55E;
+  border-color: #22C55E;
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.event-tag.event-stopped {
+  color: #F59E0B;
+  border-color: #F59E0B;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.event-tag.event-failed {
+  color: #EF4444;
+  border-color: #EF4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.event-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.event-detail {
+  opacity: 0.75;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Loading */
