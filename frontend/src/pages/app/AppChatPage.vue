@@ -1,5 +1,48 @@
 <template>
   <div id="appChatPage" class="ide-layout">
+    <!-- Top menu bar -->
+    <div class="top-menu-bar" :class="{ collapsed: menuCollapsed }">
+      <div class="top-menu-left">
+        <span
+          class="menu-toggle-btn"
+          @click="menuCollapsed = !menuCollapsed"
+          :title="menuCollapsed ? '展开菜单' : '收起菜单'"
+        >
+          <MenuFoldOutlined v-if="menuCollapsed" />
+          <MenuUnfoldOutlined v-else />
+        </span>
+        <span class="top-brand" v-show="!menuCollapsed">CodeGenX</span>
+      </div>
+
+      <a-menu
+        v-show="!menuCollapsed"
+        v-model:selectedKeys="navSelectedKeys"
+        mode="horizontal"
+        :items="navMenuItems"
+        @click="handleNavMenuClick"
+        class="top-nav-menu"
+      />
+
+      <div class="top-menu-right" v-show="!menuCollapsed">
+        <a-dropdown v-if="loginUserStore.loginUser.id">
+          <a-space class="top-user-trigger">
+            <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="24" />
+            <span class="top-user-name">{{ loginUserStore.loginUser.userName ?? '' }}</span>
+          </a-space>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item @click="doLogout">
+                <LogoutOutlined />
+                退出登录
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+        <a-button v-else type="primary" size="small" @click="router.push('/user/login')">登录</a-button>
+      </div>
+    </div>
+
+    <div class="ide-body">
     <!-- Left Sidebar -->
     <div v-if="appId" class="left-sidebar" :style="{ width: sidebarWidth + 'px' }">
       <div class="sidebar-header">
@@ -217,14 +260,16 @@
 
     <AppDetailModal v-model:open="appDetailVisible" :app="appInfo" :show-actions="isOwner || isAdmin" @edit="editApp" @delete="deleteApp" />
     <DeploySuccessModal v-model:open="deployModalVisible" :deploy-url="deployUrl" @open-site="openDeployedSite" />
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { message } from 'ant-design-vue'
+import { type MenuProps, message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
+import { userLogout } from '@/api/userController.ts'
 import {
   deleteApp as deleteAppApi,
   deployApp as deployAppApi,
@@ -248,6 +293,13 @@ import {
   DownloadOutlined,
   FileTextOutlined,
   FolderOutlined,
+  HomeOutlined,
+  AppstoreOutlined as AppstoreOutlined2,
+  HistoryOutlined,
+  DashboardOutlined,
+  LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   MessageOutlined,
   QuestionCircleOutlined,
   SendOutlined,
@@ -274,6 +326,50 @@ const MAX_OPEN_TABS = 5
 const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
+
+// Navigation menu
+const menuCollapsed = ref(true)
+const navSelectedKeys = ref<string[]>(['/'])
+
+router.afterEach((to) => {
+  navSelectedKeys.value = [to.path]
+})
+
+const navOriginItems = [
+  { key: '/', icon: () => h(HomeOutlined), label: '我的项目', title: '我的项目' },
+  { key: '/admin/appManage', icon: () => h(AppstoreOutlined2), label: '项目管理' },
+  { key: '/admin/userManage', icon: () => h(HomeOutlined), label: '用户管理' },
+  { key: '/admin/chatManage', icon: () => h(HistoryOutlined), label: '对话管理' },
+  { key: '/admin/monitor', icon: () => h(DashboardOutlined), label: '监控中心' },
+]
+
+const navMenuItems = computed<MenuProps['items']>(() => {
+  return navOriginItems.filter((menu) => {
+    if (menu.key.startsWith('/admin')) {
+      return loginUserStore.loginUser?.userRole === 'admin'
+    }
+    return true
+  })
+})
+
+const handleNavMenuClick: MenuProps['onClick'] = (e) => {
+  const key = e.key as string
+  navSelectedKeys.value = [key]
+  if (key.startsWith('/')) {
+    router.push(key)
+  }
+}
+
+const doLogout = async () => {
+  const res = await userLogout()
+  if (res.data.code === 0) {
+    loginUserStore.setLoginUser({ userName: '未登录' })
+    message.success('退出登录成功')
+    await router.push('/user/login')
+  } else {
+    message.error('退出登录失败，' + res.data.message)
+  }
+}
 
 const appInfo = ref<API.AppVO>({})
 const appId = ref<string>()
@@ -848,8 +944,102 @@ onUnmounted(() => {
 #appChatPage.ide-layout {
   height: 100vh;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: var(--bg-page);
+}
+
+/* ====== Top Menu Bar ====== */
+.top-menu-bar {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.top-menu-bar.collapsed {
+  height: 40px;
+}
+
+.top-menu-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.menu-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 16px;
+  transition: all 0.15s;
+}
+
+.menu-toggle-btn:hover {
+  color: var(--accent-primary);
+  background: var(--accent-primary-subtle);
+}
+
+.top-brand {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.top-nav-menu {
+  flex: 1;
+  min-width: 0;
+  background: transparent !important;
+  border-bottom: none !important;
+  display: flex;
+  justify-content: center;
+  line-height: 38px;
+}
+
+.top-nav-menu :deep(.ant-menu-item) {
+  font-size: 13px;
+}
+
+.top-menu-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.top-user-trigger {
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.top-user-trigger:hover {
+  background: var(--bg-hover);
+}
+
+.top-user-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* ====== IDE Body ====== */
+.ide-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
 }
 
 /* ====== Left Sidebar ====== */
