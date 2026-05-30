@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -27,13 +26,12 @@ router = APIRouter(prefix="/api/chatHistory", tags=["chatHistory"])
 @router.get("/app/{app_id}", response_model=BaseResponse[list[ChatHistoryVO]])
 async def list_app_chat_history(
     app_id: int,
-    page_size: int = 10,
-    last_create_time: datetime | None = None,
+    session_id: str = "",
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[list[ChatHistoryVO]]:
     service = ChatHistoryService(db)
-    result = await service.list_app_chat_history_by_page(app_id, page_size, last_create_time, current_user)
+    result = await service.list_app_chat_history(app_id, session_id, current_user)
     return success([ChatHistoryVO.model_validate(item) for item in result])
 
 

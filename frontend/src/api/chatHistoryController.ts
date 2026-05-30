@@ -12,9 +12,8 @@ export async function listAppChatHistory(
 ) {
   return listAppChatHistoryApiChatHistoryAppAppIdGet(
     {
-      app_id: Number(params.appId),
-      pageSize: params.pageSize,
-      lastCreateTime: params.lastCreateTime,
+      appId: Number(params.appId),
+      sessionId: params.sessionId,
     },
     options
   )

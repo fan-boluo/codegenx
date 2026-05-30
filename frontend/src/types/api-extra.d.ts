@@ -55,8 +55,7 @@ declare namespace API {
 
   type listAppChatHistoryParams = {
     appId: number
-    pageSize?: number
-    lastCreateTime?: string
+    sessionId?: string
   }
 
   type UserSummaryStatsVO = {

@@ -120,11 +120,6 @@
 
       <div class="chat-section">
         <div class="messages-container" ref="messagesContainer">
-          <div v-if="hasMoreHistory" class="load-more-container">
-            <a-button type="link" @click="loadMoreHistory" :loading="loadingHistory" size="small">
-              加载更多历史消息
-            </a-button>
-          </div>
 
           <div v-if="!appId && !messages.length" class="create-mode-hint">
             <div class="hint-icon">
@@ -309,8 +304,6 @@ const stopRequested = ref(false)
 const abortController = ref<AbortController | null>(null)
 
 const loadingHistory = ref(false)
-const hasMoreHistory = ref(false)
-const lastCreateTime = ref<string>()
 const historyLoaded = ref(false)
 
 const previewUrl = ref('')
@@ -570,9 +563,7 @@ const startNewSession = () => {
   localStorage.setItem(storageKey, newSessionId)
   sessionId.value = newSessionId
   messages.value = []
-  hasMoreHistory.value = false
   historyLoaded.value = true
-  lastCreateTime.value = undefined
   message.success('已切换到新会话')
 }
 
@@ -585,12 +576,11 @@ const clearActiveGeneration = (requestId?: string) => {
   isStoppingGeneration.value = false
 }
 
-const loadChatHistory = async (isLoadMore = false) => {
+const loadChatHistory = async () => {
   if (!appId.value || loadingHistory.value) return
   loadingHistory.value = true
   try {
-    const params: API.listAppChatHistoryParams = { appId: Number(appId.value), pageSize: 10 }
-    if (isLoadMore && lastCreateTime.value) { params.lastCreateTime = lastCreateTime.value }
+    const params: API.listAppChatHistoryParams = { appId: Number(appId.value), sessionId: sessionId.value ?? '' }
     const res = await listAppChatHistory(params)
     if (res.data.code === 0 && res.data.data) {
       const rawData = res.data.data
@@ -603,10 +593,8 @@ const loadChatHistory = async (isLoadMore = false) => {
             createTime: chat.createTime,
           }))
           .reverse()
-        if (isLoadMore) { messages.value.unshift(...historyMessages) } else { messages.value = historyMessages }
-        lastCreateTime.value = chatHistories[chatHistories.length - 1]?.createTime
-        hasMoreHistory.value = chatHistories.length === 10
-      } else { hasMoreHistory.value = false }
+        messages.value = historyMessages
+      }
       historyLoaded.value = true
     }
   } catch (error) {
@@ -615,15 +603,13 @@ const loadChatHistory = async (isLoadMore = false) => {
   } finally { loadingHistory.value = false }
 }
 
-const loadMoreHistory = async () => { await loadChatHistory(true) }
-
 const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessage?: boolean }) => {
   const id = options?.appId ?? (route.params.id as string | undefined)
   const autoGenerateInitialMessage = options?.autoGenerateInitialMessage ?? false
   if (!id) {
     appId.value = undefined; clearChatSessionId(); appInfo.value = {}
     messages.value = []; previewUrl.value = ''; previewReady.value = false
-    hasMoreHistory.value = false; historyLoaded.value = true; lastCreateTime.value = undefined
+    historyLoaded.value = true
     return
   }
   appId.value = id; ensureChatSessionId(id)
@@ -1033,12 +1019,6 @@ onUnmounted(() => { abortController.value?.abort() })
   align-items: center;
   gap: 8px;
   color: var(--text-muted);
-}
-
-.load-more-container {
-  text-align: center;
-  padding: 8px 0;
-  margin-bottom: 12px;
 }
 
 /* Create Mode Hint */

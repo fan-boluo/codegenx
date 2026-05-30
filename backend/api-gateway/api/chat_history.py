@@ -15,13 +15,10 @@ router = APIRouter(prefix="/chatHistory", tags=["chatHistory"])
 @router.get("/app/{app_id}")
 async def list_app_chat_history(
     app_id: int,
-    page_size: int = Query(default=10, alias="pageSize"),
-    last_create_time: str | None = Query(default=None, alias="lastCreateTime"),
+    session_id: str = Query(default="", alias="sessionId"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
-    params: dict[str, Any] = {"page_size": page_size}
-    if last_create_time:
-        params["last_create_time"] = last_create_time
+    params: dict[str, Any] = {"session_id": session_id}
 
     proxy = AppProxy()
     return await proxy.request_json(
