@@ -11,7 +11,7 @@ class ChatHistoryQueryRequest(PageRequest):
     id: int | None = None
     message: str | None = None
     message_type: str | None = Field(default=None, alias="messageType")
-    app_id: int | None = Field(default=None, alias="appId")
+    app_id: int = Field(alias="appId")
     user_id: int | None = Field(default=None, alias="userId")
     last_create_time: datetime | None = Field(default=None, alias="lastCreateTime")
 

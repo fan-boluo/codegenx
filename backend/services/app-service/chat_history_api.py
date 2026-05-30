@@ -44,7 +44,7 @@ async def list_all_chat_history_by_page_for_admin(
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[list[ChatHistoryVO]]:
     service = ChatHistoryService(db)
-    result = await service.list_all_chat_history_by_page(chat_history_query_request)
+    result = await service.list_app_chat_history_by_page_with_query(chat_history_query_request)
     return success([ChatHistoryVO.model_validate(item) for item in result])
 
 

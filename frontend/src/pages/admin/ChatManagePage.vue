@@ -15,8 +15,8 @@
           <a-select-option value="assistant">AI消息</a-select-option>
         </a-select>
       </a-form-item>
-      <a-form-item label="项目ID">
-        <a-input v-model:value="searchParams.appId" placeholder="输入项目ID" />
+      <a-form-item label="项目ID" required>
+        <a-input v-model:value="searchParams.appId" placeholder="输入项目ID（必填）" />
       </a-form-item>
       <a-form-item label="用户ID">
         <a-input v-model:value="searchParams.userId" placeholder="输入用户ID" />
@@ -85,12 +85,17 @@ const columns = [
 const data = ref<API.ChatHistory[]>([])
 const total = ref(0)
 
-const searchParams = reactive<API.ChatHistoryQueryRequest>({
+const searchParams = reactive<API.ChatHistoryQueryRequest & { pageNum: number; pageSize: number }>({
   pageNum: 1,
   pageSize: 10,
+  appId: undefined as unknown as number,
 })
 
 const fetchData = async () => {
+  if (!searchParams.appId) {
+    message.warning('请输入项目ID')
+    return
+  }
   try {
     const res = await listAllChatHistoryByPageForAdmin({ ...searchParams })
     if (res.data.data) {
