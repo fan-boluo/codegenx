@@ -24,6 +24,7 @@ from shared.schema.common import PageData
 from core.auth_proxy import JWTUser
 from chat_history import ChatHistoryService
 from core.screenshot_service import ScreenshotService
+from infra.db_manager import create_project_database, list_database_tables
 
 
 settings = get_settings()
@@ -35,18 +36,25 @@ class AppService:
         self.screenshot_service = ScreenshotService()
 
     async def create_app(self, app_add_request: AppAddRequest, login_user: JWTUser, trace_id: str | None = None) -> int:
+        app_name = app_add_request.app_name.strip()
         init_prompt = app_add_request.init_prompt.strip()
+        ThrowUtils.throw_if(not app_name, ErrorCode.PARAMS_ERROR, "项目名称不能为空")
+        ThrowUtils.throw_if(len(app_name) > 20, ErrorCode.PARAMS_ERROR, "项目名称不能超过20字")
         ThrowUtils.throw_if(not init_prompt, ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空")
+        db_name = app_add_request.db_name.strip() if app_add_request.db_name else None
         log.info(
-            "app-service create app start traceId={} userId={} promptLen={} preview={}",
+            "app-service create app start traceId={} userId={} appName={} dbName={} promptLen={} preview={}",
             trace_id,
             login_user.user_id,
+            app_name,
+            db_name,
             len(init_prompt),
             _preview_text(init_prompt),
         )
         app = App(
             user_id=login_user.user_id,
-            app_name=init_prompt[:12],
+            app_name=app_name,
+            db_name=db_name,
             init_prompt=init_prompt,
             code_gen_type="",
             priority=DEFAULT_APP_PRIORITY,
@@ -54,6 +62,18 @@ class AppService:
         self.db.add(app)
         await self.db.commit()
         await self.db.refresh(app)
+
+        code_dir = get_code_dir(app.id)
+        code_dir.mkdir(parents=True, exist_ok=True)
+        log.info("app-service create app code dir traceId={} appId={} codeDir={}", trace_id, app.id, code_dir)
+
+        if db_name:
+            try:
+                create_project_database(db_name)
+                log.info("app-service create app db created traceId={} appId={} dbName={}", trace_id, app.id, db_name)
+            except Exception as exc:
+                log.warning("app-service create app db failed traceId={} appId={} dbName={} error={}", trace_id, app.id, db_name, exc)
+
         log.info("app-service create app completed traceId={} userId={} appId={}", trace_id, login_user.user_id, app.id)
         return app.id
 
@@ -183,6 +203,16 @@ class AppService:
             return "[文件过大，无法预览（超过 500 KB）]"
         return target.read_text(encoding="utf-8", errors="replace")
 
+    async def get_db_tables(self, app_id: int, login_user: JWTUser) -> list:
+        app = await self._get_owned_app(app_id, login_user)
+        if not app.db_name:
+            return []
+        try:
+            return list_database_tables(app.db_name)
+        except Exception as exc:
+            log.warning("get_db_tables failed appId={} dbName={} error={}", app_id, app.db_name, exc)
+            return []
+
     @staticmethod
     def _build_file_tree(base_dir: Path, current_dir: Path) -> list:
         result = []
@@ -286,6 +316,7 @@ class AppService:
                 "deployedTime": app.deployed_time,
                 "priority": app.priority,
                 "userId": app.user_id,
+                "dbName": app.db_name,
                 "createTime": app.create_time,
                 "updateTime": app.update_time,
             }

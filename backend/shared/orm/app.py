@@ -18,6 +18,7 @@ class App(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     app_name: Mapped[str] = mapped_column("appName", String(128), nullable=False)
+    db_name: Mapped[str | None] = mapped_column("dbName", String(128), nullable=True)
     cover: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     init_prompt: Mapped[str] = mapped_column("initPrompt", String(4096), nullable=False)
     code_gen_type: Mapped[str] = mapped_column("codeGenType", String(64), nullable=False)

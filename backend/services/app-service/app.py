@@ -314,6 +314,22 @@ async def serve_preview_resource(app_id: int, resource_path: str = ""):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/api/app/db/tables/{app_id}", response_model=BaseResponse[list])
+async def get_app_db_tables(
+    app_id: int,
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[list]:
+    try:
+        tables = await AppService(db).get_db_tables(app_id, current_user)
+        return success(tables)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("get app db tables failed appId={}", app_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 def _cleanup_temp_archive(zip_path: _Path) -> None:
     try:
         temp_dir = zip_path.parent
