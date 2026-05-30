@@ -1,7 +1,7 @@
 <template>
   <div id="appChatPage" class="ide-layout">
     <!-- Left Sidebar -->
-    <div v-if="appId" class="left-sidebar">
+    <div v-if="appId" class="left-sidebar" :style="{ width: sidebarWidth + 'px' }">
       <div class="sidebar-header">
         <div class="sidebar-project-icon">
           <AppstoreOutlined />
@@ -82,6 +82,13 @@
       </div>
     </div>
 
+    <!-- Resizer: left sidebar ↔ center -->
+    <div
+      v-if="appId"
+      class="resizer"
+      @mousedown="onResizeStart('sidebar', $event)"
+    />
+
     <!-- Center Work Area -->
     <div class="center-work-area">
       <div class="file-tab-bar">
@@ -117,8 +124,14 @@
       </div>
     </div>
 
+    <!-- Resizer: center ↔ right chat -->
+    <div
+      class="resizer"
+      @mousedown="onResizeStart('chat', $event)"
+    />
+
     <!-- Right Chat Panel -->
-    <div class="right-chat-panel">
+    <div class="right-chat-panel" :style="{ width: chatWidth + 'px' }">
       <div class="messages-container" ref="messagesContainer">
         <div v-if="!appId && !messages.length" class="create-mode-hint">
           <div class="hint-icon">
@@ -208,7 +221,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
@@ -288,6 +301,34 @@ const deployModalVisible = ref(false)
 const deployUrl = ref('')
 
 const downloading = ref(false)
+
+// Resizable panels
+const sidebarWidth = ref(260)
+const chatWidth = ref(380)
+const resizing = ref<'sidebar' | 'chat' | null>(null)
+
+const onResizeStart = (target: 'sidebar' | 'chat', e: MouseEvent) => {
+  resizing.value = target
+  document.addEventListener('mousemove', onResizeMove)
+  document.addEventListener('mouseup', onResizeEnd)
+  e.preventDefault()
+}
+
+const onResizeMove = (e: MouseEvent) => {
+  if (resizing.value === 'sidebar') {
+    const w = Math.max(200, Math.min(400, e.clientX))
+    sidebarWidth.value = w
+  } else if (resizing.value === 'chat') {
+    const w = Math.max(260, Math.min(600, window.innerWidth - e.clientX))
+    chatWidth.value = w
+  }
+}
+
+const onResizeEnd = () => {
+  resizing.value = null
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
+}
 
 const previewFrameUrl = computed(() => {
   if (!previewUrl.value) return ''
@@ -796,7 +837,11 @@ watch(() => route.params.id, async (newId, oldId) => {
 
 onMounted(() => { fetchAppInfo() })
 
-onUnmounted(() => { abortController.value?.abort() })
+onUnmounted(() => {
+  abortController.value?.abort()
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
+})
 </script>
 
 <style scoped>
@@ -809,7 +854,6 @@ onUnmounted(() => { abortController.value?.abort() })
 
 /* ====== Left Sidebar ====== */
 .left-sidebar {
-  width: 260px;
   min-width: 200px;
   flex-shrink: 0;
   display: flex;
@@ -926,6 +970,22 @@ onUnmounted(() => { abortController.value?.abort() })
 .sidebar-actions :deep(.ant-btn-text:hover) {
   color: var(--accent-primary);
   background: var(--accent-primary-subtle);
+}
+
+/* ====== Resizer ====== */
+.resizer {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  position: relative;
+  z-index: 10;
+}
+
+.resizer:hover,
+.resizer:active {
+  background: var(--accent-primary);
 }
 
 /* ====== Center Work Area ====== */
@@ -1081,8 +1141,7 @@ onUnmounted(() => { abortController.value?.abort() })
 
 /* ====== Right Chat Panel ====== */
 .right-chat-panel {
-  width: 380px;
-  min-width: 300px;
+  min-width: 260px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
