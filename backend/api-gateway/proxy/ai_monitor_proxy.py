@@ -10,8 +10,8 @@ GATEWAY_ROOT = Path(__file__).resolve().parents[1]
 if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
-from services.discovery_adapter import discovery_adapter
 from shared.config.config import get_settings
+from services.discovery_adapter import discovery_adapter
 from shared.config.log_config import log
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode

@@ -66,15 +66,25 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(BusinessException)
     async def business_exception_handler(request: Request, exc: BusinessException):
-        log.error(
-            "BusinessException path={} userId={} code={} message={} traceId={}\n{}",
-            request.url.path,
-            getattr(request.state, "login_user_id", None),
-            exc.code,
-            exc.message,
-            getattr(request.state, "trace_id", None),
-            _format_exception(exc),
-        )
+        if exc.code == ErrorCode.NOT_LOGIN_ERROR.get_code():
+            log.info(
+                "BusinessException path={} userId={} code={} message={} traceId={}",
+                request.url.path,
+                getattr(request.state, "login_user_id", None),
+                exc.code,
+                exc.message,
+                getattr(request.state, "trace_id", None),
+            )
+        else:
+            log.error(
+                "BusinessException path={} userId={} code={} message={} traceId={}\n{}",
+                request.url.path,
+                getattr(request.state, "login_user_id", None),
+                exc.code,
+                exc.message,
+                getattr(request.state, "trace_id", None),
+                _format_exception(exc),
+            )
         return JSONResponse(
             status_code=200,
             content=error(exc.code, exc.message).model_dump(by_alias=True),
