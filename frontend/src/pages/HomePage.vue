@@ -188,8 +188,7 @@ watch(
     <section v-else class="apps-panel">
       <div class="section-header">
         <div>
-          <p class="section-eyebrow">我的项目</p>
-          <h2 class="section-title">项目列表</h2>
+          <h2 class="section-title">我的项目</h2>
           <p class="section-description">当前共 {{ total }} 个项目</p>
         </div>
       </div>

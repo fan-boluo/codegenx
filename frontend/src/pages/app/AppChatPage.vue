@@ -823,7 +823,7 @@ const getInputPlaceholder = () => {
   if (!appId.value) return '请先创建项目，再开始对话'
   if (!canOperateApp.value) return readOnlyTooltip
   if (selectedElementInfo.value) return `正在编辑 ${selectedElementInfo.value.tagName.toLowerCase()} 元素，描述您想要的修改...`
-  return '请描述你想生成的网站，越详细效果越好哦'
+  return '请描述你的需求，越详细效果越好哦'
 }
 
 watch(() => route.params.id, async (newId, oldId) => {
