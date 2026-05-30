@@ -42,10 +42,10 @@ const fetchMyApps = async () => {
       total.value = res.data.data.totalRow ?? 0
       return
     }
-    message.error(`获取应用列表失败，${res.data.message ?? '请稍后重试'}`)
+    message.error(`获取项目列表失败，${res.data.message ?? '请稍后重试'}`)
   } catch (error) {
-    console.error('获取应用列表失败:', error)
-    message.error('获取应用列表失败')
+    console.error('获取项目列表失败:', error)
+    message.error('获取项目列表失败')
   } finally {
     loading.value = false
   }
@@ -67,92 +67,93 @@ const selectPromptExample = (example: string) => {
 }
 
 const goToChat = (appId?: number) => {
-  if (!appId) {
-    return
-  }
+  if (!appId) return
   router.push(`/app/chat/${appId}`)
 }
 
 const goToEdit = (appId?: number) => {
-  if (!appId) {
-    return
-  }
+  if (!appId) return
   router.push(`/app/edit/${appId}`)
 }
 
 watch(
   () => loginUserStore.loginUser.id,
-  () => {
-    fetchMyApps()
-  },
+  () => { fetchMyApps() },
   { immediate: true }
 )
 </script>
 
 <template>
   <div id="homePage">
-    <section v-if="!isLoggedIn" class="guest-panel">
-      <div class="guest-card">
-        <p class="section-eyebrow">Start Here</p>
-        <h2 class="section-title">登录后，这里就是你的应用工作台</h2>
+    <!-- Welcome / Guest State -->
+    <section v-if="!isLoggedIn" class="welcome-section">
+      <div class="welcome-card">
+        <div class="welcome-icon">
+          <RocketOutlined />
+        </div>
+        <h2 class="section-title">登录后，这里就是你的<span class="highlight">项目工作台</span></h2>
         <p class="section-description">
-          首页会根据你的应用状态展示内容。没有应用时只提示如何创建，有应用后只展示应用卡片列表。
+          首页会根据你的项目状态展示内容。没有项目时只提示如何创建，有项目后只展示项目卡片列表。
         </p>
-        <a-button type="primary" size="large" @click="router.push('/user/login')">
-          去登录
-          <template #icon>
-            <ArrowRightOutlined />
-          </template>
-        </a-button>
+        <div class="welcome-actions">
+          <a-button type="primary" size="large" @click="router.push('/user/login')" class="cta-btn">
+            进入平台
+            <template #icon><ArrowRightOutlined /></template>
+          </a-button>
+        </div>
       </div>
     </section>
 
-    <section v-else-if="loading" class="apps-panel loading-panel">
+    <!-- Loading -->
+    <section v-else-if="loading" class="loading-panel">
       <a-spin size="large" />
     </section>
 
+    <!-- No Apps / Create Guide -->
     <section v-else-if="!hasApps" class="create-guide-panel">
       <div class="create-guide-card">
-        <p class="section-eyebrow">Create App</p>
-        <h2 class="section-title">你还没有应用</h2>
+        <div class="guide-icon">
+          <PlusOutlined />
+        </div>
+        <h2 class="section-title">你还没有<span class="highlight">项目</span></h2>
         <p class="section-description">
-          点击下方按钮直接进入生成对话。首次发送需求时，系统会自动创建应用并开始生成。
+          点击下方按钮直接进入生成对话。首次发送需求时，系统会自动创建项目并开始生成。
         </p>
         <div class="guide-actions">
-          <a-button type="primary" size="large" @click="openCreateChat()">
-            <template #icon>
-              <PlusOutlined />
-            </template>
-            创建应用
+          <a-button type="primary" size="large" @click="openCreateChat()" class="cta-btn">
+            <template #icon><PlusOutlined /></template>
+            创建项目
           </a-button>
         </div>
         <div class="example-list">
-          <span class="example-label">可以这样描述你的应用</span>
+          <span class="example-label">可以这样描述你的项目</span>
           <div class="example-tags">
-            <a-tag
+            <span
               v-for="example in promptExamples"
               :key="example"
               class="example-tag"
               @click="selectPromptExample(example)"
             >
               {{ example }}
-            </a-tag>
+            </span>
           </div>
         </div>
       </div>
     </section>
 
+    <!-- Apps Grid -->
     <section v-else class="apps-panel">
       <div class="section-header">
         <div>
-          <p class="section-eyebrow">My Apps</p>
-          <h2 class="section-title">我的应用列表</h2>
-          <p class="section-description">当前共 {{ total }} 个应用，以下以卡片形式展示。</p>
+          <p class="section-eyebrow">我的项目</p>
+          <h2 class="section-title">项目列表</h2>
+          <p class="section-description">当前共 {{ total }} 个项目</p>
         </div>
       </div>
 
       <div class="app-grid">
-        <a-card v-for="app in apps" :key="app.id" class="app-card" :bordered="false">
+        <a-card v-for="(app, idx) in apps" :key="app.id" class="app-card" :bordered="false"
+          :style="{ animationDelay: `${idx * 60}ms` }">
           <div class="cover-shell">
             <img v-if="app.cover" :src="app.cover" :alt="app.appName" class="cover-image" />
             <div v-else class="cover-fallback">
@@ -162,10 +163,10 @@ watch(
 
           <div class="app-body">
             <div class="app-heading">
-              <h3 class="app-name">{{ app.appName || '未命名应用' }}</h3>
+              <h3 class="app-name">{{ app.appName || '未命名项目' }}</h3>
             </div>
 
-            <p class="app-prompt">{{ app.initPrompt || '暂无应用描述' }}</p>
+            <p class="app-prompt">{{ app.initPrompt || '暂无项目描述' }}</p>
 
             <div class="app-meta">
               <span>创建时间：{{ formatTime(app.createTime, 'YYYY-MM-DD') || '未知' }}</span>
@@ -173,16 +174,12 @@ watch(
             </div>
 
             <div class="app-actions">
-              <a-button type="primary" @click="goToChat(app.id)">
-                <template #icon>
-                  <MessageOutlined />
-                </template>
+              <a-button type="primary" size="small" @click="goToChat(app.id)">
+                <template #icon><MessageOutlined /></template>
                 继续生成
               </a-button>
-              <a-button @click="goToEdit(app.id)">
-                <template #icon>
-                  <EditOutlined />
-                </template>
+              <a-button size="small" @click="goToEdit(app.id)">
+                <template #icon><EditOutlined /></template>
                 编辑信息
               </a-button>
             </div>
@@ -194,8 +191,8 @@ watch(
             <div class="add-app-icon">
               <PlusOutlined />
             </div>
-            <h3 class="add-app-title">添加应用</h3>
-            <p class="add-app-description">新建一个应用，继续开始新的生成任务</p>
+            <h3 class="add-app-title">添加项目</h3>
+            <p class="add-app-description">新建一个项目，继续开始新的生成任务</p>
           </div>
         </a-card>
       </div>
@@ -206,15 +203,11 @@ watch(
 <style scoped>
 #homePage {
   min-height: calc(100vh - 64px);
-  padding: 32px;
-  background:
-    radial-gradient(circle at top left, rgba(255, 194, 102, 0.28), transparent 28%),
-    radial-gradient(circle at top right, rgba(69, 120, 255, 0.2), transparent 24%),
-    linear-gradient(180deg, #fff9ef 0%, #f5f7fb 46%, #eef2f7 100%);
+  padding: 48px 32px;
 }
 
+.welcome-section,
 .apps-panel,
-.guest-panel,
 .create-guide-panel {
   max-width: 1240px;
   margin: 0 auto 28px;
@@ -222,38 +215,74 @@ watch(
 
 .create-guide-panel {
   display: flex;
-  min-height: calc(100vh - 64px - 92px);
+  min-height: calc(100vh - 64px - 140px);
 }
 
-.section-eyebrow,
-.example-label {
-  margin: 0 0 10px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: #b45309;
+/* Welcome Card */
+.welcome-card {
+  text-align: center;
+  padding: 64px 36px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
 }
 
-.section-description,
-.modal-tip {
-  margin: 14px 0 0;
-  max-width: 720px;
-  font-size: 16px;
-  line-height: 1.75;
-  color: #5f6b85;
+.welcome-icon {
+  font-size: 40px;
+  color: var(--accent-primary);
+  margin-bottom: 20px;
 }
 
-.apps-panel,
-.guest-card,
+/* Create Guide Card */
 .create-guide-card {
-  padding: 28px;
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(20, 30, 58, 0.08);
-  box-shadow: 0 20px 54px rgba(45, 62, 88, 0.08);
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 48px 36px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
 }
 
+.guide-icon {
+  font-size: 36px;
+  color: var(--accent-primary);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  background: var(--accent-primary-subtle);
+}
+
+/* Section Eyebrow */
+.section-eyebrow {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent-primary);
+}
+
+/* Section Description */
+.section-description {
+  margin: 12px 0 0;
+  max-width: 560px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+/* Loading */
 .loading-panel {
   display: flex;
   justify-content: center;
@@ -261,19 +290,7 @@ watch(
   min-height: 280px;
 }
 
-.create-guide-card {
-  width: 100%;
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.guide-actions {
-  display: flex;
-  margin-top: 24px;
-}
-
+/* Section Header */
 .section-header {
   display: flex;
   justify-content: space-between;
@@ -282,88 +299,122 @@ watch(
   margin-bottom: 24px;
 }
 
+/* Section Title */
 .section-title {
   margin: 0;
-  font-size: 30px;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   line-height: 1.2;
-  color: #172033;
+  color: var(--text-primary);
 }
 
+.highlight {
+  color: var(--accent-primary);
+}
+
+/* Actions */
+.welcome-actions,
+.guide-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.cta-btn {
+  height: 44px;
+  padding: 0 28px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* App Grid */
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
 }
 
+/* App Card */
 .app-card {
   overflow: hidden;
-  border-radius: 24px;
-  background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
-  box-shadow: 0 14px 30px rgba(20, 30, 58, 0.08);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-card);
+  transition: all 0.2s var(--ease-out);
+  animation: fade-in-up 0.4s var(--ease-out) both;
 }
 
+.app-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+  border-color: var(--border-strong);
+}
+
+/* Add App Card */
 .add-app-card {
   cursor: pointer;
-  min-height: 360px;
-  border: 1px dashed rgba(29, 78, 216, 0.28);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(239, 246, 255, 0.96) 100%);
-  transition:
-    transform 0.2s ease,
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
+  min-height: 380px;
+  border: 1px dashed var(--border-strong);
+  background: var(--bg-page);
+  transition: all 0.2s var(--ease-out);
 }
-
 .add-app-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 18px 36px rgba(20, 30, 58, 0.12);
-  border-color: rgba(29, 78, 216, 0.45);
+  box-shadow: var(--shadow-card-hover);
+  border-color: var(--accent-primary);
 }
 
 .add-app-content {
   height: 100%;
-  min-height: 360px;
+  min-height: 380px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 16px;
   text-align: center;
-  color: #172033;
 }
 
 .add-app-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 72px;
-  height: 72px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #dbeafe 0%, #ffedd5 100%);
-  font-size: 30px;
-  color: #1d4ed8;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: var(--accent-primary-subtle);
+  font-size: 24px;
+  color: var(--accent-primary);
+  transition: all 0.2s var(--ease-out);
+}
+.add-app-card:hover .add-app-icon {
+  background: var(--accent-primary-light);
 }
 
 .add-app-title {
   margin: 0;
-  font-size: 22px;
-  line-height: 1.3;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .add-app-description {
   max-width: 220px;
   margin: 0;
   font-size: 14px;
-  line-height: 1.7;
-  color: #5f6b85;
+  line-height: 1.6;
+  color: var(--text-secondary);
 }
 
+/* Cover Shell */
 .cover-shell {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 180px;
-  border-radius: 18px;
-  background: linear-gradient(135deg, #e0f2fe 0%, #ffedd5 100%);
+  background: var(--bg-subtle);
   overflow: hidden;
 }
 
@@ -375,13 +426,16 @@ watch(
 
 .cover-fallback {
   font-size: 48px;
-  color: #1d4ed8;
+  color: var(--text-muted);
+  opacity: 0.5;
 }
 
+/* App Body */
 .app-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
+  padding: 4px;
 }
 
 .app-heading {
@@ -393,84 +447,103 @@ watch(
 
 .app-name {
   margin: 0;
-  font-size: 20px;
+  font-size: 16px;
+  font-weight: 600;
   line-height: 1.35;
-  color: #172033;
+  color: var(--text-primary);
 }
 
 .app-prompt {
-  min-height: 72px;
+  min-height: 44px;
   margin: 0;
-  font-size: 14px;
-  line-height: 1.75;
-  color: #5f6b85;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
   display: -webkit-box;
   overflow: hidden;
-  line-clamp: 3;
-  -webkit-line-clamp: 3;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
 
 .app-meta {
   display: grid;
-  gap: 6px;
-  font-size: 13px;
-  color: #7a869e;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .app-actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
+  margin-top: 4px;
 }
 
-.create-panel {
-  display: grid;
-  gap: 16px;
-}
-
+/* Example Tags */
 .example-list {
   display: grid;
   gap: 10px;
+  margin-top: 28px;
+}
+
+.example-label {
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .example-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: center;
 }
 
 .example-tag {
   cursor: pointer;
-  padding: 6px 12px;
-  border-radius: 999px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  transition: all 0.15s var(--ease-out);
+}
+.example-tag:hover {
+  color: var(--accent-primary);
+  background: var(--accent-primary-subtle);
+  border-color: var(--accent-primary);
+}
+
+/* Override Ant Design card padding */
+.app-card :deep(.ant-card-body) {
+  padding: 16px;
+  background: transparent;
 }
 
 @media (max-width: 960px) {
   #homePage {
-    padding: 20px;
+    padding: 24px 20px;
   }
-
   .create-guide-panel {
     min-height: calc(100vh - 64px - 68px);
   }
-
   .section-header {
     flex-direction: column;
     align-items: stretch;
   }
+  .section-title {
+    font-size: 24px;
+  }
 }
 
 @media (max-width: 640px) {
-  .apps-panel,
-  .guest-card,
+  .welcome-card,
   .create-guide-card {
-    padding: 20px;
+    padding: 32px 20px;
   }
-
   .app-actions {
     flex-direction: column;
   }
-
   .app-grid {
     grid-template-columns: 1fr;
   }

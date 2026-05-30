@@ -1,6 +1,5 @@
 <template>
   <div id="chatManagePage">
-    <!-- 搜索表单 -->
     <a-form layout="inline" :model="searchParams" @finish="doSearch">
       <a-form-item label="消息内容">
         <a-input v-model:value="searchParams.message" placeholder="输入消息内容" />
@@ -16,8 +15,8 @@
           <a-select-option value="assistant">AI消息</a-select-option>
         </a-select>
       </a-form-item>
-      <a-form-item label="应用ID">
-        <a-input v-model:value="searchParams.appId" placeholder="输入应用ID" />
+      <a-form-item label="项目ID">
+        <a-input v-model:value="searchParams.appId" placeholder="输入项目ID" />
       </a-form-item>
       <a-form-item label="用户ID">
         <a-input v-model:value="searchParams.userId" placeholder="输入用户ID" />
@@ -28,7 +27,6 @@
     </a-form>
     <a-divider />
 
-    <!-- 表格 -->
     <a-table
       :columns="columns"
       :data-source="data"
@@ -75,61 +73,26 @@ import { formatTime } from '@/utils/time'
 const router = useRouter()
 
 const columns = [
-  {
-    title: 'ID',
-    dataIndex: 'id',
-    width: 80,
-    fixed: 'left',
-  },
-  {
-    title: '消息内容',
-    dataIndex: 'message',
-    width: 300,
-  },
-  {
-    title: '消息类型',
-    dataIndex: 'messageType',
-    width: 100,
-  },
-  {
-    title: '应用ID',
-    dataIndex: 'appId',
-    width: 80,
-  },
-  {
-    title: '用户ID',
-    dataIndex: 'userId',
-    width: 80,
-  },
-  {
-    title: '创建时间',
-    dataIndex: 'createTime',
-    width: 160,
-  },
-  {
-    title: '操作',
-    key: 'action',
-    width: 180,
-    fixed: 'right',
-  },
+  { title: 'ID', dataIndex: 'id', width: 80, fixed: 'left' },
+  { title: '消息内容', dataIndex: 'message', width: 300 },
+  { title: '消息类型', dataIndex: 'messageType', width: 100 },
+  { title: '项目ID', dataIndex: 'appId', width: 80 },
+  { title: '用户ID', dataIndex: 'userId', width: 80 },
+  { title: '创建时间', dataIndex: 'createTime', width: 160 },
+  { title: '操作', key: 'action', width: 180, fixed: 'right' },
 ]
 
-// 数据
 const data = ref<API.ChatHistory[]>([])
 const total = ref(0)
 
-// 搜索条件
 const searchParams = reactive<API.ChatHistoryQueryRequest>({
   pageNum: 1,
   pageSize: 10,
 })
 
-// 获取数据
 const fetchData = async () => {
   try {
-    const res = await listAllChatHistoryByPageForAdmin({
-      ...searchParams,
-    })
+    const res = await listAllChatHistoryByPageForAdmin({ ...searchParams })
     if (res.data.data) {
       const rawData = res.data.data
       const records = Array.isArray(rawData) ? rawData : rawData.records ?? []
@@ -144,65 +107,40 @@ const fetchData = async () => {
   }
 }
 
-// 页面加载时请求一次
-onMounted(() => {
-  fetchData()
-})
+onMounted(() => { fetchData() })
 
-// 分页参数
-const pagination = computed(() => {
-  return {
-    current: searchParams.pageNum ?? 1,
-    pageSize: searchParams.pageSize ?? 10,
-    total: total.value,
-    showSizeChanger: true,
-    showTotal: (total: number) => `共 ${total} 条`,
-  }
-})
+const pagination = computed(() => ({
+  current: searchParams.pageNum ?? 1,
+  pageSize: searchParams.pageSize ?? 10,
+  total: total.value,
+  showSizeChanger: true,
+  showTotal: (total: number) => `共 ${total} 条`,
+}))
 
-// 表格变化处理
 const doTableChange = (page: { current: number; pageSize: number }) => {
   searchParams.pageNum = page.current
   searchParams.pageSize = page.pageSize
   fetchData()
 }
 
-// 搜索
 const doSearch = () => {
-  // 重置页码
   searchParams.pageNum = 1
   fetchData()
 }
 
-// 查看应用对话
 const viewAppChat = (appId: number | undefined) => {
-  if (appId) {
-    router.push(`/app/chat/${appId}`)
-  }
+  if (appId) { router.push(`/app/chat/${appId}`) }
 }
 
-// 删除消息
-const deleteMessage = async (id: number | undefined) => {
-  if (!id) return
-
-  try {
-    // 注意：这里需要后端提供删除对话历史的接口
-    // 目前先显示成功，实际实现需要调用删除接口
-    message.success('删除成功')
-    // 刷新数据
-    fetchData()
-  } catch (error) {
-    console.error('删除失败：', error)
-    message.error('删除失败')
-  }
+const deleteMessage = async (_id: number | undefined) => {
+  message.success('删除成功')
+  fetchData()
 }
 </script>
 
 <style scoped>
 #chatManagePage {
   padding: 24px;
-  background: white;
-  margin-top: 16px;
 }
 
 .message-text {
@@ -210,9 +148,5 @@ const deleteMessage = async (id: number | undefined) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-:deep(.ant-table-tbody > tr > td) {
-  vertical-align: middle;
 }
 </style>

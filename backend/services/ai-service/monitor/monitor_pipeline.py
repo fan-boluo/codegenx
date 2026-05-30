@@ -8,6 +8,7 @@ from typing import Any
 
 from agent.runtime_schema import RuntimeSessionState, ActivateTurn
 from bot.agent.agent_schema import AgentState
+from compact import AUTOCOMPACT_THRESHOLD
 from monitor.alert_evaluator import get_alert_streak_tracker
 from monitor.metric_collector import MetricCollector
 from monitor.monitor_store import MonitorStore, get_monitor_store
@@ -267,7 +268,7 @@ class MonitorPipeline:
         prompt_tokens = int(kwargs.get("prompt_tokens", 0) or 0)
         projected_total_tokens = int(kwargs.get("projected_total_tokens", 0) or 0)
         telemetry.token_count = prompt_tokens
-        telemetry.token_usage = projected_total_tokens
+        telemetry.token_usage = projected_total_tokens / AUTOCOMPACT_THRESHOLD
 
         metric_collector = self._metric_collectors.get(session.session_id)
         if metric_collector and turn_span_id:

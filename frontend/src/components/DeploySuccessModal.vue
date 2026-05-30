@@ -1,10 +1,10 @@
 <template>
-  <a-modal v-model:open="visible" title="部署成功" :footer="null" width="600px">
+  <a-modal v-model:open="visible" title="部署成功" :footer="null" width="480px">
     <div class="deploy-success">
       <div class="success-icon">
-        <CheckCircleOutlined style="color: #52c41a; font-size: 48px" />
+        <CheckCircleOutlined />
       </div>
-      <h3>网站部署成功！</h3>
+      <h3>网站部署成功</h3>
       <p>你的网站已经成功部署，可以通过以下链接访问：</p>
       <div class="deploy-url">
         <a-input :value="deployUrl" readonly>
@@ -56,38 +56,36 @@ const handleCopyUrl = async () => {
   }
 }
 
-const handleOpenSite = () => {
-  emit('open-site')
-}
-
-const handleClose = () => {
-  visible.value = false
-}
+const handleOpenSite = () => { emit('open-site') }
+const handleClose = () => { visible.value = false }
 </script>
 
 <style scoped>
 .deploy-success {
   text-align: center;
-  padding: 24px;
+  padding: 24px 16px;
 }
 
 .success-icon {
   margin-bottom: 16px;
+  font-size: 48px;
+  color: #10B981;
 }
 
 .deploy-success h3 {
-  margin: 0 0 16px;
-  font-size: 20px;
+  margin: 0 0 8px;
+  font-size: 18px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .deploy-success p {
-  margin: 0 0 24px;
-  color: #666;
+  margin: 0 0 20px;
+  color: var(--text-secondary);
 }
 
 .deploy-url {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .deploy-actions {

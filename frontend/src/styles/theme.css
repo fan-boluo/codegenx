@@ -1,0 +1,279 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Backgrounds */
+  --bg-page: #F8FAFC;
+  --bg-surface: #FFFFFF;
+  --bg-subtle: #F1F5F9;
+  --bg-hover: #F8FAFC;
+
+  /* Accent Colors */
+  --accent-primary: #2563EB;
+  --accent-primary-hover: #1D4ED8;
+  --accent-primary-light: #DBEAFE;
+  --accent-primary-subtle: #EFF6FF;
+
+  /* Text */
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #94A3B8;
+  --text-inverse: #FFFFFF;
+
+  /* Borders */
+  --border-default: #E2E8F0;
+  --border-strong: #CBD5E1;
+  --border-accent: #2563EB;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.12);
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Sizing */
+  --header-height: 64px;
+}
+
+/* Global Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* Ant Design Light Theme Overrides */
+.ant-btn {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 14px;
+  border-radius: 6px;
+  transition: all 0.2s var(--ease-out);
+  box-shadow: none;
+}
+
+.ant-btn-primary {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: var(--text-inverse);
+  box-shadow: var(--shadow-sm);
+}
+.ant-btn-primary:hover {
+  background: var(--accent-primary-hover) !important;
+  border-color: var(--accent-primary-hover) !important;
+  color: var(--text-inverse) !important;
+  box-shadow: var(--shadow-card);
+}
+
+.ant-btn-default {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+.ant-btn-default:hover {
+  border-color: var(--accent-primary) !important;
+  color: var(--accent-primary) !important;
+  background: var(--accent-primary-subtle) !important;
+}
+
+.ant-btn-danger {
+  background: var(--bg-surface);
+  border: 1px solid #FECACA;
+  color: #DC2626;
+}
+.ant-btn-danger:hover {
+  background: #FEF2F2 !important;
+  border-color: #DC2626 !important;
+  color: #DC2626 !important;
+}
+
+.ant-btn-link {
+  color: var(--accent-primary);
+}
+.ant-btn-link:hover {
+  color: var(--accent-primary-hover) !important;
+}
+
+.ant-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+}
+.ant-card-head {
+  border-bottom-color: var(--border-default);
+}
+
+.ant-input,
+.ant-input-number,
+.ant-input-number-input,
+.ant-picker {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+.ant-input:hover,
+.ant-input-number:hover,
+.ant-input:focus,
+.ant-input-number:focus,
+.ant-input-number-focused {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+.ant-input::placeholder {
+  color: var(--text-muted);
+}
+
+.ant-modal-content {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  box-shadow: var(--shadow-modal);
+}
+.ant-modal-header {
+  background: transparent;
+  border-bottom-color: var(--border-default);
+}
+.ant-modal-title {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ant-layout {
+  background: transparent !important;
+}
+.ant-layout-header {
+  background: transparent !important;
+}
+.ant-layout-footer {
+  background: transparent !important;
+}
+
+.ant-menu {
+  background: transparent !important;
+  border-bottom: none !important;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 14px;
+}
+.ant-menu-horizontal {
+  line-height: var(--header-height);
+}
+.ant-menu-item {
+  color: var(--text-secondary);
+}
+.ant-menu-item:hover {
+  color: var(--accent-primary) !important;
+}
+.ant-menu-item-selected {
+  color: var(--accent-primary) !important;
+  font-weight: 600;
+}
+.ant-menu-item-selected::after {
+  border-bottom-color: var(--accent-primary) !important;
+  border-bottom-width: 2px !important;
+}
+
+.ant-tag {
+  font-family: var(--font-sans);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.ant-message {
+  font-family: var(--font-sans);
+}
+
+.ant-spin-dot-item {
+  background: var(--accent-primary);
+}
+
+.ant-alert {
+  border-radius: 8px;
+}
+
+.ant-divider {
+  border-top-color: var(--border-default);
+}
+
+.ant-table {
+  background: var(--bg-surface);
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+.ant-table-thead > tr > th {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.ant-descriptions-item-label {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.ant-form-item-label > label {
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.ant-input-show-count-suffix {
+  color: var(--text-muted);
+}
+
+.ant-select-selector {
+  border-radius: 6px !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Keyframes — keep only essential */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}

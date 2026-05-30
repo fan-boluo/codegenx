@@ -669,8 +669,6 @@ onMounted(async () => {
 <style scoped>
 #monitorManagePage {
   padding: 24px;
-  background: #fff;
-  margin-top: 16px;
 }
 
 .summary-row {
@@ -698,9 +696,9 @@ onMounted(async () => {
 
 .health-component-item {
   padding: 12px;
-  border-radius: 10px;
-  background: #fafcff;
-  border: 1px solid #e6f4ff;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
 }
 
 .health-component-title {
@@ -732,9 +730,9 @@ onMounted(async () => {
 
 .chart-card {
   position: relative;
-  background: linear-gradient(180deg, #f7fbff 0%, #eef5ff 100%);
-  border: 1px solid #d7e7ff;
-  border-radius: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
   padding: 12px;
   min-height: 220px;
 }
@@ -745,19 +743,19 @@ onMounted(async () => {
 }
 
 .axis-line {
-  stroke: #adc6ff;
+  stroke: var(--border-strong);
   stroke-width: 1;
 }
 
 .chart-line {
-  stroke: #1677ff;
+  stroke: var(--accent-primary);
   stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .chart-dot {
-  fill: #1677ff;
+  fill: var(--accent-primary);
 }
 
 .chart-empty {

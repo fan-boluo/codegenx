@@ -25,7 +25,7 @@ const router = createRouter({
     },
     {
       path: '/admin/appManage',
-      name: '应用管理',
+      name: '项目管理',
       component: () => import('@/pages/admin/AppManagePage.vue'),
     },
     {
@@ -40,12 +40,12 @@ const router = createRouter({
     },
     {
       path: '/app/chat/:id?',
-      name: '应用对话',
+      name: '项目对话',
       component: () => import('@/pages/app/AppChatPage.vue'),
     },
     {
       path: '/app/edit/:id',
-      name: '编辑应用',
+      name: '编辑项目',
       component: () => import('@/pages/app/AppEditPage.vue'),
     },
   ],

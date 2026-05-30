@@ -1,49 +1,41 @@
 <template>
   <a-layout-header class="header">
-    <a-row :wrap="false">
-      <!-- 左侧：Logo和标题 -->
-      <a-col flex="200px">
-        <RouterLink to="/">
-          <div class="header-left">
-            <img class="logo" src="@/assets/logo.png" alt="Logo" />
-            <h1 class="site-title">智能代码生成</h1>
-          </div>
-        </RouterLink>
-      </a-col>
-      <!-- 中间：导航菜单 -->
-      <a-col flex="auto">
-        <a-menu
-          v-model:selectedKeys="selectedKeys"
-          mode="horizontal"
-          :items="menuItems"
-          @click="handleMenuClick"
-        />
-      </a-col>
-      <!-- 右侧：用户操作区域 -->
-      <a-col>
-        <div class="user-login-status">
-          <div v-if="loginUserStore.loginUser.id">
-            <a-dropdown>
-              <a-space>
-                <a-avatar :src="loginUserStore.loginUser.userAvatar" />
-                {{ loginUserStore.loginUser.userName ?? '无名' }}
-              </a-space>
-              <template #overlay>
-                <a-menu>
-                  <a-menu-item @click="doLogout">
-                    <LogoutOutlined />
-                    退出登录
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </div>
-          <div v-else>
-            <a-button type="primary" href="/user/login">登录</a-button>
-          </div>
+    <div class="header-inner">
+      <RouterLink to="/" class="header-brand">
+        <span class="site-title">CodeGen<span class="title-accent">X</span></span>
+      </RouterLink>
+
+      <a-menu
+        v-model:selectedKeys="selectedKeys"
+        mode="horizontal"
+        :items="menuItems"
+        @click="handleMenuClick"
+        class="nav-menu"
+        :overflowedIndicator="null"
+      />
+
+      <div class="user-area">
+        <div v-if="loginUserStore.loginUser.id" class="user-info">
+          <a-dropdown>
+            <a-space class="user-trigger">
+              <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="32" />
+              <span class="user-name">{{ loginUserStore.loginUser.userName ?? '无名' }}</span>
+            </a-space>
+            <template #overlay>
+              <a-menu>
+                <a-menu-item @click="doLogout">
+                  <LogoutOutlined />
+                  退出登录
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
         </div>
-      </a-col>
-    </a-row>
+        <div v-else>
+          <a-button type="primary" href="/user/login" size="small">登录</a-button>
+        </div>
+      </div>
+    </div>
   </a-layout-header>
 </template>
 
@@ -63,26 +55,24 @@ import {
 
 const loginUserStore = useLoginUserStore()
 const router = useRouter()
-// 当前选中菜单
 const selectedKeys = ref<string[]>(['/'])
-// 监听路由变化，更新当前选中菜单
+
 router.afterEach((to) => {
   selectedKeys.value = [to.path]
 })
 
-// 菜单配置项
 const originItems = [
   {
     key: '/',
     icon: () => h(HomeOutlined),
-    label: '我的应用',
-    title: '我的应用',
+    label: '我的项目',
+    title: '我的项目',
   },
   {
     key: '/admin/appManage',
     icon: () => h(AppstoreOutlined),
-    label: '应用管理',
-    title: '应用管理',
+    label: '项目管理',
+    title: '项目管理',
   },
   {
     key: '/admin/userManage',
@@ -104,7 +94,6 @@ const originItems = [
   },
 ]
 
-// 过滤菜单项
 const filterMenus = (menus = [] as MenuProps['items']) => {
   return menus?.filter((menu) => {
     const menuKey = menu?.key as string
@@ -118,26 +107,20 @@ const filterMenus = (menus = [] as MenuProps['items']) => {
   })
 }
 
-// 展示在菜单的路由数组
 const menuItems = computed<MenuProps['items']>(() => filterMenus(originItems))
 
-// 处理菜单点击
 const handleMenuClick: MenuProps['onClick'] = (e) => {
   const key = e.key as string
   selectedKeys.value = [key]
-  // 跳转到对应页面
   if (key.startsWith('/')) {
     router.push(key)
   }
 }
 
-// 退出登录
 const doLogout = async () => {
   const res = await userLogout()
   if (res.data.code === 0) {
-    loginUserStore.setLoginUser({
-      userName: '未登录',
-    })
+    loginUserStore.setLoginUser({ userName: '未登录' })
     message.success('退出登录成功')
     await router.push('/user/login')
   } else {
@@ -148,28 +131,123 @@ const doLogout = async () => {
 
 <style scoped>
 .header {
-  background: #fff;
-  padding: 0 24px;
-}
-
-.header-left {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: var(--header-height);
+  padding: 0 32px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
   display: flex;
   align-items: center;
-  gap: 12px;
 }
 
-.logo {
-  height: 48px;
-  width: 48px;
+.header-inner {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  gap: 0;
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  flex-shrink: 0;
 }
 
 .site-title {
-  margin: 0;
-  font-size: 18px;
-  color: #1890ff;
+  font-family: var(--font-sans);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 
-.ant-menu-horizontal {
+.title-accent {
+  color: var(--accent-primary);
+  font-weight: 700;
+}
+
+.nav-menu {
+  background: transparent !important;
+  flex: 1;
+  min-width: 0;
+  overflow: visible !important;
+  display: flex;
+  justify-content: center;
   border-bottom: none !important;
+}
+
+.nav-menu :deep(.ant-menu-overflow) {
+  display: none !important;
+}
+
+.nav-menu :deep(.ant-menu-overflow-item) {
+  display: none !important;
+}
+
+.nav-menu :deep(.ant-menu-item),
+.nav-menu :deep(.ant-menu-submenu) {
+  display: inline-flex !important;
+}
+
+.nav-menu :deep(.ant-menu-item) {
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  margin: 0 2px;
+  padding: 0 16px;
+  transition: all 0.15s var(--ease-out);
+}
+
+.nav-menu :deep(.ant-menu-item:hover) {
+  color: var(--accent-primary) !important;
+  background: var(--accent-primary-subtle);
+}
+
+.nav-menu :deep(.ant-menu-item-selected) {
+  color: var(--accent-primary) !important;
+  background: transparent;
+  font-weight: 600;
+}
+
+.nav-menu :deep(.ant-menu-item-selected::after) {
+  border-bottom: 2px solid var(--accent-primary) !important;
+}
+
+.user-area {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.user-trigger {
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 6px;
+  transition: background 0.15s var(--ease-out);
+}
+
+.user-trigger:hover {
+  background: var(--bg-hover);
+}
+
+.user-name {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
 }
 </style>

@@ -1,37 +1,69 @@
 <template>
   <a-layout-footer class="footer">
     <div class="footer-content">
-      <p class="copyright">
-        <a
-          href="https://www.codefather.cn"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="author-link"
-        >
-          编程导航原创项目
-        </a>
-      </p>
+      <div class="footer-brand">
+        <span class="brand-name">CodeGen<span class="brand-accent">X</span></span>
+        <span class="brand-divider">|</span>
+        <span class="brand-tagline">AI 驱动的数据应用平台</span>
+      </div>
+      <p class="copyright">© {{ currentYear }} CodeGenX. All rights reserved.</p>
     </div>
   </a-layout-footer>
 </template>
 
 <script setup lang="ts">
-// 无需额外的响应式数据
+const currentYear = new Date().getFullYear()
 </script>
 
 <style scoped>
 .footer {
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(10px);
   text-align: center;
-  padding: 20px;
-  margin-top: 40px;
-  border-top: 1px solid rgba(102, 126, 234, 0.1);
+  padding: 24px 24px 32px;
+  margin-top: 64px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-default);
+}
+
+.footer-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+
+.brand-name {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.brand-accent {
+  color: var(--accent-primary);
+  font-weight: 700;
+}
+
+.brand-divider {
+  color: var(--border-strong);
+  font-weight: 300;
+}
+
+.brand-tagline {
+  color: var(--text-secondary);
+  font-weight: 400;
 }
 
 .copyright {
   margin: 0;
-  color: #666;
-  font-size: 14px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 </style>

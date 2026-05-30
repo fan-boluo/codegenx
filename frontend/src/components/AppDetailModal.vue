@@ -1,37 +1,37 @@
 <template>
-  <a-modal v-model:open="visible" title="应用详情" :footer="null" width="500px">
+  <a-modal
+    v-model:open="visible"
+    title="项目详情"
+    :footer="null"
+    width="480px"
+  >
     <div class="app-detail-content">
-      <!-- 应用基础信息 -->
       <div class="app-basic-info">
         <div class="info-item">
-          <span class="info-label">创建者：</span>
+          <span class="info-label">创建者</span>
           <UserInfo :user="app?.user" size="small" />
         </div>
+        <div class="info-divider"></div>
         <div class="info-item">
-          <span class="info-label">创建时间：</span>
-          <span>{{ formatTime(app?.createTime) }}</span>
+          <span class="info-label">创建时间</span>
+          <span class="info-value">{{ formatTime(app?.createTime) }}</span>
         </div>
       </div>
 
-      <!-- 操作栏（仅本人或管理员可见） -->
       <div v-if="showActions" class="app-actions">
         <a-space>
           <a-button type="primary" @click="handleEdit">
-            <template #icon>
-              <EditOutlined />
-            </template>
+            <template #icon><EditOutlined /></template>
             修改
           </a-button>
           <a-popconfirm
-            title="确定要删除这个应用吗？"
+            title="确定要删除这个项目吗？"
             @confirm="handleDelete"
             ok-text="确定"
             cancel-text="取消"
           >
             <a-button danger>
-              <template #icon>
-                <DeleteOutlined />
-              </template>
+              <template #icon><DeleteOutlined /></template>
               删除
             </a-button>
           </a-popconfirm>
@@ -70,39 +70,52 @@ const visible = computed({
   set: (value) => emit('update:open', value),
 })
 
-const handleEdit = () => {
-  emit('edit')
-}
-
-const handleDelete = () => {
-  emit('delete')
-}
+const handleEdit = () => { emit('edit') }
+const handleDelete = () => { emit('delete') }
 </script>
 
 <style scoped>
 .app-detail-content {
-  padding: 8px 0;
+  padding: 4px 0;
 }
 
 .app-basic-info {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 16px;
 }
 
 .info-item {
   display: flex;
   align-items: center;
-  margin-bottom: 12px;
+  padding: 6px 0;
+}
+
+.info-divider {
+  height: 1px;
+  background: var(--border-default);
+  margin: 8px 0;
 }
 
 .info-label {
   width: 80px;
-  color: #666;
-  font-size: 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   flex-shrink: 0;
+}
+
+.info-value {
+  color: var(--text-primary);
+  font-size: 14px;
 }
 
 .app-actions {
   padding-top: 16px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--border-default);
 }
 </style>

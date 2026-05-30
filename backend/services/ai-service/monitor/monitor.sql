@@ -1,12 +1,12 @@
 CREATE TABLE `spans` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `app_id` varchar(64) NOT NULL DEFAULT 'main',
-  `user_id` varchar(64) DEFAULT '',
-  `trace_id` char(32) NOT NULL,
-  `span_id` char(16) NOT NULL,
-  `parent_span_id` char(16) DEFAULT NULL,
-  `session_id` varchar(64) NOT NULL,
-  `request_id` varchar(64) DEFAULT '',
+  `app_id` varchar(10) NOT NULL DEFAULT '',
+  `user_id` varchar(10) DEFAULT '',
+  `trace_id` VARCHAR(32) NOT NULL,
+  `span_id` VARCHAR(32) NOT NULL,
+  `parent_span_id` VARCHAR(32) DEFAULT NULL,
+  `session_id` VARCHAR(32) NOT NULL,
+  `request_id` VARCHAR(32) DEFAULT '',
   `step_counter` int DEFAULT '0',
   `operation_type` varchar(20) NOT NULL,
   `start_time` datetime(3) NOT NULL,
@@ -22,13 +22,13 @@ CREATE TABLE `spans` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 
 CREATE TABLE session_metrics (
-    session_id VARCHAR(64) PRIMARY KEY,
-    trace_id CHAR(32) NOT NULL,
-    request_id VARCHAR(64) NOT NULL DEFAULT '',
-    app_id VARCHAR(64) NOT NULL DEFAULT 'main',
-    user_id VARCHAR(64),
+    session_id VARCHAR(32) PRIMARY KEY,
+    trace_id VARCHAR(32) NOT NULL,
+    request_id VARCHAR(32) NOT NULL DEFAULT '',
+    app_id VARCHAR(10) NOT NULL DEFAULT '',
+    user_id VARCHAR(10),
     model VARCHAR(32) NOT NULL DEFAULT 'unknown',
-    span_id VARCHAR(64) NOT NULL DEFAULT '',
+    span_id VARCHAR(32) NOT NULL DEFAULT '',
 
     status VARCHAR(16) DEFAULT 'running',
     end_reason VARCHAR(32),
@@ -59,14 +59,14 @@ CREATE TABLE session_metrics (
 );
 
 CREATE TABLE turn_metrics (
-    turn_id VARCHAR(64) PRIMARY KEY,
-    session_id VARCHAR(64) NOT NULL,
-    trace_id CHAR(32) NOT NULL,
-    request_id VARCHAR(64) NOT NULL DEFAULT '',
-    app_id VARCHAR(64) NOT NULL DEFAULT 'main',
-    user_id VARCHAR(64),
+    turn_id VARCHAR(32) PRIMARY KEY,
+    session_id VARCHAR(32) NOT NULL,
+    trace_id VARCHAR(32) NOT NULL,
+    request_id VARCHAR(32) NOT NULL DEFAULT '',
+    app_id VARCHAR(10) NOT NULL DEFAULT '',
+    user_id VARCHAR(10) NOT NULL DEFAULT '',
     model VARCHAR(32) NOT NULL DEFAULT 'unknown',
-    span_id VARCHAR(64) NOT NULL DEFAULT '',
+    span_id VARCHAR(32) NOT NULL DEFAULT '',
 
     status VARCHAR(16) DEFAULT 'running',
     end_reason VARCHAR(32),

@@ -3,32 +3,35 @@
     <div class="app-preview">
       <img v-if="app.cover" :src="app.cover" :alt="app.appName" />
       <div v-else class="app-placeholder">
-        <span>🤖</span>
+        <RocketOutlined />
       </div>
       <div class="app-overlay">
         <a-space>
-          <a-button type="primary" @click="handleViewChat">查看对话</a-button>
-          <a-button v-if="app.deployKey" type="default" @click="handleViewWork">查看作品</a-button>
+          <a-button type="primary" size="small" @click="handleViewChat">查看对话</a-button>
+          <a-button v-if="app.deployKey" size="small" @click="handleViewWork">查看作品</a-button>
         </a-space>
       </div>
     </div>
     <div class="app-info">
       <div class="app-info-left">
-        <a-avatar :src="app.user?.userAvatar" :size="40">
+        <a-avatar :src="app.user?.userAvatar" :size="36">
           {{ app.user?.userName?.charAt(0) || 'U' }}
         </a-avatar>
       </div>
       <div class="app-info-right">
-        <h3 class="app-title">{{ app.appName || '未命名应用' }}</h3>
+        <h3 class="app-title">{{ app.appName || '未命名项目' }}</h3>
         <p class="app-author">
           {{ app.user?.userName || (featured ? '官方' : '未知用户') }}
         </p>
       </div>
     </div>
+    <div v-if="featured" class="featured-badge">精选</div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { RocketOutlined } from '@ant-design/icons-vue'
+
 interface Props {
   app: API.AppVO
   featured?: boolean
@@ -56,31 +59,47 @@ const handleViewWork = () => {
 
 <style scoped>
 .app-card {
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 16px;
+  background: var(--bg-surface);
+  border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  transition:
-    transform 0.3s,
-    box-shadow 0.3s;
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-card);
+  transition: all 0.2s var(--ease-out);
   cursor: pointer;
+  position: relative;
 }
 
 .app-card:hover {
-  transform: translateY(-8px);
-  box-shadow: 0 15px 50px rgba(0, 0, 0, 0.25);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+  border-color: var(--border-strong);
+}
+
+.app-card--featured {
+  border-color: var(--accent-primary-light);
+}
+
+.featured-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: var(--accent-primary-subtle);
+  color: var(--accent-primary);
+  z-index: 5;
 }
 
 .app-preview {
   height: 180px;
-  background: #f5f5f5;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
   position: relative;
+  background: var(--bg-subtle);
 }
 
 .app-preview img {
@@ -91,32 +110,29 @@ const handleViewWork = () => {
 
 .app-placeholder {
   font-size: 48px;
-  color: #d9d9d9;
+  color: var(--text-muted);
+  opacity: 0.4;
 }
 
 .app-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  inset: 0;
+  background: rgba(15, 23, 42, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
   opacity: 0;
-  transition: opacity 0.3s;
+  transition: opacity 0.2s var(--ease-out);
 }
-
 .app-card:hover .app-overlay {
   opacity: 1;
 }
 
 .app-info {
-  padding: 16px;
+  padding: 14px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .app-info-left {
@@ -129,18 +145,18 @@ const handleViewWork = () => {
 }
 
 .app-title {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
-  margin: 0 0 4px;
-  color: #1a1a1a;
+  margin: 0 0 2px;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .app-author {
-  font-size: 14px;
-  color: #666;
+  font-size: 12px;
+  color: var(--text-muted);
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
