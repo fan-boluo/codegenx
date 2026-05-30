@@ -9,9 +9,9 @@ from typing import Any
 import httpx
 from fastapi.responses import StreamingResponse
 
-from services.discovery_adapter import discovery_adapter
 from shared.config.config import get_settings
 from shared.config.log_config import log
+from services.discovery_adapter import discovery_adapter
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
 from shared.schema.service_invocation import ServiceInvocationError

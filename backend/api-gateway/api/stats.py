@@ -11,6 +11,9 @@ from proxy.ai_monitor_proxy import AiMonitorProxy
 from shared.constants import UserRole
 from shared.schema.common import BaseResponse, PageData
 from shared.schema.monitor import (
+    MonitorAlertRecordVO,
+    MonitorCleanupSummary,
+    MonitorHealthStatus,
     MonitorOverviewStats,
     MonitorSessionDetail,
     MonitorSessionSummary,
@@ -122,3 +125,62 @@ async def get_monitor_metrics(
         trace_id=getattr(request.state, "trace_id", None),
     )
     return PlainTextResponse(payload)
+
+
+@router.get("/admin/monitor/alerts", response_model=BaseResponse[PageData[MonitorAlertRecordVO]])
+async def list_monitor_alerts(
+    request: Request,
+    page_num: int = Query(default=1, alias="pageNum"),
+    page_size: int = Query(default=10, alias="pageSize"),
+    status: str | None = None,
+    level: str | None = None,
+    rule_name: str | None = Query(default=None, alias="ruleName"),
+    session_id: str | None = Query(default=None, alias="sessionId"),
+    login_user: JWTUser = Depends(require_role(UserRole.ADMIN)),
+) -> BaseResponse[PageData[MonitorAlertRecordVO]]:
+    del login_user
+    payload = await AiMonitorProxy().request_json(
+        method="GET",
+        path="/internal/monitor/alerts",
+        params={
+            "pageNum": page_num,
+            "pageSize": page_size,
+            "status": status,
+            "level": level,
+            "ruleName": rule_name,
+            "sessionId": session_id,
+        },
+        trace_id=getattr(request.state, "trace_id", None),
+    )
+    return success(PageData[MonitorAlertRecordVO].model_validate(payload))
+
+
+@router.get("/admin/monitor/health", response_model=BaseResponse[MonitorHealthStatus])
+async def get_monitor_health(
+    request: Request,
+    login_user: JWTUser = Depends(require_role(UserRole.ADMIN)),
+) -> BaseResponse[MonitorHealthStatus]:
+    del login_user
+    payload = await AiMonitorProxy().request_json(
+        method="GET",
+        path="/internal/monitor/health",
+        trace_id=getattr(request.state, "trace_id", None),
+    )
+    return success(MonitorHealthStatus.model_validate(payload))
+
+
+@router.post("/admin/monitor/cleanup", response_model=BaseResponse[MonitorCleanupSummary])
+async def cleanup_monitor_history(
+    request: Request,
+    retention_days: int = Query(default=7, alias="retentionDays"),
+    dry_run: bool = Query(default=False, alias="dryRun"),
+    login_user: JWTUser = Depends(require_role(UserRole.ADMIN)),
+) -> BaseResponse[MonitorCleanupSummary]:
+    del login_user
+    payload = await AiMonitorProxy().request_json(
+        method="POST",
+        path="/internal/monitor/cleanup",
+        params={"retentionDays": retention_days, "dryRun": dry_run},
+        trace_id=getattr(request.state, "trace_id", None),
+    )
+    return success(MonitorCleanupSummary.model_validate(payload))

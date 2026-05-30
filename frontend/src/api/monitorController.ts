@@ -1,7 +1,7 @@
 import request from '@/request'
 
 export async function getMonitorOverview(options?: { [key: string]: any }) {
-  return request('/stats/admin/monitor/overview', {
+  return request('/api/stats/admin/monitor/overview', {
     method: 'GET',
     ...(options || {}),
   })
@@ -11,7 +11,7 @@ export async function listMonitorSessions(
   params?: Record<string, unknown>,
   options?: { [key: string]: any }
 ) {
-  return request('/stats/admin/monitor/sessions', {
+  return request('/api/stats/admin/monitor/sessions', {
     method: 'GET',
     params: {
       ...(params || {}),
@@ -21,7 +21,7 @@ export async function listMonitorSessions(
 }
 
 export async function getMonitorSessionDetail(sessionId: string, options?: { [key: string]: any }) {
-  return request(`/stats/admin/monitor/sessions/${sessionId}`, {
+  return request(`/api/stats/admin/monitor/sessions/${sessionId}`, {
     method: 'GET',
     ...(options || {}),
   })
@@ -32,7 +32,7 @@ export async function getMonitorTurnDetail(
   turnId: string,
   options?: { [key: string]: any }
 ) {
-  return request(`/stats/admin/monitor/sessions/${sessionId}/turns/${turnId}`, {
+  return request(`/api/stats/admin/monitor/sessions/${sessionId}/turns/${turnId}`, {
     method: 'GET',
     ...(options || {}),
   })
@@ -42,7 +42,7 @@ export async function listMonitorAlerts(
   params?: Record<string, unknown>,
   options?: { [key: string]: any }
 ) {
-  return request('/stats/admin/monitor/alerts', {
+  return request('/api/stats/admin/monitor/alerts', {
     method: 'GET',
     params: {
       ...(params || {}),
@@ -52,14 +52,14 @@ export async function listMonitorAlerts(
 }
 
 export async function getMonitorConfig(options?: { [key: string]: any }) {
-  return request('/stats/admin/monitor/config', {
+  return request('/api/stats/admin/monitor/config', {
     method: 'GET',
     ...(options || {}),
   })
 }
 
 export async function getMonitorHealth(options?: { [key: string]: any }) {
-  return request('/stats/admin/monitor/health', {
+  return request('/api/stats/admin/monitor/health', {
     method: 'GET',
     ...(options || {}),
   })
@@ -69,7 +69,7 @@ export async function cleanupMonitorHistory(
   params?: { retentionDays?: number; dryRun?: boolean },
   options?: { [key: string]: any }
 ) {
-  return request('/stats/admin/monitor/cleanup', {
+  return request('/api/stats/admin/monitor/cleanup', {
     method: 'POST',
     params: {
       ...(params || {}),

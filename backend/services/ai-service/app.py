@@ -18,17 +18,25 @@ LOCAL_SERVICES_ROOT = Path(__file__).resolve().parent / "services"
 if str(LOCAL_SERVICES_ROOT) not in sys.path:
 	sys.path.insert(0, str(LOCAL_SERVICES_ROOT))
 
+from datetime import datetime, timezone
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from monitor.maintenance_service import get_monitor_maintenance_service
 from monitor.monitor_query_service import get_monitor_query_service
+from core.service_registry import AiServiceRegistry
 from shared.config.config import get_settings
 from shared.config.log_config import log
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
-from shared.schema.monitor import MonitorSessionQueryRequest
+from shared.schema.monitor import (
+    MonitorAlertQueryRequest,
+    MonitorComponentHealth,
+    MonitorHealthStatus,
+    MonitorSessionQueryRequest,
+)
 from shared.schema.ai_service import (
     AiServiceGenerateRequest,
 	AiServiceStopRequest,
@@ -50,17 +58,20 @@ AgentAdapterService = _load_local_module("agent_adapter_service", "agent_adapter
 
 agent_service = AgentAdapterService()
 settings = get_settings()
+service_registry = AiServiceRegistry()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-	await agent_service.startup()
-	log.info("ai-service startup completed ")
-	try:
-		yield
-	finally:
-		await agent_service.shutdown()
-		log.info("ai-service runtime shutdown completed")
+    await agent_service.startup()
+    await service_registry.startup()
+    log.info("ai-service startup completed ")
+    try:
+        yield
+    finally:
+        await service_registry.shutdown()
+        await agent_service.shutdown()
+        log.info("ai-service runtime shutdown completed")
 
 
 app = FastAPI(title="CodeGenX AI Service", version="1.0.0", lifespan=lifespan)
@@ -179,6 +190,62 @@ async def internal_get_monitor_turn_detail(session_id: str, turn_id: str):
 @app.get("/internal/monitor/config")
 async def internal_get_monitor_config():
 	return await get_monitor_query_service().get_monitor_config()
+
+
+@app.get("/internal/monitor/alerts")
+async def internal_list_monitor_alerts(
+    page_num: int = Query(default=1, alias="pageNum"),
+    page_size: int = Query(default=10, alias="pageSize"),
+    status: str | None = None,
+    level: str | None = None,
+    rule_name: str | None = Query(default=None, alias="ruleName"),
+    session_id: str | None = Query(default=None, alias="sessionId"),
+):
+    query = MonitorAlertQueryRequest(
+        pageNum=page_num,
+        pageSize=page_size,
+        status=status,
+        level=level,
+        ruleName=rule_name,
+        sessionId=session_id,
+    )
+    return await get_monitor_query_service().list_alerts(query)
+
+
+@app.post("/internal/monitor/cleanup")
+async def internal_cleanup_monitor_history(
+    retention_days: int = Query(default=7, alias="retentionDays"),
+    dry_run: bool = Query(default=False, alias="dryRun"),
+):
+    return await get_monitor_maintenance_service().cleanup_history(
+        retention_days=retention_days, dry_run=dry_run
+    )
+
+
+@app.get("/internal/monitor/health")
+async def internal_get_monitor_health():
+    from infra.mysql.session import engine
+    from sqlalchemy import text
+
+    components: list[MonitorComponentHealth] = []
+    now = datetime.now(timezone.utc)
+    degraded = False
+
+    # MySQL connectivity
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        components.append(MonitorComponentHealth(
+            name="mysql", status="healthy", checkedAt=now, latencyMs=0, consecutiveFailures=0,
+        ))
+    except Exception as exc:
+        components.append(MonitorComponentHealth(
+            name="mysql", status="unhealthy", message=str(exc), checkedAt=now, latencyMs=0, consecutiveFailures=1,
+        ))
+        degraded = True
+
+    overall = "degraded" if degraded else "healthy"
+    return MonitorHealthStatus(overallStatus=overall, degraded=degraded, checkedAt=now, components=components)
 
 
 @app.get("/metrics", response_class=PlainTextResponse)

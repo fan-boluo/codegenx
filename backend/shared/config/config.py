@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     ai_service_http_port: str = "8002"
     ai_service_name: str = "ai-service"
     ai_service_proto_name: str = "ai-service"
+    ai_service_register_host: str = ""
+    ai_service_register_port: str = "8002"
 
     gateway_grpc_timeout_seconds: int = 8
     gateway_grpc_max_attempts: int = 2
