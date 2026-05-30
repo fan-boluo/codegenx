@@ -56,14 +56,3 @@ async def delete_chat_history_by_app_id(
         return success(await service.delete_by_app_id(app_id))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@router.post("/admin/cleanup", response_model=BaseResponse[int])
-async def cleanup_expired_history(
-    retention_days: int = 3,
-    current_user: JWTUser = Depends(require_role(UserRole.ADMIN)),
-    db: AsyncSession = Depends(get_db_session),
-) -> BaseResponse[int]:
-    service = ChatHistoryService(db)
-    deleted = service.cleanup_expired_files(retention_days)
-    return success(deleted)

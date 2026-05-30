@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Lock
 
 from sqlalchemy import text
@@ -11,7 +12,12 @@ from infra.mysql.session import session_maker
 from monitor.alert_evaluator import get_alert_streak_tracker
 from monitor.monitor_query_service import MonitorQueryService, get_monitor_query_service
 from shared.config.log_config import log
+from shared.constants import get_session_dir
 from shared.schema.monitor import MonitorCleanupSummary, MonitorCleanupTableResult
+
+CHAT_HISTORY_FILE_GLOB = "chat_history_*.jsonl"
+CHAT_HISTORY_RETENTION_DAYS = 3
+_CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS = 86400  # 24 hours
 
 
 _MAINTENANCE_SERVICE_SINGLETON: "MonitorMaintenanceService | None" = None
@@ -37,6 +43,32 @@ class MonitorMaintenanceService:
             ("session_metrics", "updated_at"),
             ("monitor_alerts", "triggered_at"),
         ]
+
+    # ── chat history file cleanup ─────────────────────────────────────────
+
+    def cleanup_chat_history_files(self, retention_days: int = CHAT_HISTORY_RETENTION_DAYS) -> int:
+        """Delete chat_history_*.jsonl files whose mtime exceeds retention_days.
+        Returns the number of deleted files."""
+        now = datetime.now(UTC).replace(tzinfo=None)
+        cutoff = now - timedelta(days=retention_days)
+        runtime_root = get_session_dir("main").parent.parent
+        if not runtime_root.exists():
+            return 0
+
+        deleted = 0
+        history_glob = f"*/session/{CHAT_HISTORY_FILE_GLOB}"
+        for history_file in runtime_root.glob(history_glob):
+            try:
+                mtime = datetime.fromtimestamp(history_file.stat().st_mtime, tz=UTC).replace(tzinfo=None)
+                if mtime < cutoff:
+                    history_file.unlink()
+                    deleted += 1
+            except Exception:
+                log.warning("cleanup_chat_history_files: skip file={}", history_file)
+
+        if deleted:
+            log.info("cleanup_chat_history_files: removed {} expired history files (retention={}d)", deleted, retention_days)
+        return deleted
 
     # ── periodic maintenance entry-point ──────────────────────────────────
 
@@ -135,19 +167,29 @@ async def _periodic_maintenance_loop(*, interval_seconds: int) -> None:
     """Run DB history cleanup + alert streak stale-entry cleanup on a timer."""
     service = get_monitor_maintenance_service()
     tracker = get_alert_streak_tracker()
+    _last_chat_history_cleanup: datetime | None = None
 
     while True:
         try:
             await asyncio.sleep(interval_seconds)
+            now = datetime.now(UTC)
 
-            # 1) DB history retention cleanup
+            # 1) Chat history file cleanup (once per day)
+            if _last_chat_history_cleanup is None or \
+               (now - _last_chat_history_cleanup).total_seconds() >= _CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS:
+                file_deleted = service.cleanup_chat_history_files()
+                _last_chat_history_cleanup = now
+            else:
+                file_deleted = 0
+
+            # 2) DB history retention cleanup
             result = await service.cleanup_history(retention_days=7, dry_run=False)
             log.info(
-                "Periodic maintenance: DB cleanup status={} deletedRows={}",
-                result.status, result.deleted_rows,
+                "Periodic maintenance: chat_history_files_deleted={} DB_cleanup_status={} DB_deletedRows={}",
+                file_deleted, result.status, result.deleted_rows,
             )
 
-            # 2) Alert streak stale-entry cleanup
+            # 3) Alert streak stale-entry cleanup
             #    In a full implementation, the set of active session IDs would
             #    be obtained from the runtime session registry.  For now this
             #    cleans all entries whose session has been removed from the

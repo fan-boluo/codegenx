@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import re
@@ -139,30 +139,6 @@ class ChatHistoryService:
                 other_files = files
 
         return current_files + other_files
-
-    def cleanup_expired_files(self, retention_days: int = 3) -> int:
-        """删除超过 retention_days 天的历史文件，返回删除文件数。"""
-        now = self._utc_now()
-        cutoff = now - timedelta(days=retention_days)
-        deleted = 0
-        runtime_root = get_session_dir("main").parent.parent
-        if not runtime_root.exists():
-            return 0
-
-        history_glob = f"*/session/{CHAT_HISTORY_FILE_GLOB}"
-
-        with _FILE_LOCK:
-            for history_file in runtime_root.glob(history_glob):
-                try:
-                    mtime = datetime.fromtimestamp(history_file.stat().st_mtime, tz=UTC).replace(tzinfo=None)
-                    if mtime < cutoff:
-                        history_file.unlink()
-                        deleted += 1
-                except Exception as exc:
-                    log.warning("cleanup_expired_files: skip file={} error={}", history_file, exc)
-        if deleted:
-            log.info("cleanup_expired_files: removed {} expired history files (retention={}d)", deleted, retention_days)
-        return deleted
 
     def _match_query(self, record: ChatHistoryRecord, query_request: ChatHistoryQueryRequest) -> bool:
         if query_request.id is not None and record.id != query_request.id:
