@@ -13,7 +13,6 @@ from shared.schema.common import BaseResponse, PageData
 from shared.schema.monitor import (
     MonitorAlertRecordVO,
     MonitorCleanupSummary,
-    MonitorHealthStatus,
     MonitorOverviewStats,
     MonitorSessionDetail,
     MonitorSessionSummary,
@@ -174,20 +173,6 @@ async def list_monitor_alerts(
         trace_id=getattr(request.state, "trace_id", None),
     )
     return success(PageData[MonitorAlertRecordVO].model_validate(payload))
-
-
-@router.get("/admin/monitor/health", response_model=BaseResponse[MonitorHealthStatus])
-async def get_monitor_health(
-    request: Request,
-    login_user: JWTUser = Depends(require_role(UserRole.ADMIN)),
-) -> BaseResponse[MonitorHealthStatus]:
-    del login_user
-    payload = await AiMonitorProxy().request_json(
-        method="GET",
-        path="/internal/monitor/health",
-        trace_id=getattr(request.state, "trace_id", None),
-    )
-    return success(MonitorHealthStatus.model_validate(payload))
 
 
 @router.post("/admin/monitor/cleanup", response_model=BaseResponse[MonitorCleanupSummary])

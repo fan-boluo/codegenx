@@ -83,16 +83,6 @@ export interface MonitorAlertRecordVO {
   payload: Record<string, unknown>
 }
 
-export interface MonitorStatusCount {
-  status: string
-  count: number
-}
-
-export interface MonitorRuleCount {
-  ruleName: string
-  count: number
-}
-
 export interface MonitorOverviewStats {
   totalSessions: number
   runningSessions: number
@@ -106,35 +96,14 @@ export interface MonitorOverviewStats {
   avgContextTokenUsage: number
   totalToolCalls: number
   totalMemoryHits: number
+  totalTokens: number
   openAlerts: number
-  statusBreakdown: MonitorStatusCount[]
-  alertBreakdown: MonitorRuleCount[]
 }
 
 export interface MonitorSessionDetail {
   session: MonitorSessionSummary
   turns: MonitorTurnSummary[]
   alerts: MonitorAlertRecordVO[]
-}
-
-export interface MonitorComponentHealth {
-  name: string
-  status: string
-  message: string
-  checkedAt?: string
-  latencyMs: number
-  consecutiveFailures: number
-  lastSuccessAt?: string
-  lastErrorAt?: string
-  metadata: Record<string, unknown>
-}
-
-export interface MonitorHealthStatus {
-  enabled: boolean
-  overallStatus: string
-  degraded: boolean
-  checkedAt?: string
-  components: MonitorComponentHealth[]
 }
 
 export interface MonitorCleanupTableResult {

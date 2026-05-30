@@ -9,53 +9,7 @@
     </a-row>
 
     <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :xl="14">
-        <a-card title="状态分布" class="panel-card">
-          <div class="tag-list">
-            <a-tag v-for="item in overview?.statusBreakdown || []" :key="item.status" :color="statusColor(item.status)">
-              {{ item.status }}: {{ item.count }}
-            </a-tag>
-          </div>
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :xl="10">
-        <a-card title="告警规则分布" class="panel-card">
-          <div class="tag-list">
-            <a-tag v-for="item in overview?.alertBreakdown || []" :key="item.ruleName" color="orange">
-              {{ item.ruleName }}: {{ item.count }}
-            </a-tag>
-          </div>
-        </a-card>
-      </a-col>
-    </a-row>
-
-    <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :xl="14">
-        <a-card title="运行健康" class="panel-card" :loading="healthLoading">
-          <div class="tag-list health-summary-tags">
-            <a-tag :color="healthColor(monitorHealth?.overallStatus)">
-              overall: {{ monitorHealth?.overallStatus || 'unknown' }}
-            </a-tag>
-            <a-tag v-if="monitorHealth?.checkedAt" color="blue">
-              checked: {{ formatTime(monitorHealth?.checkedAt) }}
-            </a-tag>
-          </div>
-          <div class="health-component-list">
-            <div v-for="component in monitorHealth?.components || []" :key="component.name" class="health-component-item">
-              <div class="health-component-title">
-                <span>{{ component.name }}</span>
-                <a-tag :color="healthColor(component.status)">{{ component.status }}</a-tag>
-              </div>
-              <div class="subtle-text">
-                {{ component.message || '-' }}
-                <span v-if="component.latencyMs"> / {{ component.latencyMs }} ms</span>
-                <span v-if="component.consecutiveFailures"> / fail={{ component.consecutiveFailures }}</span>
-              </div>
-            </div>
-          </div>
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :xl="10">
+      <a-col :span="24">
         <a-card title="运维操作" class="panel-card">
           <a-form layout="inline" :model="cleanupForm" @finish="runCleanup">
             <a-form-item label="保留天数">
@@ -323,7 +277,6 @@ import { message } from 'ant-design-vue'
 import {
   cleanupMonitorHistory,
   getMonitorConfig,
-  getMonitorHealth,
   getMonitorOverview,
   getMonitorSessionDetail,
   getMonitorTurnDetail,
@@ -335,7 +288,6 @@ import type {
   MonitorAlertRecordVO,
   MonitorCleanupSummary,
   MonitorConfigResponse,
-  MonitorHealthStatus,
   MonitorOverviewStats,
   MonitorPageData,
   MonitorSessionDetail,
@@ -394,13 +346,11 @@ const toolDetailColumns = [
 
 const overview = ref<MonitorOverviewStats>()
 const monitorConfig = ref<MonitorConfigResponse>()
-const monitorHealth = ref<MonitorHealthStatus>()
 const cleanupResult = ref<MonitorCleanupSummary>()
 const selectedSessionDetail = ref<MonitorSessionDetail>()
 const selectedTurnDetail = ref<MonitorTurnSummary>()
 const sessionDrawerOpen = ref(false)
 const turnModalOpen = ref(false)
-const healthLoading = ref(false)
 const cleanupLoading = ref(false)
 const sessionLoading = ref(false)
 const alertLoading = ref(false)
@@ -445,16 +395,21 @@ const cleanupForm = reactive({
   dryRun: true,
 })
 
-const summaryCards = computed(() => [
-  { label: 'Session 总数', value: overview.value?.totalSessions ?? 0 },
-  { label: '运行中 Session', value: overview.value?.runningSessions ?? 0 },
-  { label: 'Open Alerts', value: overview.value?.openAlerts ?? 0 },
-  { label: '总 Turn 数', value: overview.value?.totalTurns ?? 0 },
-  { label: '平均 Turn 时长', value: overview.value?.avgTurnDurationMs ?? 0, suffix: 'ms' },
-  { label: '平均 LLM 延迟', value: overview.value?.avgLlmLatencyMs ?? 0, suffix: 'ms' },
-  { label: '总 Tool 调用', value: overview.value?.totalToolCalls ?? 0 },
-  { label: '总 Memory Hits', value: overview.value?.totalMemoryHits ?? 0 },
-])
+const summaryCards = computed(() => {
+  const totalSessions = overview.value?.totalSessions ?? 0
+  const totalTurns = overview.value?.totalTurns ?? 0
+  const avgTurns = totalSessions > 0 ? (totalTurns / totalSessions).toFixed(1) : '0'
+  return [
+    { label: 'Session 总数', value: totalSessions },
+    { label: '运行中 Session', value: overview.value?.runningSessions ?? 0 },
+    { label: '平均 Turn 数', value: avgTurns },
+    { label: '平均 Turn 时长', value: overview.value?.avgTurnDurationMs ?? 0, suffix: 'ms' },
+    { label: 'Token 使用总数', value: overview.value?.totalTokens ?? 0 },
+    { label: '平均 LLM 耗时', value: overview.value?.avgLlmLatencyMs ?? 0, suffix: 'ms' },
+    { label: 'Tool 调用总数', value: overview.value?.totalToolCalls ?? 0 },
+    { label: 'Memory Hits 总数', value: overview.value?.totalMemoryHits ?? 0 },
+  ]
+})
 
 const sessionPagination = computed(() => ({
   current: sessionQuery.pageNum,
@@ -498,19 +453,6 @@ const latencyChartPoints = computed(() => latencyChartDots.value.map((item) => `
 
 const formatMs = (value?: number) => `${Math.round(value ?? 0)} ms`
 
-const healthColor = (status?: string) => {
-  switch (status) {
-    case 'up':
-      return 'green'
-    case 'degraded':
-      return 'orange'
-    case 'down':
-      return 'red'
-    default:
-      return 'default'
-  }
-}
-
 const statusColor = (status?: string) => {
   switch (status) {
     case 'success':
@@ -553,20 +495,6 @@ const fetchConfig = async () => {
     return
   }
   message.error(`获取监控配置失败：${res.data.message}`)
-}
-
-const fetchHealth = async () => {
-  healthLoading.value = true
-  try {
-    const res = await getMonitorHealth()
-    if (res.data.code === 0 && res.data.data) {
-      monitorHealth.value = res.data.data as MonitorHealthStatus
-      return
-    }
-    message.error(`获取健康状态失败：${res.data.message}`)
-  } finally {
-    healthLoading.value = false
-  }
 }
 
 const fetchSessions = async () => {
@@ -652,7 +580,7 @@ const runCleanup = async () => {
     if (res.data.code === 0 && res.data.data) {
       cleanupResult.value = res.data.data as MonitorCleanupSummary
       message.success(cleanupForm.dryRun ? '清理预览完成' : '清理执行完成')
-      await Promise.all([fetchOverview(), fetchAlerts(), fetchHealth()])
+      await Promise.all([fetchOverview(), fetchAlerts()])
       return
     }
     message.error(`执行清理失败：${res.data.message}`)
@@ -662,7 +590,7 @@ const runCleanup = async () => {
 }
 
 onMounted(async () => {
-  await Promise.all([fetchOverview(), fetchConfig(), fetchHealth(), fetchSessions(), fetchAlerts()])
+  await Promise.all([fetchOverview(), fetchConfig(), fetchSessions(), fetchAlerts()])
 })
 </script>
 
@@ -683,30 +611,6 @@ onMounted(async () => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.health-summary-tags {
-  margin-bottom: 12px;
-}
-
-.health-component-list {
-  display: grid;
-  gap: 12px;
-}
-
-.health-component-item {
-  padding: 12px;
-  border-radius: 8px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-}
-
-.health-component-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-weight: 500;
 }
 
 .cleanup-hint {
