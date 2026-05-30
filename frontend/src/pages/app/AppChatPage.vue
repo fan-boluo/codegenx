@@ -12,6 +12,18 @@
           项目详情
         </a-button>
 
+        <a-popconfirm
+          title="新会话将从空白上下文开始，历史消息仍保留。确定？"
+          @confirm="startNewSession"
+          ok-text="确定"
+          cancel-text="取消"
+        >
+          <a-button size="small" :disabled="isGenerating">
+            <template #icon><ReloadOutlined /></template>
+            新会话
+          </a-button>
+        </a-popconfirm>
+
         <a-button size="small" @click="toggleSourceView" :loading="loadingSourceTree">
           <template #icon><CodeOutlined /></template>
           {{ rightPanelMode === 'source' ? '返回预览' : '查看源码' }}
@@ -226,6 +238,7 @@ import {
   ExportOutlined,
   InfoCircleOutlined,
   MessageOutlined,
+  ReloadOutlined,
   SendOutlined,
   StopOutlined,
 } from '@ant-design/icons-vue'
@@ -472,6 +485,20 @@ const isOwner = computed(() => {
 const canOperateApp = computed(() => isOwner.value)
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
 const showAppDetail = () => { appDetailVisible.value = true }
+
+const startNewSession = () => {
+  if (!appId.value) return
+  const storageKey = getAppSessionStorageKey(appId.value)
+  localStorage.removeItem(storageKey)
+  const newSessionId = createClientId()
+  localStorage.setItem(storageKey, newSessionId)
+  sessionId.value = newSessionId
+  messages.value = []
+  hasMoreHistory.value = false
+  historyLoaded.value = true
+  lastCreateTime.value = undefined
+  message.success('已切换到新会话')
+}
 
 const clearActiveGeneration = (requestId?: string) => {
   if (requestId && activeGenerationRequestId.value && activeGenerationRequestId.value !== requestId) return

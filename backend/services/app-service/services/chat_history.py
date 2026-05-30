@@ -86,6 +86,20 @@ class ChatHistoryService:
         return datetime.now(UTC).replace(tzinfo=None)
 
     def _record_from_payload(self, payload: dict[str, object]) -> ChatHistoryRecord:
+        # 兼容旧格式 {"role": "user"/"assistant", "content": "..."}
+        if "id" not in payload and "role" in payload:
+            role = str(payload.get("role", "user"))
+            message_type = "user" if role in ("user", "human") else "assistant"
+            now = self._utc_now()
+            return ChatHistoryRecord(
+                id=0,
+                message=str(payload.get("content", "")),
+                message_type=message_type,
+                app_id=0,
+                user_id=0,
+                create_time=now,
+                update_time=now,
+            )
         create_time = payload.get("create_time")
         update_time = payload.get("update_time")
         return ChatHistoryRecord(
@@ -150,6 +164,35 @@ class ChatHistoryService:
         timestamp = self._utc_now().strftime("%Y%m%d%H%M%S")
         archived_path = history_file.with_name(f"{CHAT_HISTORY_ARCHIVE_PREFIX}{timestamp}.jsonl")
         history_file.replace(archived_path)
+
+    def cleanup_expired_files(self, retention_days: int = 3) -> int:
+        """删除超过 retention_days 天的历史文件，返回删除文件数。"""
+        from datetime import timedelta
+
+        now = self._utc_now()
+        cutoff = now - timedelta(days=retention_days)
+        deleted = 0
+        # 清理所有 app 目录下的 session 文件夹
+        runtime_root = get_session_dir("main").parent.parent
+        if not runtime_root.exists():
+            return 0
+
+        history_glob = f"*/session/{CHAT_HISTORY_FILE_NAME}"
+        archive_glob = f"*/session/{CHAT_HISTORY_ARCHIVE_PREFIX}*.jsonl"
+
+        with _FILE_LOCK:
+            for pattern in (history_glob, archive_glob):
+                for history_file in runtime_root.glob(pattern):
+                    try:
+                        mtime = datetime.fromtimestamp(history_file.stat().st_mtime, tz=UTC).replace(tzinfo=None)
+                        if mtime < cutoff:
+                            history_file.unlink()
+                            deleted += 1
+                    except Exception as exc:
+                        log.warning("cleanup_expired_files: skip file={} error={}", history_file, exc)
+        if deleted:
+            log.info("cleanup_expired_files: removed {} expired history files (retention={}d)", deleted, retention_days)
+        return deleted
 
     def _append_record(self, record: ChatHistoryRecord) -> None:
         history_file = self._history_file(record.app_id)

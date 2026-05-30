@@ -298,7 +298,11 @@ class AgentRuntime(LLMRecoveryMixin):
                     session_state.touch()
                     if session_state.session_manager is not None and session_state.context_manager is not None:
                         session_state.session_manager.save_history(
-                            session_state.session_id, session_state.context_manager.chat_messages
+                            session_state.session_id,
+                            session_state.context_manager.chat_messages,
+                            app_id=session_state.app_id,
+                            user_id=session_state.user_id,
+                            request_id=session_state.request_id,
                         )
         finally:
             async with session_state.request_lock:

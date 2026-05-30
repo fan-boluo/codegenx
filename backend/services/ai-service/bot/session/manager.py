@@ -1,5 +1,6 @@
 import json
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 import re
@@ -37,12 +38,19 @@ class SessionManager:
     def _memory_log_file(self, session_id: str) -> Path:
         return self.session_dir / f"memory_log_{session_id}.jsonl"
 
-    def save_history(self, session_id: str, history: list[dict[str, Any]]) -> None:
+    def save_history(self, session_id: str, history: list[dict[str, Any]], app_id: str = "", user_id: str = "", request_id: str = "") -> None:
         history_file = self._chat_history_file(session_id)
+        now = datetime.utcnow().isoformat()
         with self._lock:
             with open(history_file, "w", encoding="utf-8") as file:
-                for msg in history:
-                    file.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                for idx, msg in enumerate(history):
+                    record = dict(msg)
+                    record["id"] = idx + 1
+                    record["turn_id"] = request_id
+                    record["app_id"] = app_id
+                    record["user_id"] = user_id
+                    record["create_time"] = now
+                    file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def save_turn_snapshot(self, turn_id: str, snapshot: dict[str, Any]) -> Path:
         snapshot_file = self._turn_snapshot_file(turn_id)
