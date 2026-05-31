@@ -8,7 +8,7 @@ from bot.tools.base import BaseTool, ToolResult
 class SubagentTaskTool(BaseTool):
     @property
     def name(self) -> str:
-        return "task"
+        return "subagent"
 
     @property
     def label(self) -> str:

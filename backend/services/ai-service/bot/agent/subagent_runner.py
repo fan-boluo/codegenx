@@ -13,7 +13,7 @@ from shared.constants import get_code_dir
 from shared.schema.ai_service import AiServiceGenerateRequest
 
 
-DEFAULT_CHILD_EXCLUDED_TOOLS = {"task", "compact"}
+DEFAULT_CHILD_EXCLUDED_TOOLS = {"subagent", "compact"}
 
 
 @dataclass
@@ -47,7 +47,7 @@ class SubagentRunner:
         app_code_dir.mkdir(parents=True, exist_ok=True)
 
         runtime = AgentRuntime(
-            tool_executor=ToolExecutor(tools_handler, safe_paths=[str(app_code_dir)]),
+            tool_executor=ToolExecutor(tools_handler),
         )
         runtime.max_tool_iterations = max(1, int(subagent_context.max_turns or 15))
 

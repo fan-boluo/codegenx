@@ -62,7 +62,7 @@ class ToolExecutor:
                 user_id or session_id or "anonymous",
             )
 
-        if tool_name == "task":
+        if tool_name == "subagent":
             tool_input.setdefault("app_id", app_id)
             tool_input.setdefault("trace_id", trace_id)
             tool_input.setdefault("plan_summary", "")

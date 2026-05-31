@@ -393,7 +393,7 @@ class GrepTool(BaseTool):
             "A powerful search tool built on ripgrep.",
 
             "Usage:",
-            "- ALWAYS use 'grep' for search tasks. NEVER invoke `grep` or `rg` as a ${BASH_TOOL_NAME} command. The ${GREP_TOOL_NAME} tool has been optimized for correct permissions and access.",
+            "- ALWAYS use 'grep' for search tasks. Do NOT try to run shell commands like `grep` or `rg` — use this tool instead.",
             "- Supports full regex syntax (e.g., 'log.*Error', 'function\\s+\\w+')",
             "- Filter files with glob parameter (e.g., '*.js', '**/*.tsx') or type parameter (e.g., 'js', 'py', 'rust')",
             "- Output modes: 'content' shows matching lines, 'files_with_matches' shows only file paths (default), 'count' shows match counts",
