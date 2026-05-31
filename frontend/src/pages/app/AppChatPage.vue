@@ -709,7 +709,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ appId: Number(appId.value), message: userMessage, sessionId: currentSessionId, requestId, traceId: createClientId() }),
+      body: JSON.stringify({ appId: Number(appId.value), message: userMessage, sessionId: currentSessionId, requestId, traceId: createClientId(), dbName: appInfo.value?.dbName || null }),
       signal: controller.signal,
     })
     if (!response.ok) { throw new Error(`HTTP ${response.status}`) }

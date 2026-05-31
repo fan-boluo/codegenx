@@ -17,6 +17,19 @@ MEMORY_TOOL_NAMES = {
     "write_identity_memory",
 }
 
+DATA_ANALYSIS_TOOL_NAMES = {
+    "list_tables",
+    "describe_table",
+    "sample_rows",
+    "describe_table_stats",
+    "describe_csv",
+    "sample_csv_rows",
+    "describe_csv_stats",
+    "guess_analysis_task",
+    "get_table_relationships",
+}
+
+
 TASK_TOOL_NAMES = {"task_create", "task_update", "task_get", "task_list"}
 
 class ToolExecutor:
@@ -73,7 +86,13 @@ class ToolExecutor:
             # inject TaskManager (s12) — stored on session state per app_id
             task_manager = getattr(session_state, "task_manager", None) if session_state is not None else None
             tool_input.setdefault("task_manager", task_manager)
-        
+
+        if tool_name in DATA_ANALYSIS_TOOL_NAMES:
+            db_name = getattr(session_state, "db_name", None) if session_state is not None else None
+            if db_name:
+                tool_input.setdefault("db_name", db_name)
+            tool_input.setdefault("app_id", app_id)
+
         # 1. 查找工具并拉取验证
         tool = next((t for t in self.tools_registry.tools if t.name == tool_name), None)
         if not tool:
@@ -136,7 +155,7 @@ class ToolExecutor:
             # 为了简单健壮，我们检查值为字符串且看着像绝对或相对路径的操作
             
             # 若 key 匹配已知的路径参数名，我们严格校验它
-            if key in ["path", "filename", "src", "dest"]:
+            if key in ["path", "filename", "src", "dest", "file_path"]:
                 if not isinstance(value, str):
                     continue
                 try:

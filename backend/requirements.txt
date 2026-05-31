@@ -20,3 +20,12 @@ cos-python-sdk-v5
 qdrant-client
 opentelemetry-sdk
 prometheus-client
+numpy
+scipy
+pandas
+scikit-learn
+chardet
+cchardet
+matplotlib
+seaborn
+plotly
