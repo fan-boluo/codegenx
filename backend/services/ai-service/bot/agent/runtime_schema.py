@@ -97,6 +97,10 @@ class RuntimeSessionState:
         return str(getattr(self.request, "app_id", "main") or "main")
 
     @property
+    def db_name(self) -> str | None:
+        return getattr(self.request, "db_name", None)
+
+    @property
     def user_id(self) -> str:
         return str(getattr(self.request, "user_id", "") or "")
 

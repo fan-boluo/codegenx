@@ -40,16 +40,32 @@ class ContextAssembler:
     extra :str = ""
 
 
-    async def build_workspace(self,app_id:str):
+    async def build_workspace(self, app_id: str, db_name: str | None = None):
         code_dir = ensure_app_workdir(app_id)
         safe_paths = [str(code_dir)]
+
+        # CSV 数据目录作为安全路径（从配置读取）
+        csv_data_dirs: list[str] = []
+        try:
+            from shared.config.config import get_settings
+            settings = get_settings()
+            csv_dir = getattr(settings, "csv_data_dir", None) or ""
+            if csv_dir:
+                csv_dir = str(csv_dir).strip()
+                if csv_dir and Path(csv_dir).exists():
+                    csv_data_dirs.append(csv_dir)
+        except Exception:
+            pass
+
         self.workspace_metadata = {
             "code_dir": str(code_dir),
             "safe_paths": list(safe_paths),
-            "allowed_rw_dirs": safe_paths + [str(get_memory_dir(app_id))],
+            "allowed_rw_dirs": safe_paths + [str(get_memory_dir(app_id))] + csv_data_dirs,
             "os_name": (platform.system() or "Windows").lower(),
             "project_skeleton": self.build_directory_skeleton(code_dir),
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            "db_name": db_name or "",
+            "csv_data_dirs": csv_data_dirs,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         }
 
         self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format(code_dir=self.workspace_metadata.get("code_dir"))
@@ -84,6 +100,11 @@ class ContextAssembler:
             workspace_prompt += f"- 安全路径列表：{', '.join(self.workspace_metadata['safe_paths'])}\n"
             workspace_prompt += f"- 允许读写的目录：{', '.join(self.workspace_metadata['allowed_rw_dirs'])}\n"
             workspace_prompt += f"- 操作系统类型：{self.workspace_metadata['os_name']}\n"
+            if self.workspace_metadata.get("db_name"):
+                workspace_prompt += f"- **当前项目关联数据库**：`{self.workspace_metadata['db_name']}` —— 使用 MySQL 数据工具时 db_name 参数填这个值\n"
+            csv_dirs = self.workspace_metadata.get("csv_data_dirs", [])
+            if csv_dirs:
+                workspace_prompt += f"- CSV 数据文件目录：{', '.join(csv_dirs)}\n"
             workspace_prompt += "- 项目目录结构：\n" + self.workspace_metadata["project_skeleton"] + "\n"
             workspace_prompt += "- 元数据生成时间：" + str(self.workspace_metadata["timestamp"])
 

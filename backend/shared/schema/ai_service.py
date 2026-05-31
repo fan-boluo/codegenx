@@ -15,6 +15,7 @@ class AiServiceGenerateRequest(CamelBaseModel):
     trace_id: str  = Field(default="", alias="traceId")
     request_id: str = Field(default="", alias="requestId")
     client_version: str = Field(default="ai-service", alias="clientVersion")
+    db_name: str | None = Field(default=None, alias="dbName")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

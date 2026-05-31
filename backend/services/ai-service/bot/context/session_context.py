@@ -21,6 +21,7 @@ class SessionContext:
 
     session_id: str = ""
     app_id: str = ""
+    db_name: str | None = None
 
     memory: MemoryManager = field(init=False)
     # 压缩，不要类
@@ -54,7 +55,7 @@ class SessionContext:
         """
         每个turn要构建的
         """
-        await self.assembler.build_workspace(self.app_id)
+        await self.assembler.build_workspace(self.app_id, db_name=self.db_name)
 
         self.assembler.memory_prompt = await self.memory.load(query)
         self.assembler.skill_prompt = await self.skill_loader.build_skill()

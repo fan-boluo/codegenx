@@ -37,7 +37,11 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
 
     session_manager = SessionManager(str(req.app_id))
     session.session_manager = session_manager
-    session.context_manager = SessionContext(session_id=session.session_id,app_id=session.app_id)
+    session.context_manager = SessionContext(
+        session_id=session.session_id,
+        app_id=session.app_id,
+        db_name=session.db_name,
+    )
 
     # await get_context_assembler().build_fix_context(session)
     # await session.context_manager.build_system_prompt(session.request.message)
