@@ -64,7 +64,7 @@ async def on_turn_start(turn: Any, **kwargs):
             "context": context,
         },
     }
-    snapshot_path = session.session_manager.save_turn_snapshot(session.request_id, snapshot)
+    snapshot_path = await session.session_manager.save_turn_snapshot(session.request_id, snapshot)
 
     await get_monitor_pipeline().on_turn_start(session, turn)
 
@@ -90,34 +90,6 @@ async def pre_tool_use(turn: Any, **kwargs):
     session = kwargs["session"]
     tool_call = kwargs.get("tool_call") or {}
     get_monitor_pipeline().pre_tool_use(session, turn, tool_call)
-    def _log_tool_execution(
-        self,
-        session_manager: Any,
-        session_id: str,
-        turn_id: str,
-        tool_name: str,
-        tool_input: dict,
-        result: Any,
-    ) -> None:
-        """将工具调用结果追加写入 session 目录下的日志文件。"""
-        try:
-            # 过滤掉运行时注入的不可序列化对象
-            loggable_input = {
-                k: v for k, v in tool_input.items()
-                if k not in {"context", "context_compactor"}
-            }
-            entry: dict[str, Any] = {
-                "ts": datetime.now(UTC).isoformat(),
-                "turn_id": turn_id,
-                "tool": tool_name,
-                "input": loggable_input,
-                "result": result,
-            }
-            session_manager.append_tool_log(session_id, entry)
-            if tool_name in MEMORY_TOOL_NAMES:
-                session_manager.append_memory_log(session_id, entry)
-        except Exception as exc:
-            log.debug(f"Session log write failed for tool '{tool_name}': {exc}")
 
 
 async def post_tool_use(turn: Any, **kwargs):
@@ -145,9 +117,9 @@ async def post_tool_use(turn: Any, **kwargs):
             "input": loggable_input,
             "result": result,
         }
-        session.session_manager.append_tool_log(session.session_id, snapshot)
+        await session.session_manager.append_tool_log(session.session_id, snapshot)
         if tool_name in MEMORY_TOOL_NAMES:
-            session.session_manager.append_memory_log(session.session_id, snapshot)
+            await session.session_manager.append_memory_log(session.session_id, snapshot)
     except Exception as exc:
         log.debug(f"Session log write failed for tool '{tool_name}': {exc}")
 

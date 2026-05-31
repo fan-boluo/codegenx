@@ -36,6 +36,7 @@ class ContextAssembler:
 
     # 自动记忆
     auto_memorize_prompt = AUTO_MEMORY_PROMPT
+    _auto_memorize_injected: bool = False
 
     extra :str = ""
 
@@ -94,8 +95,9 @@ class ContextAssembler:
             parts.append(f"# 以下是提取的历史对话信息：\n {self.session_memory_prompt}")
         if self.task_prompt:
             parts.append(f"# 以下是任务看板：\n {self.task_prompt}")
-        if self.auto_memorize_prompt:
+        if self.auto_memorize_prompt and not self._auto_memorize_injected:
             parts.append(self.auto_memorize_prompt)
+            self._auto_memorize_injected = True
         if self.extra:
             parts.append(self.build_extra())
         return "\n".join(parts)

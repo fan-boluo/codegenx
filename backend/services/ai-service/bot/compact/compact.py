@@ -43,7 +43,7 @@ from compact.prompt import (
     get_compact_user_summary_message,
 )
 
-logger = logging.getLogger(__name__)
+from shared.config.log_config import log
 
 # ── Session-memory fast-path constants ────────────────────────────────────────
 # Mirrors config in sessionMemoryCompact.ts (getSessionMemoryCompactConfig)
@@ -86,7 +86,7 @@ class _CircuitBreaker:
         self.consecutive_failures += 1
         if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
             self.disabled = True
-            logger.warning(
+            log.warning(
                 "Auto-compact circuit breaker opened after %d consecutive failures.",
                 self.consecutive_failures,
             )
@@ -153,9 +153,7 @@ def _session_memory_compact(
     summary (mirrors buildFastPathMessages() in sessionMemoryCompact.ts).
     """
     tokens_before = estimate_tokens(messages)
-    kept = _keep_last_n_messages(messages)
-
-    # Build the prior-context pair (mirrors buildFastPathMessages)
+    # Build the prior-context pair first so we can subtract its cost from the tail budget
     user_context = {
         "role": "user",
         "content": get_compact_user_summary_message(session_summary),
@@ -167,6 +165,9 @@ def _session_memory_compact(
             "I have the context from the previous session."
         ),
     }
+    synthetic_tokens = estimate_tokens([user_context, assistant_ack])
+    tail_budget = max(MIN_TOKENS_AFTER, MAX_TOKENS_AFTER - synthetic_tokens)
+    kept = _keep_last_n_messages(messages, max_tokens=tail_budget)
 
     new_messages = [user_context, assistant_ack] + kept
     return CompactResult(
@@ -244,8 +245,10 @@ async def _llm_compact(
             }
 
             # 保留最后 N 条非系统消息，避免摘要丢失最近的细节上下文
+            synthetic_tokens = estimate_tokens([user_context, assistant_ack])
+            tail_budget = max(MIN_TOKENS_AFTER, MAX_TOKENS_AFTER - synthetic_tokens)
             new_messages = [user_context, assistant_ack]
-            kept_tail = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=MAX_TOKENS_AFTER)
+            kept_tail = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=tail_budget)
             if kept_tail:
                 new_messages.extend(kept_tail)
             breaker.record_success()
@@ -259,7 +262,7 @@ async def _llm_compact(
             )
 
         except Exception as exc:
-            logger.warning(
+            log.warning(
                 "LLM compact attempt %d/%d failed: %s",
                 attempt, MAX_COMPACT_RETRIES, exc,
             )
@@ -273,7 +276,7 @@ async def _llm_compact(
                 while safe_idx < len(work_messages) and work_messages[safe_idx].get("role") == "tool":
                     safe_idx += 1
                 work_messages = work_messages[safe_idx:]
-                logger.info("PTL retry: dropped %d oldest messages (safe boundary at %d)", safe_idx, safe_idx)
+                log.info("PTL retry: dropped %d oldest messages (safe boundary at %d)", safe_idx, safe_idx)
 
     return None
 
@@ -324,15 +327,32 @@ class CompactionEngine:
             return messages, None
 
         if self._breaker.disabled:
-            logger.warning("Auto-compact disabled (circuit breaker open); skipping.")
+            log.warning("Auto-compact disabled (circuit breaker open); skipping.")
             return messages, None
 
+        tokens_before = estimate_tokens(messages)
         result = await self._run_compaction(messages)
         if result is None:
             self._breaker.record_failure()
-            return messages, None
+            # Conservative truncation: keep last messages that fit within the effective
+            # context window to prevent API errors from overly large context.
 
-        logger.info(
+            from compact.thresholds import EFFECTIVE_CONTEXT_WINDOW
+            truncated = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=EFFECTIVE_CONTEXT_WINDOW)
+            log.warning(
+                "All compaction paths failed; falling back to conservative truncation: %d→%d messages.",
+                len(messages), len(truncated),
+            )
+            return truncated, CompactResult(
+                messages=truncated,
+                summary="",
+                path_used="none",
+                messages_removed=len(messages) - len(truncated),
+                tokens_before=tokens_before,
+                tokens_after=estimate_tokens(truncated),
+            )
+
+        log.info(
             "Compaction complete via %s: %d→%d tokens, removed %d messages.",
             result.path_used,
             result.tokens_before,
@@ -351,18 +371,19 @@ class CompactionEngine:
             try:
                 summary = self._session_memory.load()
                 if summary and summary.strip():
-                    logger.info("Using session-memory fast-path compaction.")
+                    log.info("Using session-memory fast-path compaction.")
                     return _session_memory_compact(messages, summary)
             except Exception as exc:
-                logger.warning("Session-memory fast-path failed: %s; trying LLM.", exc)
+                log.warning("Session-memory fast-path failed: %s; trying LLM.", exc)
 
         # Path B — LLM summarization
         if self._llm_fn is not None:
+            log.debug("Using LLM compaction.")
             result = await _llm_compact(messages, self._llm_fn, self._breaker)
             if result is not None:
                 return result
 
-        logger.error("All compaction paths failed.")
+        log.error("All compaction paths failed.")
         return None
 
 

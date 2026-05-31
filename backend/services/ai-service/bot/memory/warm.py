@@ -194,6 +194,8 @@ async def find_relevant_topics(
     )[:CANDIDATE_PRE_FILTER_COUNT]
     candidates = [t[0] for t in scored]
 
+    scores: dict[str, int] = {t.name: s for t, s in scored}
+
     if len(topics) > MAX_FILES_RETURNED:
         # 大于要求的个数，再用llm排
         # 第二步：LLM 精排

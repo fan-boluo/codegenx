@@ -32,7 +32,6 @@ Warm topic file format:
 from .hot import load_hot_memory, format_hot_memory_prompt, append_to_hot_memory
 from .warm import find_relevant_topics, format_warm_memory_prompt, scan_topic_files
 from .session import SessionMemory
-from .compact import should_compact, compact, estimate_tokens
 
 __all__ = [
     # Hot tier
@@ -45,8 +44,4 @@ __all__ = [
     "scan_topic_files",
     # Session tier
     "SessionMemory",
-    # Compaction
-    "should_compact",
-    "compact",
-    "estimate_tokens",
 ]

@@ -6,7 +6,7 @@ from agent.task.task_manager import TaskManager
 from llm.async_client import AsyncLLMClient
 from shared.config.log_config import log
 from context.assembler import ContextAssembler
-from compact import microcompact_messages
+from compact import microcompact_messages, estimate_tokens
 from compact.compact import CompactionEngine
 from compact.large_output import persist_large_output
 from memory import SessionMemory
@@ -53,7 +53,7 @@ class SessionContext:
         log.info(self.session_id,"SessonContext 启动完毕")
     async def build_system_prompt(self, query:str) -> str:
         """
-        每个turn要构建的
+        每个session要构建的
         """
         await self.assembler.build_workspace(self.app_id)
 
@@ -63,6 +63,7 @@ class SessionContext:
 
         self.assembler.session_memory_prompt = self._session_memory.load()
         self.system_prompt = self.assembler.prepare_turn_context()
+        log.debug("system prompt init success")
         return self.system_prompt
 
     def get_safe_path(self) -> list|None:
@@ -97,15 +98,18 @@ class SessionContext:
         return await self.assembler.assemble(self.system_prompt,self.chat_messages)
 
     async def micro_compact(self,max_tokens:int):
+        log.debug("micro compact 前,{}", estimate_tokens(self.chat_messages))
         self.chat_messages = microcompact_messages(
             self.chat_messages,
             protect_last_n_results=5,
             max_result_tokens=max_tokens,
         )
+        log.debug("micro compact 后,{}",estimate_tokens(self.chat_messages))
 
     async def persist_large_output(self,tool_call:Dict[str, Any], output:ToolResult) -> str:
 
         data =  output.data or ""
+        log.debug("大的输出持久化：{}",len(data))
         return persist_large_output(tool_call=tool_call, output=data,app_id=self.app_id,session_id=self.session_id)
 
     async def compact_after_step(self):
@@ -114,6 +118,7 @@ class SessionContext:
             self.chat_messages
         )
         if result is not None:
+            log.debug("进行step的压缩了")
             yield AgentEvent(
                 event_type=AgentEventType.COMPACT_EVENT,
                 data={

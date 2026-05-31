@@ -53,14 +53,14 @@ def format_hot_memory_prompt(content: str) -> str:
     return f"# Persistent Memory (MEMORY.md)\n{content}"
 
 
-def append_to_hot_memory(fact: str, path: Path | None = None) -> None:
+def append_to_hot_memory(fact: str, app_id: str, path: Path | None = None) -> None:
     """
     Append a single fact line to MEMORY.md (persists across all sessions).
 
     Mirrors the `remember()` contract from the old MemoryManager stub,
     now backed by disk instead of an in-process list.
     """
-    path = path or get_hot_memory_path()
+    path = path or get_hot_memory_path(app_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(f"\n- {fact}")

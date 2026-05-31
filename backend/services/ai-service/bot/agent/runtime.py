@@ -23,9 +23,11 @@ from bot.bus import MessageBus, RuntimeTurnEvent
 from bot.utils.config import AgentConfig, load_config
 from shared.config.log_config import log
 from shared.schema.ai_service import AiServiceGenerateRequest
-
+from compact.thresholds import estimate_tokens as _thresholds_estimate
 
 class AgentRuntime(LLMRecoveryMixin):
+
+    CONTINUATION_MESSAGE: str = "Please continue from where you left off."
 
     def __init__(
         self,
@@ -297,7 +299,7 @@ class AgentRuntime(LLMRecoveryMixin):
                         session_state.stop_reason = ""
                     session_state.touch()
                     if session_state.session_manager is not None and session_state.context_manager is not None:
-                        session_state.session_manager.save_history(
+                        await session_state.session_manager.save_history(
                             session_state.session_id,
                             session_state.context_manager.chat_messages,
                             user_id=session_state.user_id
@@ -356,7 +358,7 @@ class AgentRuntime(LLMRecoveryMixin):
         now = datetime.utcnow()
         request_dict = request.model_dump()
         request_dict["started_at"] = now.isoformat()
-        session_state.session_manager.append_chat_history_message(session_state.session_id, request_dict)
+        await session_state.session_manager.append_chat_history_message(session_state.session_id, request_dict)
 
 
     # ------------------------------------------------------------------ request execution
@@ -463,7 +465,7 @@ class AgentRuntime(LLMRecoveryMixin):
         finally:
             activate_turn.finished_at = time.time()
             await self.hook_runner.dispatch("OnTurnEnd", activate_turn, session=session_state)
-            log.debug("OnTurnEnd {},{},{}",request_id, activate_turn.step_counter)
+            log.debug("OnTurnEnd {},{}",request_id, activate_turn.step_counter)
     # ------------------------------------------------------------------ turn execution
 
     async def _execute_step(
@@ -534,7 +536,7 @@ class AgentRuntime(LLMRecoveryMixin):
             ]
         session_state.context_manager.add_assistant_message(assistant_message)
         if session_state.session_manager is not None:
-            session_state.session_manager.append_chat_history_message(
+            await session_state.session_manager.append_chat_history_message(
                 session_state.session_id, assistant_message
             )
 
@@ -619,7 +621,7 @@ class AgentRuntime(LLMRecoveryMixin):
         session_state: RuntimeSessionState,
         event: AgentEvent,
     ) -> None:
-        self._record_chat_history(session_state, event)
+        await self._record_chat_history(session_state, event)
         data = self._sanitize_event_data(event)
         await self.message_bus.publish_outbound(
             RuntimeTurnEvent(
@@ -632,14 +634,14 @@ class AgentRuntime(LLMRecoveryMixin):
             )
         )
 
-    def _record_chat_history(self, session_state: RuntimeSessionState, event: AgentEvent) -> None:
+    async def _record_chat_history(self, session_state: RuntimeSessionState, event: AgentEvent) -> None:
         """将工具执行结果写入 chat_history JSONL，供前端展示完整对话过程。"""
         sm = session_state.session_manager
         if sm is None:
             return
         if event.event_type == AgentEventType.TOOL_EXECUTION_END:
             tc = event.data if isinstance(event.data, dict) else {}
-            sm.append_chat_history_message(session_state.session_id, {
+            await sm.append_chat_history_message(session_state.session_id, {
                 "role": "tool",
                 "tool_call_id": tc.get("tool_id", ""),
                 "name": tc.get("tool_name", ""),
@@ -699,13 +701,14 @@ class AgentRuntime(LLMRecoveryMixin):
             default=str,
         )
 
+
+
     @staticmethod
     def _estimate_text_tokens(text: str) -> int:
-        normalized = str(text or "")
-        return max(1, len(normalized) // 4) if normalized else 0
+        return _thresholds_estimate([{"content": str(text or "")}])
 
     def _estimate_message_tokens(self, messages: list[dict[str, Any]]) -> int:
-        return self._estimate_text_tokens(json.dumps(messages, ensure_ascii=False, default=str))
+        return _thresholds_estimate(messages)
 
     def _estimate_completion_tokens(self, llm_response: dict[str, Any]) -> int:
         parts = [str(llm_response.get("content", "") or "")]

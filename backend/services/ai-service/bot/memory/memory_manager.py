@@ -69,7 +69,7 @@ class MemoryManager:
         Persist a fact to ~/.bot/memory/MEMORY.md (hot tier, survives restarts).
         Mirrors the old in-process remember() contract but backed by disk.
         """
-        append_to_hot_memory(fact)
+        append_to_hot_memory(fact, self.app_id)
 
     def clear_session_warm_cache(self) -> None:
         """Reset per-session warm-memory dedup state (useful between sessions)."""

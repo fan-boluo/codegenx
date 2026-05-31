@@ -46,10 +46,12 @@ COMPACTABLE_TOOLS = frozenset({
 MAX_TOOL_RESULT_TOKENS = 2000
 
 
-# ── Token estimation (reuse from thresholds to avoid circular import) ─────────
+from compact.thresholds import estimate_tokens
 
+
+# ── Token estimation ──────────────────────────────────────────────────────────
 def _rough_tokens(text: str) -> int:
-    return len(text) // 4
+    return estimate_tokens([{"content": text}])
 
 
 # ── Core micro-compaction ──────────────────────────────────────────────────────
