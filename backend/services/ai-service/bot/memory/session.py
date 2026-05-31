@@ -194,7 +194,7 @@ async def _session_summarize(
         更新后的 session 记忆内容（完整的新 MEMORY.md 文本）
     """
     # 构建提取提示词（系统指令）
-    log.debug("开始执行压缩")
+    log.debug("session memory开始执行压缩")
     system_prompt = build_extraction_prompt(
         messages=messages,
         current_notes=current_notes,
