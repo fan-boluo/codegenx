@@ -309,7 +309,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 if session_state.worker_task is current_task:
                     session_state.processing = False
                     session_state.worker_task = None
-                log.info(session_state.session_id,"finished")
+                log.info("{},{}",session_state.session_id,"finished")
 
 
 
@@ -384,13 +384,13 @@ class AgentRuntime(LLMRecoveryMixin):
                     "request_id": request_id,
                     "step_counter": activate_turn.step_counter,
                 }, state=activate_turn.state))
-            log.debug(request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
+            log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
             # 执行turn的任务
             while activate_turn.step_counter < self.max_steps:
                 self._raise_if_stop_requested(session_state)
                 # 聊天历史微压，清除工具执行结果
-                await context_manager.microcompact()
-                log.debug(request_id, activate_turn.step_counter, " micro_compact")
+                await context_manager.micro_compact(self.config.compact.maxToolResultTokens)
+                log.debug("{},{},{}",request_id, activate_turn.step_counter, " micro_compact")
                 # 初始化step_id step_counter
 
                 activate_turn.step_counter += 1
@@ -402,14 +402,17 @@ class AgentRuntime(LLMRecoveryMixin):
                 try:
                     await self._execute_step(session_state, activate_turn)
                 finally:
-                    # TODO 这样pop对吗，取出最后面的，有必要维护这样一个activate_steps吗
                     activate_turn.active_steps.pop()
                     activate_turn.active_step_id = ""
-                    async for compact_event in context_manager.compact_after_turn():
+                    async for compact_event in context_manager.compact_after_step():
                         await self._publish_runtime_event(session_state, compact_event)
                 if not activate_turn.requires_followup:
                     break
-            log.debug(request_id, activate_turn.step_counter, " 执行完一轮了")
+            log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
+            try:
+                await context_manager.compact_after_turn()
+            except Exception:
+                log.exception("compact_after_turn 执行异常（非致命）")
             await self._publish_request_event(
                 session_state,
                 AgentEvent(
@@ -432,7 +435,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     state=AgentState.STOPPED,
                 ),
             )
-            log.debug(request_id, activate_turn.step_counter, " TurnStoppedError：",exc)
+            log.debug("{},{},{}",request_id, activate_turn.step_counter, " TurnStoppedError：",exc)
         except asyncio.CancelledError:
             reason = self._stop_reason(session_state)
             activate_turn.error_text = reason
@@ -445,7 +448,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     state=AgentState.STOPPED,
                 ),
             )
-            log.debug(request_id, activate_turn.step_counter, " CancelledError")
+            log.debug("{},{},{}",request_id, activate_turn.step_counter, " CancelledError")
             raise
         except Exception as exc:
             log.opt(exception=True).error("_execute_request failed: {}", exc)
@@ -456,11 +459,11 @@ class AgentRuntime(LLMRecoveryMixin):
                 session_state,
                 AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
             )
-            log.debug(request_id, activate_turn.step_counter, " Exception：", exc)
+            log.debug("{},{}, Exception:{}",request_id, activate_turn.step_counter,  exc)
         finally:
             activate_turn.finished_at = time.time()
             await self.hook_runner.dispatch("OnTurnEnd", activate_turn, session=session_state)
-            log.debug(request_id, activate_turn.step_counter, " OnTurnEnd")
+            log.debug("OnTurnEnd {},{},{}",request_id, activate_turn.step_counter)
     # ------------------------------------------------------------------ turn execution
 
     async def _execute_step(
@@ -490,7 +493,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 state=AgentState.RUNNING,
             ),
         )
-        log.debug(session_state.request_id, turn_state.step_counter,turn_state.active_step_id, " PreLLMCall")
+        log.debug("PreLLMCALL {},{},{}",session_state.request_id, turn_state.step_counter,turn_state.active_step_id)
         llm_response = await self._invoke_llm_with_recovery(
             messages, turn_state, session_state
         )
@@ -511,7 +514,7 @@ class AgentRuntime(LLMRecoveryMixin):
             usage=usage,
             messages=messages,
         )
-        log.debug(session_state.request_id, turn_state.step_counter, turn_state.active_step_id, " PostLLMCall")
+        log.debug("PostLLMCall {},{},{}",session_state.request_id, turn_state.step_counter, turn_state.active_step_id)
         assistant_message: dict[str, Any] = {
             "role": "assistant",
             "content": llm_response.get("content", ""),
@@ -566,7 +569,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
                 ),
             )
-            log.debug(session_state.request_id, turn_state.step_counter, turn_state.active_step_id, " PreToolUse")
+            log.debug("PreToolUse {},{},{}",session_state.request_id, turn_state.step_counter, turn_state.active_step_id)
             result = await self.tool_executor.execute(tool_call, turn_state, session_state)
             self._raise_if_stop_requested(session_state)
             await self.hook_runner.dispatch(
@@ -576,7 +579,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 tool_call=tool_call,
                 result=result,
             )
-            log.debug(session_state.request_id, turn_state.step_counter, turn_state.active_step_id, " PostToolUse")
+            log.debug("PostToolUse {},{},{}",session_state.request_id, turn_state.step_counter, turn_state.active_step_id)
             tool_message = {
                 "role": "tool",
                 "tool_call_id": tool_call.get("id", ""),
@@ -593,7 +596,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 ),
             )
 
-        log.debug("执行完一次step 迭代", turn_state.active_step_id, turn_state.step_counter)
+        log.debug("执行完一次step 迭代, step_id: {}, step_counter:{}", turn_state.active_step_id, turn_state.step_counter)
 
     # ------------------------------------------------------------------ event helpers
 

@@ -113,6 +113,34 @@ def _has_text_content(msg: dict) -> bool:
     return False
 
 
+def _keep_last_n_messages(
+    messages: list[dict],
+    min_keep: int = MIN_TEXT_MESSAGES,
+    max_tokens: int = MAX_TOKENS_AFTER,
+) -> list[dict]:
+    """
+    从尾部保留尽可能多的消息，在不超过 max_tokens 且至少 min_keep 条文本消息的前提下。
+    保持与 _session_memory_compact 相同的截断逻辑。
+    """
+    kept: list[dict] = []
+    text_count = 0
+    token_acc = 0
+
+    for msg in reversed(messages):
+        msg_tokens = estimate_tokens([msg])
+        if (
+            token_acc + msg_tokens > max_tokens
+            and text_count >= min_keep
+            and token_acc > MIN_TOKENS_AFTER
+        ):
+            break
+        kept.insert(0, msg)
+        token_acc += msg_tokens
+        if _has_text_content(msg):
+            text_count += 1
+    return kept
+
+
 def _session_memory_compact(
     messages: list[dict], session_summary: str
 ) -> CompactResult:
@@ -125,24 +153,7 @@ def _session_memory_compact(
     summary (mirrors buildFastPathMessages() in sessionMemoryCompact.ts).
     """
     tokens_before = estimate_tokens(messages)
-
-    # Walk from the end, keep messages until we hit MAX_TOKENS_AFTER
-    kept: list[dict] = []
-    text_count = 0
-    token_acc = 0
-
-    for msg in reversed(messages):
-        msg_tokens = estimate_tokens([msg])
-        if (
-            token_acc + msg_tokens > MAX_TOKENS_AFTER
-            and text_count >= MIN_TEXT_MESSAGES
-            and token_acc > MIN_TOKENS_AFTER
-        ):
-            break
-        kept.insert(0, msg)
-        token_acc += msg_tokens
-        if _has_text_content(msg):
-            text_count += 1
+    kept = _keep_last_n_messages(messages)
 
     # Build the prior-context pair (mirrors buildFastPathMessages)
     user_context = {
@@ -177,17 +188,25 @@ async def _call_llm_for_summary(
     Call the provided async LLM function with the full conversation plus the
     compact prompt, then return the cleaned summary string.
 
-    llm_fn signature: async generator (messages: list[dict]) -> AsyncIterator[str]
+    llm_fn signature accepted:
+      - async generator (messages: list[dict]) -> AsyncIterator[str]
+      - async callable (messages: list[dict]) -> str   (e.g. AsyncLLMClient.invoke)
     """
     compact_messages = list(messages) + [
         {"role": "user", "content": BASE_COMPACT_PROMPT}
     ]
 
-    chunks: list[str] = []
-    async for chunk in llm_fn(compact_messages):
-        chunks.append(chunk)
+    result = llm_fn(compact_messages)
 
-    raw = "".join(chunks)
+    # 兼容两种签名：async generator 和返回 str 的 async callable
+    if hasattr(result, '__aiter__'):
+        chunks: list[str] = []
+        async for chunk in result:
+            chunks.append(chunk)
+        raw = "".join(chunks)
+    else:
+        raw = await result
+
     return format_compact_summary(raw)
 
 
@@ -224,7 +243,11 @@ async def _llm_compact(
                 ),
             }
 
+            # 保留最后 N 条非系统消息，避免摘要丢失最近的细节上下文
             new_messages = [user_context, assistant_ack]
+            kept_tail = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=MAX_TOKENS_AFTER)
+            if kept_tail:
+                new_messages.extend(kept_tail)
             breaker.record_success()
             return CompactResult(
                 messages=new_messages,
@@ -241,10 +264,16 @@ async def _llm_compact(
                 attempt, MAX_COMPACT_RETRIES, exc,
             )
             if attempt < MAX_COMPACT_RETRIES:
-                # PTL retry: drop oldest fraction
+                # PTL retry: drop oldest fraction, ensuring we don't split
+                # an assistant message from its follow-up tool messages.
                 n_drop = max(1, int(len(work_messages) * PTL_TRUNCATE_RATIO))
-                work_messages = work_messages[n_drop:]
-                logger.info("PTL retry: dropped %d oldest messages", n_drop)
+                # Find safe boundary: if the cut lands on a tool message,
+                # walk forward until we find a non-tool message.
+                safe_idx = n_drop
+                while safe_idx < len(work_messages) and work_messages[safe_idx].get("role") == "tool":
+                    safe_idx += 1
+                work_messages = work_messages[safe_idx:]
+                logger.info("PTL retry: dropped %d oldest messages (safe boundary at %d)", safe_idx, safe_idx)
 
     return None
 

@@ -43,9 +43,7 @@ COMPACTABLE_TOOLS = frozenset({
 })
 
 # Token threshold above which a single tool result gets cleared.
-# Production uses time-based clearing (after cache expiry) plus token pressure.
-# Here we use a simple per-result token cap.
-MAX_TOOL_RESULT_TOKENS = 200   # scale up for real deployment
+MAX_TOOL_RESULT_TOKENS = 2000
 
 
 # ── Token estimation (reuse from thresholds to avoid circular import) ─────────
@@ -56,7 +54,11 @@ def _rough_tokens(text: str) -> int:
 
 # ── Core micro-compaction ──────────────────────────────────────────────────────
 
-def microcompact_messages(messages: list[dict]) -> list[dict]:
+def microcompact_messages(
+    messages: list[dict],
+    protect_last_n_results: int = 1,
+    max_result_tokens: int | None = None,
+) -> list[dict]:
     """
     将工具执行结果超长的压缩
     Return a shallow-copied message list with oversized tool results cleared.
@@ -66,15 +68,21 @@ def microcompact_messages(messages: list[dict]) -> list[dict]:
       - assistant: {"role":"assistant", "content":"<str>",
                      "tool_calls":[{"id":"...", "function":{"name":"..."}}]}
 
+    protect_last_n_results: 保护最近 N 次的工具调用结果不被清除，保证大模型
+                            在后续 turn 中能看到刚刚执行的结果。默认 1。
+    max_result_tokens: 工具结果 token 阈值，超过则清除。不传则使用 MAX_TOOL_RESULT_TOKENS。
+
     The function:
       1. Builds an index: tool_call_id → msg_index for every tool message.
-      2. For every assistant tool_call whose function.name is in COMPACTABLE_TOOLS,
-         checks the corresponding tool message content length.
-      3. If above MAX_TOOL_RESULT_TOKENS, replaces the tool message's content
-         with CLEARED_MARKER.
+      2. Collects all assistant tool_call IDs in order, marks last N as protected.
+      3. For every assistant tool_call whose function.name is in COMPACTABLE_TOOLS
+         and NOT in protected set, checks the corresponding tool message content length.
+      4. If above threshold, replaces the tool message's content with CLEARED_MARKER.
 
     Returns a new list; the input is never mutated.
     """
+    threshold = max_result_tokens if max_result_tokens is not None else MAX_TOOL_RESULT_TOKENS
+
     # Build tool_call_id → msg_index map (one result per tool message)
     result_index: dict[str, int] = {}
     for msg_i, msg in enumerate(messages):
@@ -84,6 +92,21 @@ def microcompact_messages(messages: list[dict]) -> list[dict]:
         if tc_id:
             result_index[tc_id] = msg_i
 
+    # Collect all assistant tool_call IDs in order
+    ordered_tool_call_ids: list[str] = []
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []):
+            uid = tc.get("id", "")
+            if uid:
+                ordered_tool_call_ids.append(uid)
+
+    # 最近 N 个 tool_call_id 受到保护
+    protected_ids: set[str] = set()
+    if protect_last_n_results > 0 and ordered_tool_call_ids:
+        protected_ids = set(ordered_tool_call_ids[-protect_last_n_results:])
+
     # Identify which tool_call_ids should be cleared
     to_clear: set[str] = set()
     for msg in messages:
@@ -92,13 +115,15 @@ def microcompact_messages(messages: list[dict]) -> list[dict]:
         for tc in msg.get("tool_calls", []):
             name = tc.get("function", {}).get("name", "")
             uid = tc.get("id", "")
+            if uid in protected_ids:
+                continue
             if name not in COMPACTABLE_TOOLS or not uid:
                 continue
             msg_i = result_index.get(uid)
             if msg_i is None:
                 continue
             result_content = messages[msg_i].get("content", "")
-            if isinstance(result_content, str) and _rough_tokens(result_content) > MAX_TOOL_RESULT_TOKENS:
+            if isinstance(result_content, str) and _rough_tokens(result_content) > threshold:
                 to_clear.add(uid)
 
     if not to_clear:
@@ -129,5 +154,3 @@ def microcompact_stats(
         if msg.get("role") == "tool" and msg.get("content") == CLEARED_MARKER
     )
     return {"cleared_results": cleared, "message_count": len(after)}
-
-

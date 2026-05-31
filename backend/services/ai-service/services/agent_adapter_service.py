@@ -87,7 +87,7 @@ class AgentAdapterService:
     ) -> AsyncGenerator[str, None]:
         runtime = self._get_runtime()
         async for event in runtime.submit_request(request):
-            log.info("stream message",event.model_dump_json()+ "\n")
+            log.info("stream message {}", event.model_dump_json())
             yield event.model_dump_json() + "\n"
 
     async def stop_session(

@@ -135,38 +135,9 @@ class GatewayConfig(Base):
 
 
 #  tool -------------------------
-class WebSearchConfig(Base):
-    """Web search tool configuration."""
-
-    provider: str = "brave"  # brave, tavily, duckduckgo, searxng, jina
-    api_key: str = ""
-    base_url: str = ""  # SearXNG base URL
-    max_results: int = 5
-
-
-class WebToolsConfig(Base):
-    """Web tools configuration."""
-
-    proxy: str | None = (
-        None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
-    )
-    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
-
-
-class KBSearchConfig(Base):
-    kb_name: str = "report"
-
-
-class DataSearchConfig(Base):
-    db_name: str = "test"
-
-
 class ToolsConfig(Base):
     """Tools configuration."""
     excluded:list = Field(default_factory=list)
-    # websearch: WebToolsConfig = Field(default_factory=WebToolsConfig)
-    # kb_search: KBSearchConfig = Field(default_factory=KBSearchConfig)
-    # db_search: DataSearchConfig = Field(default_factory=DataSearchConfig)
     # exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     # restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     # mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
@@ -275,6 +246,14 @@ class MonitorConfig(Base):
     storage: MonitorStorageConfig = Field(default_factory=MonitorStorageConfig)
     alerts: MonitorAlertRulesConfig = Field(default_factory=MonitorAlertRulesConfig)
 
+
+class CompactConfig(Base):
+    maxToolResultTokens: int = Field(
+        default=3000,
+        validation_alias=AliasChoices("maxToolResultTokens", "max_tool_result_tokens"),
+    )
+
+
 class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
@@ -283,6 +262,7 @@ class Config(BaseSettings):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     monitor:MonitorConfig = Field(default_factory=MonitorConfig)
+    compact: CompactConfig = Field(default_factory=CompactConfig)
 
     def get_default_agent(self) -> AgentConfig:
         if not self.agents:

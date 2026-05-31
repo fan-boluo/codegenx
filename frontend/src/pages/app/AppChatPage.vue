@@ -736,10 +736,10 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
 }
 
 const handleError = (error: unknown, aiMessageIndex: number, requestId?: string) => {
-  console.error('生成代码失败：', error)
+  console.error('执行失败：', error)
   const targetMessage = getMessageAt(aiMessageIndex)
-  if (targetMessage) { targetMessage.content = '抱歉，生成过程中出现了错误，请重试。'; targetMessage.loading = false }
-  message.error('生成失败，请重试'); isGenerating.value = false; clearActiveGeneration(requestId)
+  if (targetMessage) { targetMessage.content = '抱歉，执行中出现了错误，请重试。'; targetMessage.loading = false }
+  message.error('执行失败，请重试'); isGenerating.value = false; clearActiveGeneration(requestId)
 }
 
 const stopGeneration = async () => {

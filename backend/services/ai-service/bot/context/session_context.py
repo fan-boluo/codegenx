@@ -3,6 +3,7 @@ from typing import Any, Dict
 
 from agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from agent.task.task_manager import TaskManager
+from llm.async_client import AsyncLLMClient
 from shared.config.log_config import log
 from context.assembler import ContextAssembler
 from compact import microcompact_messages
@@ -46,7 +47,7 @@ class SessionContext:
         self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id)
         self.task = TaskManager(app_id=self.app_id, session_id=self.session_id)
         self._session_memory = SessionMemory(session_id=self.session_id,app_id=self.app_id)
-        self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_memory)
+        self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_memory,llm_fn=AsyncLLMClient().invoke)
         self.system_prompt = ""
         self.chat_messages = []
         log.info(self.session_id,"SessonContext 启动完毕")
@@ -95,21 +96,20 @@ class SessionContext:
         # 将system_prompt和turn的聊天历史组合
         return await self.assembler.assemble(self.system_prompt,self.chat_messages)
 
-    async def microcompact(self):
-        self.chat_messages = microcompact_messages(self.chat_messages)
+    async def micro_compact(self,max_tokens:int):
+        self.chat_messages = microcompact_messages(
+            self.chat_messages,
+            protect_last_n_results=5,
+            max_result_tokens=max_tokens,
+        )
 
     async def persist_large_output(self,tool_call:Dict[str, Any], output:ToolResult) -> str:
 
         data =  output.data or ""
         return persist_large_output(tool_call=tool_call, output=data,app_id=self.app_id,session_id=self.session_id)
 
-    async def compact_after_turn(self):
-        # (a) Session-memory extraction — non-blocking background task
-        if self._session_memory.should_extract(self.chat_messages):
-            self._session_memory.fire_extract(self.chat_messages)
-            log.debug("压缩了")
-        # (b) Auto-compaction — awaited so messages are updated before next turn
-        # 没有传入llm_fn，使用的是session memory快速压缩
+    async def compact_after_step(self):
+        """每个 step 后：仅做 token 检查 + full compaction，不触发 session_memory extraction。"""
         self.chat_messages, result = await self._compaction.compact_if_needed(
             self.chat_messages
         )
@@ -124,6 +124,12 @@ class SessionContext:
                 },
                 state=AgentState.RUNNING,
             )
+
+    async def compact_after_turn(self):
+        """整个 turn 结束后：异步触发 session_memory extraction（非阻塞后台任务）。"""
+        if self._session_memory.should_extract(self.chat_messages):
+            self._session_memory.fire_extract(self.chat_messages)
+            log.debug("session memory 后台压缩已触发")
 
     # TODO 上下文还需要做的事情：token计算
     def token_status(self, messages: list[dict]) -> dict:

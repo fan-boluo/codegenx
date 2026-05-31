@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-
+from shared.config.log_config import log
 from llm.async_client import AsyncLLMClient
 from .paths import get_session_memory_path
 from .prompts import SESSION_MEMORY_TEMPLATE, build_extraction_prompt
@@ -93,6 +93,7 @@ class SessionMemory:
 
         # Concurrency guard — mirrors the sequential() wrapper in Claude Code
         self._extracting = False
+        self._extract_task: asyncio.Task | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -139,8 +140,7 @@ class SessionMemory:
         self._extracting = True
         self._extract_msg_idx = len(messages)
         self._tokens_at_last_extract = _rough_tokens(messages)
-        # Fire-and-forget; errors handled inside _extract()
-        asyncio.create_task(self._extract(list(messages)))
+        self._extract_task = asyncio.create_task(self._extract(list(messages)))
 
     def load(self) -> str:
         """Synchronously read the current session MEMORY.md."""
@@ -170,6 +170,7 @@ class SessionMemory:
             pass  # extraction failure is non-fatal
         finally:
             self._extracting = False
+            self._extract_task = None
 
 
 # ── Mock summariser ────────────────────────────────────────────────────────────
@@ -193,6 +194,7 @@ async def _session_summarize(
         更新后的 session 记忆内容（完整的新 MEMORY.md 文本）
     """
     # 构建提取提示词（系统指令）
+    log.debug("开始执行压缩")
     system_prompt = build_extraction_prompt(
         messages=messages,
         current_notes=current_notes,
