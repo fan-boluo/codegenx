@@ -64,7 +64,7 @@ class ToolExecutor:
                 user_id or session_id or "anonymous",
             )
 
-        if tool_name in {"read_file", "write_file", "edit_file"}:
+        if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory"}:
             tool_input.setdefault("app_id", app_id)
 
         if tool_name in {"write_short_term", "write_long_term"}:

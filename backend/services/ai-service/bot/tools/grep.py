@@ -390,15 +390,21 @@ class GrepTool(BaseTool):
     @property
     def description(self) -> str:
         return "\n".join((
-            "A powerful search tool built on ripgrep.",
+            "A powerful search tool built on ripgrep. Use grep for ALL code search tasks — never read files one by one just to find something manually.",
 
-            "Usage:",
-            "- ALWAYS use 'grep' for search tasks. Do NOT try to run shell commands like `grep` or `rg` — use this tool instead.",
+            "## When to use",
+            "- Finding where a function/class/variable is defined or referenced",
+            "- Searching for error messages, log patterns, or configuration keys",
+            "- Locating files that contain a specific string before reading them",
+            "- Strategy: grep first → then read_file only the matching files (with offset/limit to see relevant lines)",
+
+            "## Usage",
             "- Supports full regex syntax (e.g., 'log.*Error', 'function\\s+\\w+')",
             "- Filter files with glob parameter (e.g., '*.js', '**/*.tsx') or type parameter (e.g., 'js', 'py', 'rust')",
-            "- Output modes: 'content' shows matching lines, 'files_with_matches' shows only file paths (default), 'count' shows match counts",
+            "- Output modes: use 'files_with_matches' first to find which files match, then 'content' on specific files with head_limit to inspect their matches",
             "- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use `interface\\{\\}` to find `interface{}` in Go code)",
             "- Multiline matching: By default patterns match within single lines only. For cross-line patterns like `struct \\{[\\s\\S]*?field`, use `multiline: true`",
+            "- The default output_mode is 'files_with_matches' — only matching file paths are returned, not the content. Switch to 'content' when you need to see the actual matching lines.",
         ))
 
     @property

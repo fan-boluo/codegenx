@@ -73,8 +73,7 @@ def estimate_tokens(messages: list[dict]) -> int:
         elif isinstance(content, list):
             total += sum(len(str(item.get("content", ""))) for item in content)
         for tc in msg.get("tool_calls", []):
-            total += len(str(tc.get("input", "")))
-            total += len(str(tc.get("arguments", "")))
+            total += len(str(tc.get("input") or tc.get("function", {}).get("arguments", "")))
     return total // 4
 
 
