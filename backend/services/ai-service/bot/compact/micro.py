@@ -169,7 +169,7 @@ def microcompact_messages(
                 if uid in to_clear_inputs:
                     new_tc = {**tc}
                     f = {**new_tc.get("function", {})}
-                    f["arguments"] = f"[arguments cleared: {name} to {result_index.get(uid, 'unknown')}]"
+                    f["arguments"] = f"[arguments cleared: {name}]"
                     new_tc["function"] = f
                     new_tcs.append(new_tc)
                 else:

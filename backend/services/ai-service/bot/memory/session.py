@@ -26,6 +26,7 @@ import re
 from pathlib import Path
 from shared.config.log_config import log
 from llm.async_client import AsyncLLMClient
+from bot.utils.context_utils import rough_tokens
 from .paths import get_session_memory_path
 from .prompts import SESSION_MEMORY_TEMPLATE, build_extraction_prompt
 

@@ -6,6 +6,23 @@ from typing import Any
 from shared.constants import get_code_dir
 
 
+def rough_tokens(messages: list[dict]) -> int:
+    """Rough token estimate for a message list: total characters ÷ 4.
+
+    Replace with tiktoken or the Anthropic token-count API for accuracy.
+    """
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            total += sum(len(str(item.get("content", ""))) for item in content)
+        for tc in msg.get("tool_calls", []):
+            total += len(str(tc.get("input") or tc.get("function", {}).get("arguments", "")))
+    return total // 4
+
+
 def ensure_app_workdir(app_id: str | int) -> Path:
     workdir = get_code_dir(app_id)
     workdir.mkdir(parents=True, exist_ok=True)
