@@ -26,6 +26,7 @@ import re
 from pathlib import Path
 
 from llm.async_client import AsyncLLMClient
+from bot.utils.context_utils import rough_tokens
 from .paths import get_session_memory_path
 from .prompts import SESSION_MEMORY_TEMPLATE, build_extraction_prompt
 
@@ -36,22 +37,6 @@ from .prompts import SESSION_MEMORY_TEMPLATE, build_extraction_prompt
 MIN_TOKENS_TO_INIT = 300           # start tracking once context reaches this
 MIN_TOKENS_BETWEEN_UPDATES = 150   # extract after this many new tokens
 TOOL_CALLS_BETWEEN_UPDATES = 3     # …or after this many tool calls
-
-
-# ── Token estimation ──────────────────────────────────────────────────────────
-
-def _rough_tokens(messages: list[dict]) -> int:
-    """Rough token estimate: total characters / 4 (no tiktoken dependency)."""
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            total += sum(len(str(item.get("content", ""))) for item in content)
-        for tc in msg.get("tool_calls", []):
-            total += len(str(tc.get("input") or tc.get("function", {}).get("arguments", "")))
-    return total // 4
 
 
 def _count_tool_calls_since(messages: list[dict], since_idx: int) -> int:
@@ -109,7 +94,7 @@ class SessionMemory:
         if self._extracting:
             return False  # never overlap
 
-        current = _rough_tokens(messages)
+        current = rough_tokens(messages)
 
         if not self._initialized:
             if current < MIN_TOKENS_TO_INIT:
@@ -138,7 +123,7 @@ class SessionMemory:
             return
         self._extracting = True
         self._extract_msg_idx = len(messages)
-        self._tokens_at_last_extract = _rough_tokens(messages)
+        self._tokens_at_last_extract = rough_tokens(messages)
         # Fire-and-forget; errors handled inside _extract()
         asyncio.create_task(self._extract(list(messages)))
 

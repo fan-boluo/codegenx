@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 import base64
+import fnmatch
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -290,10 +294,6 @@ class ReadFileTool(BaseTool):
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
 
-        # Check if aborted after access check
-        if signal and signal.is_set():
-            raise asyncio.CancelledError("Operation aborted")
-
         # Detect if image
         mime_type = detect_image_mime_type(absolute_path)
 
@@ -479,10 +479,6 @@ class WriteFileTool(BaseTool):
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
 
-        # Check if aborted before writing
-        if signal and signal.is_set():
-            raise asyncio.CancelledError("Operation aborted")
-
         # Write the file
         async with aiofiles.open(absolute_path, 'w', encoding='utf-8') as f:
             await f.write(content)
@@ -609,8 +605,10 @@ class EditFileTool(BaseTool):
                     message=message
                 )
 
-            replace_count = 0 if params.get("replace_all") else 1
-            new_content = content.replace(old_text, new_text) if replace_count == 0 else content.replace(old_text, new_text, replace_count)
+            if params.get("replace_all"):
+                new_content = content.replace(old_text, new_text)
+            else:
+                new_content = content.replace(old_text, new_text, 1)
 
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
@@ -709,8 +707,6 @@ class ListDirectoryTool(BaseTool):
                 message=f"不是目录: {path}。请使用 read_file 工具读取文件内容。"
             )
 
-        import fnmatch
-
         entries: list[str] = []
         dir_count = 0
         file_count = 0
@@ -758,7 +754,7 @@ class ListDirectoryTool(BaseTool):
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
 
-        if not entries and depth == 1:
+        if not entries:
             return ToolResult(
                 success=True,
                 data=f"目录为空: {absolute_path}"
@@ -838,6 +834,16 @@ class DeleteFileTool(BaseTool):
 
         absolute_path = resolve_read_path(path, params.get("app_id", "main"))
 
+        # Enforce workspace boundary: reject paths outside the project workspace
+        workspace_root = get_code_dir(params.get("app_id", "main")).resolve()
+        try:
+            absolute_path.resolve().relative_to(workspace_root)
+        except ValueError:
+            return ToolResult(
+                success=False,
+                message=f"安全限制: 只能删除工作区内的文件。路径超出工作区范围: {path}"
+            )
+
         if not absolute_path.exists():
             return ToolResult(
                 success=False,
@@ -867,7 +873,6 @@ class DeleteFileTool(BaseTool):
                     )
                 )
 
-            import shutil
             if has_contents:
                 shutil.rmtree(str(absolute_path))
                 return ToolResult(

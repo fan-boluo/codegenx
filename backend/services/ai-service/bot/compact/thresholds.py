@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import os
 
+from bot.utils.context_utils import rough_tokens as estimate_tokens
+
 # ── Context window configuration ──────────────────────────────────────────────
 
 # Mock: small so compaction triggers quickly.
@@ -54,27 +56,6 @@ AUTOCOMPACT_THRESHOLD = EFFECTIVE_CONTEXT_WINDOW - AUTOCOMPACT_BUFFER_TOKENS
 # Mirrors MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3 in autoCompact.ts.
 
 MAX_CONSECUTIVE_FAILURES = 3
-
-
-# ── Token estimation ───────────────────────────────────────────────────────────
-
-def estimate_tokens(messages: list[dict]) -> int:
-    """
-    Rough token estimate for a message list: total characters ÷ 4.
-
-    Replace with tiktoken or the Anthropic token-count API for accuracy.
-    Mirrors tokenCountWithEstimation() from utils/tokens.ts.
-    """
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            total += sum(len(str(item.get("content", ""))) for item in content)
-        for tc in msg.get("tool_calls", []):
-            total += len(str(tc.get("input") or tc.get("function", {}).get("arguments", "")))
-    return total // 4
 
 
 # ── Threshold queries ──────────────────────────────────────────────────────────

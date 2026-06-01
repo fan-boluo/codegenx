@@ -23,6 +23,8 @@ Raises no exceptions — callers should treat compaction as best-effort.
 """
 from __future__ import annotations
 
+from bot.utils.context_utils import rough_tokens as estimate_tokens
+
 # ── Thresholds ────────────────────────────────────────────────────────────────
 # Rough token estimate = total chars / 4.
 # These numbers are intentionally small so the mock LLM triggers compaction
@@ -31,27 +33,6 @@ from __future__ import annotations
 COMPACT_TRIGGER_TOKENS = 2_000    # fire compaction above this
 MAX_TOKENS_AFTER_COMPACT = 800    # hard cap on kept context after compaction
 MIN_TEXT_MESSAGES = 5             # always keep this many text exchanges
-
-
-# ── Token estimation ──────────────────────────────────────────────────────────
-
-def estimate_tokens(messages: list[dict]) -> int:
-    """
-    Rough token count across a message list (chars / 4).
-
-    Good enough for threshold comparisons; replace with tiktoken or
-    the Anthropic token-counting API for accuracy.
-    """
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            total += sum(len(str(item.get("content", ""))) for item in content)
-        for tc in msg.get("tool_calls", []):
-            total += len(str(tc.get("input") or tc.get("function", {}).get("arguments", "")))
-    return total // 4
 
 
 def should_compact(messages: list[dict]) -> bool:
