@@ -213,12 +213,22 @@ class ReadFileTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            f"Read the contents of a file. Supports text files and images " 
-                  f"(jpg, png, gif, webp). Images are sent as attachments. "
-                  f"For text files, output is truncated to {DEFAULT_MAX_LINES} lines "
-                  f"or {DEFAULT_MAX_BYTES // 1024}KB (whichever is hit first). "
-                  f"Use offset/limit for large files. When you need the full file, "
-                  f"continue with offset until complete."
+            f"Read the contents of a file. Supports text files and images "
+            f"(jpg, png, gif, webp). Images are sent as attachments. "
+            f"For text files, output is truncated to {DEFAULT_MAX_LINES} lines "
+            f"or {DEFAULT_MAX_BYTES // 1024}KB (whichever is hit first).\n\n"
+            f"## Exploration strategy (especially for large files)\n"
+            f"- grep first to find WHERE the interesting code is, then read_file with "
+            f"offset/limit to see only the relevant lines\n"
+            f"- Never read an entire file blindly — it wastes context and you'll miss "
+            f"the key parts in the truncation noise\n"
+            f"- Start with a small limit (50-100 lines) around the area of interest, "
+            f"expand if needed\n\n"
+            f"## Parameters\n"
+            f"- offset: 1-indexed starting line number. Use when continuing from a "
+            f"previous partial read or jumping to a known line\n"
+            f"- limit: max lines to read. Always set this on large files — "
+            f"without it the entire file is loaded and truncated, wasting tokens"
         )
 
     @property
@@ -232,11 +242,11 @@ class ReadFileTool(BaseTool):
             },
             "offset": {
                 "type": "integer",
-                "description": "Starting line number (1-indexed, optional)"
+                "description": "Starting line number (1-indexed). Use to skip ahead in large files or continue from a previous partial read."
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of lines to read (optional)"
+                "description": "Max lines to read. Always set this on files larger than 100 lines — prevents wasted tokens on truncation. Start small (50-100) and expand if needed."
             },
         },
         "required": ["path"]
@@ -392,7 +402,7 @@ class ReadFileTool(BaseTool):
 
             return ToolResult(
                 success=True,
-                data=output_text + "\n 以下是执行的details:"+str(details)
+                data=output_text + ("\n 以下是执行的details:" + str(details) if details else "")
             )
 
 
@@ -409,7 +419,16 @@ class WriteFileTool(BaseTool):
     def description(self) -> str:
         return (
             "Write content to a file. Creates the file if it doesn't exist, "
-            "overwrites if it does. Automatically creates parent directories."
+            "overwrites if it does. Automatically creates parent directories.\n\n"
+            "## When to use (NOT when to use edit_file)\n"
+            "- Creating a brand-new file that doesn't exist yet\n"
+            "- Complete rewrite of a file where every line changes\n"
+            "- For ALL other modifications to existing files, use edit_file instead — "
+            "it's safer (only changes what you specify) and cheaper (no need to send the whole file)\n\n"
+            "## Important\n"
+            "- Never use write_file for small changes to large files (>200 lines). "
+            "Sending the entire file content wastes significant context tokens. "
+            "Use edit_file with precise old_text matching instead."
         )
 
     @property
@@ -489,7 +508,24 @@ class EditFileTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Replace exact text in a file. Very strict matching."
+            "Performs exact string replacements in files.\n\n"
+            "## When to use\n"
+            "- Modifying existing code — ALWAYS prefer edit_file over write_file when the file already exists\n"
+            "- Renaming variables, functions, or classes across a file (use replace_all: true)\n"
+            "- Fixing bugs, adjusting logic, updating parameters — any targeted change to existing code\n"
+            "- Appending to the end of a file — use position: \"end\" (old_text can be empty)\n"
+            "- write_file should ONLY be used for creating brand-new files or complete rewrites\n\n"
+            "## How to construct old_text\n"
+            "- Copy the exact text from the file — preserve tabs, spaces, indentation exactly\n"
+            "- Include enough surrounding context (3-5 lines) so old_text is unique in the file\n"
+            "- old_text must match character-for-character: same whitespace, same punctuation, same case\n"
+            "- If the match fails, read the file again with offset/limit around the target area and verify whitespace\n\n"
+            "## Parameters\n"
+            "- file_path: absolute path to the file\n"
+            "- old_text: exact string to find. When position is \"end\", this is ignored (pass empty string)\n"
+            "- new_text: replacement text, or the content to append when position is \"end\"\n"
+            "- replace_all: set to true to replace ALL occurrences (default: replace only the first match)\n"
+            "- position: \"replace\" (default) for find-and-replace, \"end\" to append new_text to the end of the file"
         )
 
     @property
@@ -508,6 +544,15 @@ class EditFileTool(BaseTool):
                 "new_text": {
                     "type": "string",
                     "description": "New text to insert"
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace all occurrences (default: false, only replaces first match)"
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["replace", "end"],
+                    "description": "Operation mode: \"replace\" (default) for find-and-replace, \"end\" to append new_text to end of file"
                 },
             },
             "required": ["path", "old_text", "new_text"]
@@ -534,30 +579,45 @@ class EditFileTool(BaseTool):
         path = params["path"]
         old_text = params["old_text"]
         new_text = params["new_text"]
-        
+        position = params.get("position", "replace")
+
         absolute_path = resolve_read_path(path, params.get("app_id", "main"))
         check_path(absolute_path)
-        
+
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
-            
+
         async with aiofiles.open(absolute_path, 'r', encoding='utf-8') as f:
             content = await f.read()
-            
-        if old_text not in content:
-            return ToolResult(
-                success=False,
-                message=f"Error: Exact text not found in {path}"
-            )
-            
-        new_content = content.replace(old_text, new_text, 1)
-        
+
+        if position == "end":
+            # Append new_text to end of file (ensure newline separation)
+            separator = "\n" if content and not content.endswith("\n") else ""
+            new_content = content + separator + new_text + "\n"
+        else:
+            if old_text not in content:
+                snippet = old_text[:80].replace('\n', '\\n')
+                message = (
+                    f"Edit failed: old_text not found in {path}. "
+                    f"Searched for ({len(old_text)} chars): \"{snippet}...\" "
+                    f"Common causes: whitespace mismatch (tabs vs spaces), "
+                    f"line ending differences, or the text was already modified. "
+                    f"Re-read the file around the target area with offset/limit and copy the exact text."
+                )
+                return ToolResult(
+                    success=False,
+                    message=message
+                )
+
+            replace_count = 0 if params.get("replace_all") else 1
+            new_content = content.replace(old_text, new_text) if replace_count == 0 else content.replace(old_text, new_text, replace_count)
+
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
-            
+
         async with aiofiles.open(absolute_path, 'w', encoding='utf-8') as f:
             await f.write(new_content)
-            
+
         return ToolResult(
             success=True,
             data=f"Successfully edited {path}",
@@ -576,10 +636,18 @@ class ListDirectoryTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "List the contents of a directory. Shows all files and subdirectories "
-            "with type indicators ([DIR] for directories). "
-            "Use this tool to explore project structure before reading specific files. "
-            "Returns entries sorted alphabetically with directories listed first."
+            "List the contents of a directory. Shows files and subdirectories "
+            "with type indicators ([DIR] / [FILE]) and human-readable file sizes.\n\n"
+            "## When to use\n"
+            "- Exploring project structure before reading specific files — always prefer this "
+            "over blindly guessing file paths\n"
+            "- Finding files matching a pattern (use glob parameter, e.g. '*.py', '*.csv')\n"
+            "- Assessing data file sizes without opening them\n\n"
+            "## Parameters\n"
+            "- depth: recursion depth (default 1 = current dir only, 2 = one level of subdirs, etc.). "
+            "Use depth > 1 to explore nested project structure without multiple calls\n"
+            "- glob: filter entries by name pattern (e.g. '*.py', 'test_*.py', '*.csv'). "
+            "Standard shell wildcards, not regex"
         )
 
     @property
@@ -590,6 +658,14 @@ class ListDirectoryTool(BaseTool):
                 "path": {
                     "type": "string",
                     "description": "Directory path to list. Can be relative to project root or absolute."
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Recursion depth (default 1 = current dir only). Set to 2+ to explore subdirectories."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Filter entries by shell wildcard pattern (e.g. '*.py', 'test_*.py'). Not regex."
                 },
             },
             "required": ["path"]
@@ -614,6 +690,9 @@ class ListDirectoryTool(BaseTool):
             signal: asyncio.Event | None = None,
     ) -> ToolResult:
         path = params["path"]
+        depth = params.get("depth", 1)
+        glob_filter = params.get("glob")
+
         absolute_path = resolve_read_path(path, params.get("app_id", "main"))
 
         if signal and signal.is_set():
@@ -630,30 +709,180 @@ class ListDirectoryTool(BaseTool):
                 message=f"不是目录: {path}。请使用 read_file 工具读取文件内容。"
             )
 
-        try:
-            children = sorted(
-                absolute_path.iterdir(),
-                key=lambda x: (x.is_file(), x.name.lower())
-            )
-        except PermissionError:
-            return ToolResult(
-                success=False,
-                message=f"没有权限访问目录: {path}"
-            )
+        import fnmatch
+
+        entries: list[str] = []
+        dir_count = 0
+        file_count = 0
+
+        def _collect(current: Path, prefix: str, current_depth: int):
+            nonlocal dir_count, file_count
+            if current_depth > depth:
+                return
+
+            try:
+                children = sorted(
+                    current.iterdir(),
+                    key=lambda x: (x.is_file(), x.name.lower())
+                )
+            except PermissionError:
+                entries.append(f"{prefix}[DENIED] (permission error)")
+                return
+
+            for child in children:
+                if signal and signal.is_set():
+                    return
+
+                # Apply glob filter (only to files, dirs always shown unless filtered)
+                if glob_filter and child.is_file() and not fnmatch.fnmatch(child.name, glob_filter):
+                    continue
+
+                if child.is_dir():
+                    dir_count += 1
+                    indent = prefix.replace("├── ", "│   ").replace("└── ", "    ")
+                    entries.append(f"{prefix}[DIR]  {child.name}/")
+                    _collect(child, indent + ("├── " if current_depth < depth else ""), current_depth + 1)
+                else:
+                    file_count += 1
+                    try:
+                        size_str = format_size(child.stat().st_size)
+                    except OSError:
+                        size_str = "?"
+                    entries.append(f"{prefix}[FILE] {child.name} ({size_str})")
+
+            if signal and signal.is_set():
+                raise asyncio.CancelledError("Operation aborted")
+
+        _collect(absolute_path, "", 1)
 
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
 
-        if not children:
+        if not entries and depth == 1:
             return ToolResult(
                 success=True,
                 data=f"目录为空: {absolute_path}"
             )
 
-        entries: list[str] = []
-        for child in children:
-            prefix = "[DIR]  " if child.is_dir() else "[FILE] "
-            entries.append(f"{prefix}{child.name}")
-
-        output = f"Contents of {absolute_path} ({len(entries)} entries):\n" + "\n".join(entries)
+        header = f"Contents of {absolute_path} ({dir_count} dirs, {file_count} files)"
+        if glob_filter:
+            header += f" [glob: {glob_filter}]"
+        if depth > 1:
+            header += f" [depth: {depth}]"
+        output = header + ":\n" + "\n".join(entries)
         return ToolResult(success=True, data=output)
+
+
+class DeleteFileTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "delete_file"
+
+    @property
+    def label(self) -> str:
+        return "file"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Delete a file or an empty directory within the workspace.\n\n"
+            "## When to use\n"
+            "- Cleaning up temporary/intermediate files after analysis is complete\n"
+            "- Removing stale reports or charts before regenerating\n"
+            "- Deleting empty directories that are no longer needed\n"
+            "- NEVER use this to delete source code or configuration without explicit user instruction\n\n"
+            "## Safety limits\n"
+            "- Only files/directories within the workspace (project directory) can be deleted — "
+            "external paths are rejected\n"
+            "- Non-empty directories require explicit confirmation via recursive: true\n"
+            "- After deletion, verify with list_directory that the file is gone"
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file or directory to delete. Must be within the workspace."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Required to be true when deleting a non-empty directory. Acts as a safety confirmation."
+                },
+            },
+            "required": ["path"]
+        }
+
+    async def execute(
+            self,
+            params: dict,
+            signal: asyncio.Event | None = None,
+    ) -> ToolResult:
+        try:
+            return await self._do_execute(params, signal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("delete_file 执行异常: %s", exc)
+            return ToolResult(success=False, message=f"删除文件失败: {exc}")
+
+    async def _do_execute(
+            self,
+            params: dict,
+            signal: asyncio.Event | None = None,
+    ) -> ToolResult:
+        path = params["path"]
+        recursive = params.get("recursive", False)
+
+        absolute_path = resolve_read_path(path, params.get("app_id", "main"))
+
+        if not absolute_path.exists():
+            return ToolResult(
+                success=False,
+                message=f"文件或目录不存在: {path}"
+            )
+
+        if signal and signal.is_set():
+            raise asyncio.CancelledError("Operation aborted")
+
+        if absolute_path.is_dir():
+            # Check if directory has contents
+            try:
+                has_contents = any(True for _ in absolute_path.iterdir())
+            except PermissionError:
+                return ToolResult(
+                    success=False,
+                    message=f"没有权限访问目录: {path}"
+                )
+
+            if has_contents and not recursive:
+                return ToolResult(
+                    success=False,
+                    message=(
+                        f"目录不为空: {path}。"
+                        f"请使用 list_directory 确认目录内容后，"
+                        f"如需删除整个目录请设置 recursive: true 作为安全确认。"
+                    )
+                )
+
+            import shutil
+            if has_contents:
+                shutil.rmtree(str(absolute_path))
+                return ToolResult(
+                    success=True,
+                    data=f"已递归删除目录: {path}"
+                )
+            else:
+                absolute_path.rmdir()
+                return ToolResult(
+                    success=True,
+                    data=f"已删除空目录: {path}"
+                )
+        else:
+            absolute_path.unlink()
+            return ToolResult(
+                success=True,
+                data=f"已删除文件: {path}"
+            )

@@ -42,6 +42,14 @@ COMPACTABLE_TOOLS = frozenset({
     "echo",
 })
 
+# Tools whose inputs (arguments) may also be cleared when their results are cleared.
+# Typically large-output tools like write_file where the full content is in the
+# arguments and the result is a short "Successfully wrote..." message.
+# Clearing the arguments prevents context bloat from stale full-file payloads.
+CLEAR_TOOL_INPUTS = frozenset({
+    "write_file",
+})
+
 # Token threshold above which a single tool result gets cleared.
 # Production uses time-based clearing (after cache expiry) plus token pressure.
 # Here we use a simple per-result token cap.
@@ -72,6 +80,10 @@ def microcompact_messages(messages: list[dict]) -> list[dict]:
          checks the corresponding tool message content length.
       3. If above MAX_TOOL_RESULT_TOKENS, replaces the tool message's content
          with CLEARED_MARKER.
+      4. Additionally, for tools in CLEAR_TOOL_INPUTS, the assistant message's
+         tool_call arguments are replaced with a summary marker to prevent
+         large stale payloads (e.g. full notebook JSON in write_file) from
+         accumulating across turns.
 
     Returns a new list; the input is never mutated.
     """
@@ -84,8 +96,9 @@ def microcompact_messages(messages: list[dict]) -> list[dict]:
         if tc_id:
             result_index[tc_id] = msg_i
 
-    # Identify which tool_call_ids should be cleared
+    # Identify which tool_call_ids should be cleared (results and/or inputs)
     to_clear: set[str] = set()
+    to_clear_inputs: set[str] = set()
     for msg in messages:
         if msg.get("role") != "assistant":
             continue
@@ -100,19 +113,40 @@ def microcompact_messages(messages: list[dict]) -> list[dict]:
             result_content = messages[msg_i].get("content", "")
             if isinstance(result_content, str) and _rough_tokens(result_content) > MAX_TOOL_RESULT_TOKENS:
                 to_clear.add(uid)
+            # Also mark for input clearing if tool is in CLEAR_TOOL_INPUTS
+            if name in CLEAR_TOOL_INPUTS:
+                to_clear_inputs.add(uid)
 
-    if not to_clear:
+    if not to_clear and not to_clear_inputs:
         return messages  # nothing to do; return original reference
 
-    # Build new list, cloning only mutated tool messages
+    # Build new list, cloning only mutated messages
     new_messages: list[dict] = []
     for msg_i, msg in enumerate(messages):
-        if msg.get("role") != "tool":
-            new_messages.append(msg)
-            continue
-        tc_id = msg.get("tool_call_id", "")
-        if tc_id in to_clear:
-            new_messages.append({**msg, "content": CLEARED_MARKER})
+        if msg.get("role") == "tool":
+            tc_id = msg.get("tool_call_id", "")
+            if tc_id in to_clear:
+                new_messages.append({**msg, "content": CLEARED_MARKER})
+            else:
+                new_messages.append(msg)
+        elif msg.get("role") == "assistant":
+            tcs = msg.get("tool_calls")
+            if not tcs or not to_clear_inputs:
+                new_messages.append(msg)
+                continue
+            new_tcs = []
+            for tc in tcs:
+                uid = tc.get("id", "")
+                name = tc.get("function", {}).get("name", "")
+                if uid in to_clear_inputs:
+                    new_tc = {**tc}
+                    f = {**new_tc.get("function", {})}
+                    f["arguments"] = f"[arguments cleared: {name} to {result_index.get(uid, 'unknown')}]"
+                    new_tc["function"] = f
+                    new_tcs.append(new_tc)
+                else:
+                    new_tcs.append(tc)
+            new_messages.append({**msg, "tool_calls": new_tcs})
         else:
             new_messages.append(msg)
 
