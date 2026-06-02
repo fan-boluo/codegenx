@@ -1,526 +1,284 @@
-#!/usr/bin/env python3
 """
-GrepTool Python Version - Core search functionality based on ripgrep/grep
-Supports multiple output modes: content, files_with_matches, count
+Grep tool using ripgrep with JSON parsing for structured output and async streaming.
+Mirrors packages/coding-agent/src/core/tools/grep.ts
 """
-
-import os
-import re
-import subprocess
-import sys
-from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from __future__ import annotations
 
 import asyncio
+import json
+import os
+import shutil
+import sys
+from typing import Any
 
 from bot.tools.base import BaseTool, ToolResult
+from bot.tools.truncate_utils import (
+    DEFAULT_MAX_BYTES,
+    GREP_MAX_LINE_LENGTH,
+    format_size,
+    truncate_head,
+    truncate_line,
+)
+from bot.utils.log_utils import log
 
-# Version control system directories to exclude
-VCS_DIRECTORIES = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl']
-DEFAULT_HEAD_LIMIT = 250
-DEFAULT_MAX_COLUMNS = 500
-
-
-@dataclass
-class GrepOutput():
-    """Output structure for grep results"""
-    mode: str  # 'content', 'files_with_matches', 'count'
-    num_files: int
-    filenames: List[str]
-    content: Optional[str] = None
-    num_lines: Optional[int] = None
-    num_matches: Optional[int] = None
-    applied_limit: Optional[int] = None
-    applied_offset: Optional[int] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
-        result = {
-            'mode': self.mode,
-            'numFiles': self.num_files,
-            'filenames': self.filenames,
-        }
-        if self.content is not None:
-            result['content'] = self.content
-        if self.num_lines is not None:
-            result['numLines'] = self.num_lines
-        if self.num_matches is not None:
-            result['numMatches'] = self.num_matches
-        if self.applied_limit is not None:
-            result['appliedLimit'] = self.applied_limit
-        if self.applied_offset is not None:
-            result['appliedOffset'] = self.applied_offset
-        return result
+DEFAULT_LIMIT = 100
 
 
-def apply_head_limit(
-        items: List[str],
-        limit: Optional[int] = None,
-        offset: int = 0
-) -> Tuple[List[str], Optional[int]]:
-    """
-    Apply head limit and offset pagination to results.
-
-    Args:
-        items: List of items to limit
-        limit: Maximum items to return (None/unset uses DEFAULT_HEAD_LIMIT, 0 = unlimited)
-        offset: Skip first N items
-
-    Returns:
-        Tuple of (limited_items, applied_limit)
-    """
-    if limit == 0:
-        # Explicit 0 = unlimited escape hatch
-        return items[offset:], None
-
-    effective_limit = limit if limit is not None else DEFAULT_HEAD_LIMIT
-    sliced = items[offset:offset + effective_limit]
-
-    # Only report applied_limit when truncation occurred
-    was_truncated = len(items) - offset > effective_limit
-    applied_limit = effective_limit if was_truncated else None
-
-    return sliced, applied_limit
-
-
-def to_relative_path(abs_path: str, cwd: Optional[str] = None) -> str:
-    """Convert absolute path to relative path"""
-    if cwd is None:
-        cwd = os.getcwd()
-    try:
-        return os.path.relpath(abs_path, cwd)
-    except ValueError:
-        # On Windows, relpath fails if paths are on different drives
-        return abs_path
-
-
-def build_ripgrep_args(
-        pattern: str,
-        path: Optional[str] = None,
-        glob: Optional[str] = None,
-        type_filter: Optional[str] = None,
-        output_mode: str = 'files_with_matches',
-        context_before: Optional[int] = None,
-        context_after: Optional[int] = None,
-        context_both: Optional[int] = None,
-        show_line_numbers: bool = True,
-        case_insensitive: bool = False,
-        multiline: bool = False,
-) -> List[str]:
-    """
-    Build ripgrep command line arguments.
-
-    Args:
-        pattern: Regex pattern to search for
-        path: Path to search in
-        glob: Glob pattern to filter files
-        type_filter: File type filter
-        output_mode: 'content', 'files_with_matches', or 'count'
-        context_before: Lines before match
-        context_after: Lines after match
-        context_both: Lines before and after match
-        show_line_numbers: Show line numbers in output
-        case_insensitive: Case insensitive search
-        multiline: Enable multiline mode
-
-    Returns:
-        List of command arguments for ripgrep
-    """
-    args = ['rg', '--hidden']
-
-    # Exclude VCS directories
-    for vcs_dir in VCS_DIRECTORIES:
-        args.extend(['--glob', f'!{vcs_dir}'])
-
-    # Limit line length
-    args.extend(['--max-columns', str(DEFAULT_MAX_COLUMNS)])
-
-    # Multiline mode
-    if multiline:
-        args.extend(['-U', '--multiline-dotall'])
-
-    # Case insensitive
-    if case_insensitive:
-        args.append('-i')
-
-    # Output mode flags
-    if output_mode == 'files_with_matches':
-        args.append('-l')
-    elif output_mode == 'count':
-        args.append('-c')
-
-    # Line numbers (only for content mode)
-    if show_line_numbers and output_mode == 'content':
-        args.append('-n')
-
-    # Context flags
-    if output_mode == 'content':
-        if context_both is not None:
-            args.extend(['-C', str(context_both)])
-        else:
-            if context_before is not None:
-                args.extend(['-B', str(context_before)])
-            if context_after is not None:
-                args.extend(['-A', str(context_after)])
-
-    # Pattern (use -e flag if pattern starts with dash)
-    if pattern.startswith('-'):
-        args.extend(['-e', pattern])
-    else:
-        args.append(pattern)
-
-    # Type filter
-    if type_filter:
-        args.extend(['--type', type_filter])
-
-    # Glob patterns
-    if glob:
-        glob_patterns = []
-        raw_patterns = glob.split()
-
-        for raw_pattern in raw_patterns:
-            # If pattern has braces, keep it whole
-            if '{' in raw_pattern and '}' in raw_pattern:
-                glob_patterns.append(raw_pattern)
-            else:
-                # Split on commas
-                glob_patterns.extend([p for p in raw_pattern.split(',') if p])
-
-        for glob_pattern in glob_patterns:
-            args.extend(['--glob', glob_pattern])
-
-    # Search path
-    if path:
-        args.append(path)
-
-    return args
-
-
-def run_ripgrep(
-        args: List[str],
-        cwd: Optional[str] = None
-) -> Tuple[List[str], int]:
-    """
-    Run ripgrep command and return results.
-
-    Args:
-        args: Command arguments
-        cwd: Working directory
-
-    Returns:
-        Tuple of (output_lines, return_code)
-    """
-    if cwd is None:
-        cwd = os.getcwd()
-
-    try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
-        return lines, result.returncode
-
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Search timed out after 30 seconds")
-    except FileNotFoundError:
-        raise RuntimeError("ripgrep (rg) not found. Please install ripgrep.")
-
-
-def grep_search(
-        pattern: str,
-        path: Optional[str] = None,
-        glob: Optional[str] = None,
-        type_filter: Optional[str] = None,
-        output_mode: str = 'files_with_matches',
-        context_before: Optional[int] = None,
-        context_after: Optional[int] = None,
-        context_both: Optional[int] = None,
-        show_line_numbers: bool = True,
-        case_insensitive: bool = False,
-        head_limit: Optional[int] = None,
-        offset: int = 0,
-        multiline: bool = False,
-) -> GrepOutput:
-    """
-    Main search function - core logic.
-
-    Args:
-        pattern: Regex pattern to search for
-        path: Path to search in (defaults to cwd)
-        glob: Glob pattern for files
-        type_filter: File type to search
-        output_mode: 'content', 'files_with_matches', or 'count'
-        context_before: Lines before match
-        context_after: Lines after match
-        context_both: Lines before and after match
-        show_line_numbers: Show line numbers
-        case_insensitive: Case insensitive search
-        head_limit: Limit output to N items
-        offset: Skip first N items
-        multiline: Enable multiline regex
-
-    Returns:
-        GrepOutput object with results
-    """
-    if path is None:
-        path = os.getcwd()
-
-    # Build and run ripgrep
-    args = build_ripgrep_args(
-        pattern=pattern,
-        path=path,
-        glob=glob,
-        type_filter=type_filter,
-        output_mode=output_mode,
-        context_before=context_before,
-        context_after=context_after,
-        context_both=context_both,
-        show_line_numbers=show_line_numbers,
-        case_insensitive=case_insensitive,
-        multiline=multiline,
-    )
-
-    results, return_code = run_ripgrep(args, cwd=os.getcwd())
-
-    # Handle content mode
-    if output_mode == 'content':
-        limited_results, applied_limit = apply_head_limit(results, head_limit, offset)
-
-        # Convert absolute paths to relative
-        final_lines = []
-        for line in limited_results:
-            colon_idx = line.find(':')
-            if colon_idx > 0:
-                file_path = line[:colon_idx]
-                rest = line[colon_idx:]
-                final_lines.append(to_relative_path(file_path) + rest)
-            else:
-                final_lines.append(line)
-
-        return GrepOutput(
-            mode='content',
-            num_files=0,
-            filenames=[],
-            content='\n'.join(final_lines),
-            num_lines=len(final_lines),
-            applied_limit=applied_limit,
-            applied_offset=offset if offset > 0 else None,
-        )
-
-
-    # Handle count mode
-    elif output_mode == 'count':
-        limited_results, applied_limit = apply_head_limit(results, head_limit, offset)
-
-        # Convert absolute paths to relative and count matches
-        final_count_lines = []
-        total_matches = 0
-        file_count = 0
-
-        for line in limited_results:
-            colon_idx = line.rfind(':')
-            if colon_idx > 0:
-                file_path = line[:colon_idx]
-                count_str = line[colon_idx + 1:]
-                try:
-                    count = int(count_str)
-                    total_matches += count
-                    file_count += 1
-                    final_count_lines.append(to_relative_path(file_path) + ':' + count_str)
-                except ValueError:
-                    final_count_lines.append(line)
-            else:
-                final_count_lines.append(line)
-
-        return GrepOutput(
-            mode='count',
-            num_files=file_count,
-            filenames=[],
-            content='\n'.join(final_count_lines),
-            num_matches=total_matches,
-            applied_limit=applied_limit,
-            applied_offset=offset if offset > 0 else None,
-        )
-
-    # Default: files_with_matches mode
-    else:
-        # Sort by modification time (or name for determinism)
-        file_stats = []
-        for file_path in results:
-            try:
-                mtime = os.path.getmtime(file_path)
-            except OSError:
-                mtime = 0
-            file_stats.append((file_path, mtime))
-
-        # Sort by mtime descending, then by name
-        file_stats.sort(key=lambda x: (-x[1], x[0]))
-        sorted_matches = [x[0] for x in file_stats]
-
-        # Apply head limit
-        limited_matches, applied_limit = apply_head_limit(sorted_matches, head_limit, offset)
-
-        # Convert to relative paths
-        relative_matches = [to_relative_path(f) for f in limited_matches]
-
-        return GrepOutput(
-            mode='files_with_matches',
-            num_files=len(relative_matches),
-            filenames=relative_matches,
-            applied_limit=applied_limit,
-            applied_offset=offset if offset > 0 else None,
-        )
+def _find_rg() -> str | None:
+    return shutil.which("rg")
 
 
 class GrepTool(BaseTool):
+
     @property
     def name(self) -> str:
         return "grep"
 
     @property
     def label(self) -> str:
-        return "grep"
+        return "search"
 
     @property
     def description(self) -> str:
-        return "\n".join((
-            "A powerful search tool built on ripgrep. Use grep for ALL code search tasks — never read files one by one just to find something manually.",
-
-            "## When to use",
-            "- Finding where a function/class/variable is defined or referenced",
-            "- Searching for error messages, log patterns, or configuration keys",
-            "- Locating files that contain a specific string before reading them",
-            "- Strategy: grep first → then read_file only the matching files (with offset/limit to see relevant lines)",
-
-            "## Usage",
-            "- Supports full regex syntax (e.g., 'log.*Error', 'function\\s+\\w+')",
-            "- Filter files with glob parameter (e.g., '*.js', '**/*.tsx') or type parameter (e.g., 'js', 'py', 'rust')",
-            "- Output modes: use 'files_with_matches' first to find which files match, then 'content' on specific files with head_limit to inspect their matches",
-            "- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use `interface\\{\\}` to find `interface{}` in Go code)",
-            "- Multiline matching: By default patterns match within single lines only. For cross-line patterns like `struct \\{[\\s\\S]*?field`, use `multiline: true`",
-            "- The default output_mode is 'files_with_matches' — only matching file paths are returned, not the content. Switch to 'content' when you need to see the actual matching lines.",
-        ))
+        return (
+            f"A powerful search tool built on ripgrep. Search file contents for "
+            f"a pattern. Returns matching lines with context blocks (surrounding lines). "
+            f"Output is limited to {DEFAULT_LIMIT} matches or "
+            f"{format_size(DEFAULT_MAX_BYTES)}. Long lines are truncated to "
+            f"{GREP_MAX_LINE_LENGTH} chars.\n\n"
+            f"## When to use\n"
+            f"- Finding where a function/class/variable is defined or referenced\n"
+            f"- Searching for error messages, log patterns, or configuration keys\n"
+            f"- Strategy: grep first, then read_file only matching files "
+            f"(with offset/limit to see relevant lines)\n\n"
+            f"## Usage\n"
+            f"- Supports full regex syntax (e.g., 'log.*Error', 'function\\s+\\w+')\n"
+            f"- Filter files with glob parameter (e.g., '*.js', '**/*.tsx')\n"
+            f"- Use context to see surrounding lines of each match\n"
+            f"- Pattern syntax: Uses ripgrep - literal braces need escaping "
+            f"(use `interface\\{{\\}}` to find `interface{{}}` in Go code)"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                "path": {"type": "string", "description": "Path to search in (optional)"},
-                "glob": {"type": "string", "description": "Glob pattern for files (optional)"},
-                "type_filter": {"type": "string", "description": "File type filter (optional)"},
-                "output_mode": {"type": "string", "enum": ["content","files_with_matches","count"], "description": "Output mode"},
-                "context_before": {"type": "integer"},
-                "context_after": {"type": "integer"},
-                "context_both": {"type": "integer"},
-                "case_insensitive": {"type": "boolean"},
-                "head_limit": {"type": "integer"},
-                "offset": {"type": "integer"},
-                "multiline": {"type": "boolean"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Search pattern (regex or literal with literal: true)",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory or file to search (default: current directory)",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Filter files by glob pattern, e.g. '*.ts'",
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Case-insensitive search (default: false)",
+                },
+                "literal": {
+                    "type": "boolean",
+                    "description": "Treat pattern as literal string (default: false)",
+                },
+                "context": {
+                    "type": "number",
+                    "description": "Lines to show before and after each match (default: 0)",
+                },
+                "limit": {
+                    "type": "number",
+                    "description": f"Maximum number of matches (default: {DEFAULT_LIMIT})",
+                },
             },
-            "required": ["pattern"]
+            "required": ["pattern"],
         }
 
-    async def execute(self, params: dict, signal: asyncio.Event | None = None) -> ToolResult:
-        pattern = params.get("pattern")
-        if not pattern:
-            return ToolResult(success=False, message="Missing required parameter: pattern")
-
-        # Map params to grep_search signature
-        search_kwargs = {
-            "pattern": pattern,
-            "path": params.get("path"),
-            "glob": params.get("glob"),
-            "type_filter": params.get("type_filter"),
-            "output_mode": params.get("output_mode", "files_with_matches"),
-            "context_before": params.get("context_before"),
-            "context_after": params.get("context_after"),
-            "context_both": params.get("context_both"),
-            "show_line_numbers": True,
-            "case_insensitive": params.get("case_insensitive", False),
-            "head_limit": params.get("head_limit"),
-            "offset": params.get("offset", 0),
-            "multiline": params.get("multiline", False),
-        }
-
+    async def execute(
+        self,
+        params: dict,
+        signal: asyncio.Event | None = None,
+    ) -> ToolResult:
         try:
-            # run the (blocking) search in a thread to avoid blocking the event loop
-            result: GrepOutput = await asyncio.to_thread(grep_search, **search_kwargs)
+            return await self._do_execute(params, signal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("grep 执行异常: %s", exc)
+            return ToolResult(success=False, message=f"搜索失败: {exc}")
 
-            return ToolResult(success=True, data=result.to_dict())
+    async def _do_execute(
+        self,
+        params: dict,
+        signal: asyncio.Event | None = None,
+    ) -> ToolResult:
+        pattern: str = params["pattern"]
+        search_dir: str | None = params.get("path")
+        glob_filter: str | None = params.get("glob")
+        ignore_case: bool = params.get("ignore_case", False)
+        literal: bool = params.get("literal", False)
+        context: int = params.get("context", 0)
+        limit: int = params.get("limit", DEFAULT_LIMIT)
 
-        except Exception as e:
-            return ToolResult(success=False, message=str(e))
+        if signal and signal.is_set():
+            raise asyncio.CancelledError("Operation aborted")
 
+        rg_path = _find_rg()
+        if not rg_path:
+            raise RuntimeError(
+                "ripgrep (rg) is not available. Install it: https://github.com/BurntSushi/ripgrep"
+            )
 
-def main():
-    """CLI interface for grep tool"""
-    import argparse
-    import json
+        cwd = params.get("cwd", os.getcwd())
+        search_path = search_dir if (search_dir and os.path.isabs(search_dir)) else os.path.join(cwd, search_dir or ".")
+        search_path = os.path.normpath(search_path)
 
-    parser = argparse.ArgumentParser(description='Python grep tool')
-    parser.add_argument('pattern', help='Regex pattern to search for')
-    parser.add_argument('-p', '--path', help='Path to search in')
-    parser.add_argument('-g', '--glob', help='Glob pattern for files')
-    parser.add_argument('-t', '--type', dest='type_filter', help='File type to search')
-    parser.add_argument('-m', '--mode', default='files_with_matches',
-                        choices=['content', 'files_with_matches', 'count'],
-                        help='Output mode')
-    parser.add_argument('-B', type=int, help='Lines before match')
-    parser.add_argument('-A', type=int, help='Lines after match')
-    parser.add_argument('-C', type=int, help='Lines before and after match')
-    parser.add_argument('-n', '--no-line-numbers', action='store_true',
-                        help='Disable line numbers')
-    parser.add_argument('-i', '--case-insensitive', action='store_true',
-                        help='Case insensitive search')
-    parser.add_argument('--head-limit', type=int, help='Limit output')
-    parser.add_argument('--offset', type=int, default=0, help='Skip first N items')
-    parser.add_argument('--multiline', action='store_true', help='Enable multiline mode')
-    parser.add_argument('--json', action='store_true', help='Output as JSON')
+        if not os.path.exists(search_path):
+            raise FileNotFoundError(f"路径不存在: {search_path}")
 
-    args = parser.parse_args()
+        is_directory = os.path.isdir(search_path)
+        effective_limit = max(1, limit)
+        context_value = max(0, context)
 
-    try:
-        result = grep_search(
-            pattern=args.pattern,
-            path=args.path,
-            glob=args.glob,
-            type_filter=args.type_filter,
-            output_mode=args.mode,
-            context_before=args.B,
-            context_after=args.A,
-            context_both=args.C,
-            show_line_numbers=not args.no_line_numbers,
-            case_insensitive=args.case_insensitive,
-            head_limit=args.head_limit,
-            offset=args.offset,
-            multiline=args.multiline,
+        args = ["--json", "--line-number", "--color=never", "--hidden"]
+        if ignore_case:
+            args.append("--ignore-case")
+        if literal:
+            args.append("--fixed-strings")
+        if glob_filter:
+            args.extend(["--glob", glob_filter])
+        args.extend([pattern, search_path])
+
+        # File cache for context lines
+        file_cache: dict[str, list[str]] = {}
+
+        def get_file_lines(file_path: str) -> list[str]:
+            if file_path not in file_cache:
+                try:
+                    with open(file_path, encoding="utf-8", errors="replace") as f:
+                        content = f.read().replace("\r\n", "\n").replace("\r", "\n")
+                    file_cache[file_path] = content.split("\n")
+                except Exception:
+                    file_cache[file_path] = []
+            return file_cache[file_path]
+
+        def format_path(file_path: str) -> str:
+            if is_directory:
+                rel = os.path.relpath(file_path, search_path)
+                if rel and not rel.startswith(".."):
+                    return rel.replace("\\", "/")
+            return os.path.basename(file_path)
+
+        def format_block(file_path: str, line_number: int) -> list[str]:
+            relative_path = format_path(file_path)
+            lines = get_file_lines(file_path)
+            if not lines:
+                return [f"{relative_path}:{line_number}: (unable to read file)"]
+
+            block: list[str] = []
+            c = context_value
+            start = max(1, line_number - c) if c > 0 else line_number
+            end = min(len(lines), line_number + c) if c > 0 else line_number
+
+            for current in range(start, end + 1):
+                if current > len(lines):
+                    break
+                line_text = lines[current - 1]
+                sanitized = line_text.replace("\r", "")
+                is_match_line = current == line_number
+                truncated_text, was_truncated = truncate_line(sanitized)
+                if was_truncated:
+                    nonlocal lines_truncated
+                    lines_truncated = True
+                if is_match_line:
+                    block.append(f"{relative_path}:{current}: {truncated_text}")
+                else:
+                    block.append(f"{relative_path}-{current}- {truncated_text}")
+            return block
+
+        lines_truncated = False
+        match_count = 0
+        match_limit_reached = False
+        matches: list[dict[str, Any]] = []
+
+        proc = await asyncio.create_subprocess_exec(
+            rg_path, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
 
-        if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
-        else:
-            # Print human-readable format
-            if result.content:
-                print(result.content)
-            else:
-                for filename in result.filenames:
-                    print(filename)
+        stderr_data = b""
 
-            if result.applied_limit:
-                print(f"\n[Limit: {result.applied_limit}, Offset: {result.applied_offset or 0}]")
+        async def read_stderr():
+            nonlocal stderr_data
+            if proc.stderr:
+                stderr_data = await proc.stderr.read()
 
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        stderr_task = asyncio.create_task(read_stderr())
 
+        if proc.stdout:
+            async for raw_line in proc.stdout:
+                if signal and signal.is_set():
+                    proc.kill()
+                    raise asyncio.CancelledError("Operation aborted")
 
-if __name__ == '__main__':
-    main()
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or match_count >= effective_limit:
+                    continue
+
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if event.get("type") == "match":
+                    match_count += 1
+                    file_path = event.get("data", {}).get("path", {}).get("text")
+                    line_number = event.get("data", {}).get("line_number")
+                    if file_path and isinstance(line_number, int):
+                        matches.append({"file_path": file_path, "line_number": line_number})
+
+                    if match_count >= effective_limit:
+                        match_limit_reached = True
+                        proc.kill()
+                        break
+
+        await stderr_task
+        await proc.wait()
+
+        if signal and signal.is_set():
+            raise asyncio.CancelledError("Operation aborted")
+
+        if match_count == 0:
+            return ToolResult(success=True, data="No matches found")
+
+        output_lines: list[str] = []
+        for match in matches:
+            block = format_block(match["file_path"], match["line_number"])
+            output_lines.extend(block)
+
+        raw_output = "\n".join(output_lines)
+        truncation = truncate_head(raw_output, max_lines=sys.maxsize)
+
+        output = truncation.content
+        notices: list[str] = []
+
+        if match_limit_reached:
+            notices.append(
+                f"{effective_limit} matches limit reached. "
+                f"Use limit={effective_limit * 2} for more, or refine pattern"
+            )
+        if truncation.truncated:
+            notices.append(f"{format_size(DEFAULT_MAX_BYTES)} limit reached")
+        if lines_truncated:
+            notices.append(
+                f"Some lines truncated to {GREP_MAX_LINE_LENGTH} chars. "
+                "Use read tool to see full lines"
+            )
+
+        if notices:
+            output += f"\n\n[{'. '.join(notices)}]"
+
+        return ToolResult(success=True, data=output)

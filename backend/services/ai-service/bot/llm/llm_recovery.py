@@ -25,8 +25,6 @@ class LLMRecoveryMixin:
     # These attributes are satisfied by AgentRuntime; declared here for type checkers.
     CONTINUATION_MESSAGE: str
     agent_config: Any
-    context_assembler: Any
-    context_compactor: Any
 
     def _raise_if_stop_requested(self, session_state: RuntimeSessionState) -> None: ...  # provided by AgentRuntime
     async def _publish_runtime_event(self, session_state: RuntimeSessionState, event: AgentEvent) -> None: ...  # provided by AgentRuntime
@@ -49,9 +47,12 @@ class LLMRecoveryMixin:
         compact_attempts = 0
         transport_attempts = 0
         accumulated_content = ""
+        # 本地追踪 continuation 注入的消息，避免污染 context.chat_messages
+        continuation_messages: list[dict[str, Any]] = []
 
         while True:
             try:
+                self._raise_if_stop_requested(session_state)
                 llm_client = AsyncLLMClient()
                 round_response: dict[str, Any] = {
                     "content": "",
@@ -59,7 +60,9 @@ class LLMRecoveryMixin:
                     "finish_reason": None,
                 }
 
-                async for chunk in llm_client.invoke_stream(messages,tools):
+                async for chunk in llm_client.invoke_stream(
+                    messages, tools, timeout=cfg.llm_stream_timeout_seconds
+                ):
                     self._raise_if_stop_requested(session_state)
                     if chunk["type"] == "content":
                         round_response["content"] += chunk["data"]
@@ -95,9 +98,12 @@ class LLMRecoveryMixin:
                             continuation_attempts,
                             cfg.max_continuation_attempts,
                         )
-                        context.add_assistant_message(accumulated_content)
-                        context.add_user_message(self.CONTINUATION_MESSAGE)
-                        messages = await self.context_assembler.assemble(context)
+                        # 不在 context.chat_messages 中写入中间消息，在本地构建
+                        continuation_messages.append({"role": "assistant", "content": round_response["content"]})
+                        continuation_messages.append({"role": "user", "content": self.CONTINUATION_MESSAGE})
+                        # 重新组装 messages：原始 + 本地累积的 continuation 消息
+                        messages = await context.assemble()
+                        messages.extend(continuation_messages)
                         continue
                     log.error(
                         "[Recovery] Continuation exhausted ({} attempts), "
@@ -112,7 +118,7 @@ class LLMRecoveryMixin:
             except (TurnStoppedError, asyncio.CancelledError):
                 raise
 
-            except Exception as exc:
+            except (asyncio.TimeoutError, Exception) as exc:
                 err_text = str(exc).lower()
 
                 # Strategy 2: context too long — compact and retry
@@ -130,10 +136,11 @@ class LLMRecoveryMixin:
                             compact_attempts,
                             cfg.max_compact_attempts,
                         )
-                        await self.context_compactor.compact_history(
-                            context, reason="recovery-context-too-long"
-                        )
-                        messages = await self.context_assembler.assemble(context)
+                        await context.force_compact()
+                        messages = await context.assemble()
+                        # 重新注入 continuation 消息（如有）
+                        if continuation_messages:
+                            messages.extend(continuation_messages)
                         continue
                     raise
 

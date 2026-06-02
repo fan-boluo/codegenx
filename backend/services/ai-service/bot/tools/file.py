@@ -2,22 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import difflib
 import fnmatch
 import os
+import re
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 import aiofiles
 from pydantic import BaseModel, Field
 
 from bot.tools.base import BaseTool, ToolResult
+from bot.tools.truncate_utils import (
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_LINES,
+    TruncationResult,
+    format_size,
+    truncate_head,
+)
 from bot.utils.log_utils import log
 from shared.constants import get_code_dir
-
-DEFAULT_MAX_LINES = 2000
-DEFAULT_MAX_BYTES = 50 * 1024  # 50KB
-GREP_MAX_LINE_LENGTH = 500  # Max chars per grep match line
 
 class TextContent(BaseModel):
     """Text content block"""
@@ -31,60 +35,56 @@ class ImageContent(BaseModel):
     data: str  # Base64 or URL
     mime_type: str | None = Field(default=None, alias="mimeType")
 
-@dataclass
-class TruncationResult:
-    """Result of truncation operation"""
 
-    content: str
-    """The truncated content"""
+# ── fuzzy matching helpers (from pi-tools edit_diff) ──
 
-    truncated: bool
-    """Whether truncation occurred"""
-
-    truncated_by: Literal["lines", "bytes"] | None
-    """What caused truncation (lines or bytes limit)"""
-
-    total_lines: int
-    """Total number of lines in original content"""
-
-    total_bytes: int
-    """Total bytes in original content"""
-
-    output_lines: int
-    """Number of lines in output"""
-
-    output_bytes: int
-    """Number of bytes in output"""
-
-    last_line_partial: bool
-    """Whether last line was partially truncated (tail only)"""
-
-    first_line_exceeds_limit: bool
-    """Whether first line alone exceeds byte limit (head only)"""
-
-    max_lines: int
-    """Maximum lines limit used"""
-
-    max_bytes: int
-    """Maximum bytes limit used"""
+def _normalize_for_fuzzy(text: str) -> str:
+    """Normalize text for fuzzy matching: trailing whitespace, smart quotes, unicode dashes/spaces."""
+    lines = [line.rstrip() for line in text.split("\n")]
+    result = "\n".join(lines)
+    result = result.replace("‘", "'").replace("’", "'").replace("‚", "'").replace("‛", "'")
+    result = result.replace("“", '"').replace("”", '"').replace("„", '"').replace("‟", '"')
+    for ch in "‐‑‒–—―−":
+        result = result.replace(ch, "-")
+    for ch in "            　":
+        result = result.replace(ch, " ")
+    return result
 
 
-def format_size(num_bytes: int) -> str:
-    """
-    Format byte count as human-readable size.
+def _strip_bom(content: str) -> tuple[str, str]:
+    if content.startswith("﻿"):
+        return "﻿", content[1:]
+    return "", content
 
-    Args:
-        num_bytes: Number of bytes
 
-    Returns:
-        Formatted string (e.g., "1.5KB", "2.3MB")
-    """
-    if num_bytes < 1024:
-        return f"{num_bytes}B"
-    elif num_bytes < 1024 * 1024:
-        return f"{num_bytes / 1024:.1f}KB"
-    else:
-        return f"{num_bytes / (1024 * 1024):.1f}MB"
+def _detect_line_ending(text: str) -> str:
+    crlf = text.count("\r\n")
+    cr = text.count("\r") - crlf
+    lf = text.count("\n") - crlf
+    if crlf >= lf and crlf >= cr:
+        return "\r\n"
+    elif cr > lf:
+        return "\r"
+    return "\n"
+
+
+def _normalize_lf(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _restore_line_endings(text: str, ending: str) -> str:
+    if ending == "\r\n":
+        return text.replace("\n", "\r\n")
+    elif ending == "\r":
+        return text.replace("\n", "\r")
+    return text
+
+
+def _generate_diff(old_content: str, new_content: str) -> str:
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff = list(difflib.unified_diff(old_lines, new_lines, fromfile="original", tofile="modified", n=3))
+    return "".join(diff)
 def resolve_read_path(path: str, app_id: str | int = "main"):
     expanded = Path(path).expanduser()
     if not expanded.is_absolute():
@@ -123,85 +123,6 @@ def detect_image_mime_type(path: Path):
     }
 
     return mime_types.get(suffix)
-
-
-def truncate_with_max_limit(content:str):
-    lines = content.split('\n')
-    total_lines =len(lines)
-    total_bytes =len(content.encode('utf-8'))
-
-    max_bytes = DEFAULT_MAX_BYTES
-    max_lines = DEFAULT_MAX_LINES
-    if total_lines <= max_lines and total_bytes <= max_bytes:
-        return TruncationResult(
-            content=content,
-            truncated=False,
-            truncated_by=None,
-            total_lines=total_lines,
-            total_bytes=total_bytes,
-            output_lines=total_lines,
-            output_bytes=total_bytes,
-            last_line_partial=False,
-            first_line_exceeds_limit=False,
-            max_lines=max_lines,
-            max_bytes=max_bytes,
-        )
-    first_line_bytes = len(lines[0].encode('utf-8'))
-    if first_line_bytes > max_bytes:
-        return TruncationResult(
-            content="",
-            truncated=True,
-            truncated_by="bytes",
-            total_lines=total_lines,
-            total_bytes=total_bytes,
-            output_lines=0,
-            output_bytes=0,
-            last_line_partial=False,
-            first_line_exceeds_limit=True,
-            max_lines=max_lines,
-            max_bytes=max_bytes,
-        )
-
-    output_lines_arr: list[str] = []
-    output_bytes_count = 0
-    truncated_by: Literal["lines", "bytes"] = "lines"
-
-    # 累计行数，达到最大size截断
-    for i, line in enumerate(lines):
-        if i >= max_lines:
-            truncated_by = "lines"
-            break
-
-        # +1 for newline (except first line)
-        line_bytes = len(line.encode('utf-8')) + (1 if i > 0 else 0)
-
-        if output_bytes_count + line_bytes > max_bytes:
-            truncated_by = "bytes"
-            break
-
-        output_lines_arr.append(line)
-        output_bytes_count += line_bytes
-
-    # If we exited due to line limit
-    if len(output_lines_arr) >= max_lines and output_bytes_count <= max_bytes:
-        truncated_by = "lines"
-
-    output_content = '\n'.join(output_lines_arr)
-    final_output_bytes = len(output_content.encode('utf-8'))
-
-    return TruncationResult(
-        content=output_content,
-        truncated=True,
-        truncated_by=truncated_by,
-        total_lines=total_lines,
-        total_bytes=total_bytes,
-        output_lines=len(output_lines_arr),
-        output_bytes=final_output_bytes,
-        last_line_partial=False,
-        first_line_exceeds_limit=False,
-        max_lines=max_lines,
-        max_bytes=max_bytes,
-    )
 
 
 class ReadFileTool(BaseTool):
@@ -349,7 +270,7 @@ class ReadFileTool(BaseTool):
                 selected_content = '\n'.join(all_lines[start_line:])
 
             # Apply truncation (respects both line and byte limits)
-            truncation = truncate_with_max_limit(selected_content)
+            truncation = truncate_head(selected_content, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES)
 
             output_text: str
             details: dict[str, Any] | None = None
@@ -584,31 +505,69 @@ class EditFileTool(BaseTool):
             raise asyncio.CancelledError("Operation aborted")
 
         async with aiofiles.open(absolute_path, 'r', encoding='utf-8') as f:
-            content = await f.read()
+            raw_content = await f.read()
+
+        if signal and signal.is_set():
+            raise asyncio.CancelledError("Operation aborted")
 
         if position == "end":
             # Append new_text to end of file (ensure newline separation)
-            separator = "\n" if content and not content.endswith("\n") else ""
-            new_content = content + separator + new_text + "\n"
+            separator = "\n" if raw_content and not raw_content.endswith("\n") else ""
+            new_content = raw_content + separator + new_text + "\n"
         else:
-            if old_text not in content:
-                snippet = old_text[:80].replace('\n', '\\n')
-                message = (
-                    f"Edit failed: old_text not found in {path}. "
-                    f"Searched for ({len(old_text)} chars): \"{snippet}...\" "
-                    f"Common causes: whitespace mismatch (tabs vs spaces), "
-                    f"line ending differences, or the text was already modified. "
-                    f"Re-read the file around the target area with offset/limit and copy the exact text."
-                )
-                return ToolResult(
-                    success=False,
-                    message=message
+            # Fuzzy matching: normalize BOM, line endings, unicode for robust matching
+            bom, content = _strip_bom(raw_content)
+            original_ending = _detect_line_ending(content)
+            normalized_content = _normalize_lf(content)
+            normalized_old = _normalize_lf(old_text)
+            normalized_new = _normalize_lf(new_text)
+
+            # Try exact match first, then fuzzy
+            idx = normalized_content.find(normalized_old)
+            if idx < 0:
+                fuzzy_content = _normalize_for_fuzzy(normalized_content)
+                fuzzy_old = _normalize_for_fuzzy(normalized_old)
+                idx = fuzzy_content.find(fuzzy_old)
+                if idx < 0:
+                    snippet = old_text[:80].replace('\n', '\\n')
+                    message = (
+                        f"Edit failed: old_text not found in {path}. "
+                        f"Searched for ({len(old_text)} chars): \"{snippet}...\" "
+                        f"Common causes: whitespace mismatch (tabs vs spaces), "
+                        f"line ending differences, or the text was already modified. "
+                        f"Re-read the file around the target area with offset/limit and copy the exact text."
+                    )
+                    return ToolResult(success=False, message=message)
+                # Use fuzzy match position
+                normalized_old = _normalize_for_fuzzy(normalized_old)
+
+            # Count occurrences to guard against ambiguous replacements
+            if params.get("replace_all"):
+                new_content = normalized_content.replace(normalized_old, normalized_new)
+            else:
+                occurrences = normalized_content.count(normalized_old)
+                if occurrences > 1:
+                    message = (
+                        f"Found {occurrences} occurrences of the text in {path}. "
+                        f"The text must be unique. Please provide more surrounding "
+                        f"context to make it unique, or use replace_all: true."
+                    )
+                    return ToolResult(success=False, message=message)
+                new_content = (
+                    normalized_content[:idx]
+                    + normalized_new
+                    + normalized_content[idx + len(normalized_old):]
                 )
 
-            if params.get("replace_all"):
-                new_content = content.replace(old_text, new_text)
-            else:
-                new_content = content.replace(old_text, new_text, 1)
+            if normalized_content == new_content:
+                message = (
+                    f"No changes made to {path}. "
+                    f"The replacement produced identical content."
+                )
+                return ToolResult(success=False, message=message)
+
+            # Restore BOM and original line endings
+            new_content = bom + _restore_line_endings(new_content, original_ending)
 
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
@@ -616,9 +575,10 @@ class EditFileTool(BaseTool):
         async with aiofiles.open(absolute_path, 'w', encoding='utf-8') as f:
             await f.write(new_content)
 
+        diff = _generate_diff(raw_content, new_content)
         return ToolResult(
             success=True,
-            data=f"Successfully edited {path}",
+            data=f"Successfully edited {path}.\n\nDiff:\n{diff}" if diff.strip() else f"Successfully edited {path}.",
         )
 
 

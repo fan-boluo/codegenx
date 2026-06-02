@@ -137,6 +137,26 @@ class SessionContext:
             self._session_memory.fire_extract(self.chat_messages)
             log.debug("session memory 后台压缩已触发")
 
+    async def force_compact(self) -> None:
+        """强制压缩聊天历史（供 recovery 策略调用）。
+
+        直接调用 CompactionEngine.compact_if_needed，无论 token 是否超阈值都尝试压缩。
+        压缩后的 messages 直接替换 self.chat_messages。
+        """
+        self.chat_messages, result = await self._compaction.compact_if_needed(
+            self.chat_messages
+        )
+        if result is not None:
+            log.info(
+                "force_compact: path={}, tokens_before={}, tokens_after={}, removed={}",
+                result.path_used,
+                result.tokens_before,
+                result.tokens_after,
+                result.messages_removed,
+            )
+        else:
+            log.info("force_compact: compaction skipped (not needed)")
+
     # TODO 上下文还需要做的事情：token计算
     def token_status(self, messages: list[dict]) -> dict:
         """

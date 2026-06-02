@@ -235,12 +235,22 @@ class AgentRuntime(LLMRecoveryMixin):
         return session_state
 
     async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
-        """Wait for request cleanup (simplified with pool)."""
+        """Wait for request cleanup using event notification (avoids busy-wait polling)."""
+        session_state = await self.session_pool.get(session_id)
+        if session_state is None:
+            return
+        if request_id not in session_state.active_tasks:
+            return
         while True:
+            try:
+                await asyncio.wait_for(session_state.close_signal.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            # Re-read session_state in case pool replaced it
             session_state = await self.session_pool.get(session_id)
             if session_state is None or request_id not in session_state.active_tasks:
                 return
-            await asyncio.sleep(0.01)
+            session_state.close_signal.clear()
 
     async def _enqueue_session_request(
         self, session_state: RuntimeSessionState, request: AiServiceGenerateRequest
@@ -297,6 +307,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     if not session_state.closed:
                         session_state.stop_signal.clear()
                         session_state.stop_reason = ""
+                        session_state.close_signal.set()  # 通知 _wait_for_request_cleanup
                     session_state.touch()
                     if session_state.session_manager is not None and session_state.context_manager is not None:
                         await session_state.session_manager.save_history(

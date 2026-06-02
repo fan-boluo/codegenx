@@ -1,13 +1,16 @@
-import asyncio
-import subprocess
-from typing import Any
-from pathlib import Path
+"""
+BashTool — 预留工具，暂不注册（不继承 BaseTool）。
+后续如需启用，改为继承 BaseTool 并恢复执行逻辑即可。
+"""
+from __future__ import annotations
 
-from bot.tools.base import BaseTool, ToolResult
-from bot.utils.log_utils import log
+from typing import Any
+
 
 # 去掉继承BaseTool，危险工具，不加载
 class BashTool:
+    """Shell 命令执行工具（预留，暂未启用）"""
+
     @property
     def name(self) -> str:
         return "bash"
@@ -18,72 +21,15 @@ class BashTool:
 
     @property
     def description(self) -> str:
-        return "Run a shell command."
+        return "Execute a shell command. (预留工具，暂未实现)"
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to execute"
-                }
+                "command": {"type": "string", "description": "Shell command to execute"},
+                "timeout": {"type": "number", "description": "Timeout in seconds (optional)"},
             },
-            "required": ["command"]
+            "required": ["command"],
         }
-
-    async def execute(
-            self,
-            params: dict,
-            signal: asyncio.Event | None = None,
-    ) -> ToolResult:
-        command = params["command"]
-        
-        if signal and signal.is_set():
-            raise asyncio.CancelledError("Operation aborted")
-            
-        try:
-            # For simplicity, running async process
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(Path.cwd())  # Defaults to current directory
-            )
-            
-            # Wait for execution or cancellation
-            if signal:
-                # Polling for signal or process finish
-                while process.returncode is None:
-                    if signal.is_set():
-                        process.terminate()
-                        raise asyncio.CancelledError("Operation aborted")
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=0.5)
-                    except asyncio.TimeoutError:
-                        continue
-            else:
-                await process.wait()
-                
-            stdout, stderr = await process.communicate()
-            
-            out = (stdout + stderr).decode('utf-8', errors='replace').strip()
-            # Trim output if too long
-            if len(out) > 50000:
-                out = out[:50000] + "\n... (output truncated)"
-                
-            if not out:
-                out = "(no output)"
-                
-            return ToolResult(
-                success=process.returncode == 0,
-                data=[{"type": "text", "text": out}],
-            )
-            
-        except Exception as e:
-            log.error(f"Bash command failed: {e}")
-            return ToolResult(
-                success=False,
-                data=[{"type": "text", "text": f"Error: {str(e)}"}],
-            )

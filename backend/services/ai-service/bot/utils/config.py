@@ -57,6 +57,7 @@ class AgentConfig(Base):
     max_transport_attempts: ClassVar[int] = 3
     transport_backoff_base_seconds: ClassVar[float] = 1.0
     transport_backoff_max_seconds: ClassVar[float] = 8.0
+    llm_stream_timeout_seconds: ClassVar[float] = 300.0  # 单次 LLM 流式调用总超时（秒）
     max_steps: int = Field(
         default=50,
         validation_alias=AliasChoices("maxSteps", "max_steps"),

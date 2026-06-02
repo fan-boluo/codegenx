@@ -75,11 +75,12 @@ class RuntimeSessionState:
 
 
     # Session lifecycle
-    started_at: datetime = ""
+    started_at: datetime | None = None
     last_activity_at: float = 0.0
     state: AgentState = AgentState.IDLE
     processing: bool = False
     closed: bool = False
+    close_signal: asyncio.Event = field(default_factory=asyncio.Event)  # 用于 event 通知替代忙等轮询
     stop_signal: asyncio.Event = field(default_factory=asyncio.Event)
     stop_reason: str = ""
     worker_task: asyncio.Task | None = None  # 一个携程任务
