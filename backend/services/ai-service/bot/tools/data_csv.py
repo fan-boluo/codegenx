@@ -18,7 +18,7 @@ from bot.data_analysis.stats_engine import (
     compute_numeric_stats, compute_categorical_stats,
     compute_correlation, infer_column_types,
     format_numeric_stats, format_categorical_stats, format_correlation,
-    _resolve_sample_pct, MAX_COLS_WIDE_TABLE as _MAX_STATS_COLS,
+    _resolve_sample_pct,
     _HAS_PANDAS,
 )
 from bot.utils.log_utils import log

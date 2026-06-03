@@ -63,7 +63,7 @@ service_registry = AiServiceRegistry()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await agent_service.startup()
-    await service_registry.startup()
+    # await service_registry.startup()
     log.info("ai-service startup completed ")
     try:
         yield

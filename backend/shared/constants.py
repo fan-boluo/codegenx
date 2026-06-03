@@ -8,10 +8,10 @@ class UserRole(StrEnum):
     ADMIN = "admin"
 
 # 定义不同部门，方便后续的权限区分
-class Department(StrEnum):
-    DEP1 = "dep1"
-    DEP2 = "dep2"
-    DEP3 = "dep3"
+# class Department(StrEnum):
+#     DEP1 = "dep1"
+#     DEP2 = "dep2"
+#     DEP3 = "dep3"
 
 
 USER_LOGIN_STATE = "user_login"
@@ -89,6 +89,13 @@ MAX_CODE_LENGTH = 50000
 STREAM_CHUNK_SIZE = 1024
 STREAM_TIMEOUT_SECONDS = 300
 
+# 日志
+# 获得当前项目的绝对路径
+ROOT_DIR = Path(__file__).resolve().parents[2]
+LOG_DIR = ROOT_DIR / "logs"  # 存放项目日志目录的绝对路径
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "app.log"  # 存储日志的文件
+
 """
 这是一个远程服务，不是本地部署的，不在用户根目录下，而是和应用代码放在一处的
 -- frontend
@@ -105,20 +112,20 @@ STREAM_TIMEOUT_SECONDS = 300
 
 """ 
 
-ROOT_DIR = Path(__file__).resolve().parents[2] / ".data"
+DATA_ROOT_DIR = Path(__file__).resolve().parents[2] / ".data"
 
-APPS_DIR = ROOT_DIR / "apps"
+APPS_DIR = DATA_ROOT_DIR / "apps"
 APPS_CODE_DIR = APPS_DIR / "code"
 APPS_DEPLOY_DIR = APPS_DIR / "deploy"
 
-# WORKSPACE_DIR = ROOT_DIR / "workspace"
+# WORKSPACE_DIR = DATA_ROOT_DIR / "workspace"
 
 GOOD_APP_PRIORITY = 99
 DEFAULT_APP_PRIORITY = 0
 
 
 def get_runtime_app_dir(app_id: str | int) -> Path:
-    return ROOT_DIR / str(app_id)
+    return DATA_ROOT_DIR / str(app_id)
 
 def get_code_dir(app_id: str | int) -> Path:
     return get_runtime_app_dir(app_id) / "code"
