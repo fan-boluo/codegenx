@@ -47,7 +47,7 @@ class LLMRecoveryMixin:
         compact_attempts = 0
         transport_attempts = 0
         accumulated_content = ""
-        # 本地追踪 continuation 注入的消息，避免污染 context.chat_messages
+        # 本地追踪 continuation 注入的消息，避免污染 context.chat_messages，因为是属于错误重试的消息
         continuation_messages: list[dict[str, Any]] = []
 
         while True:

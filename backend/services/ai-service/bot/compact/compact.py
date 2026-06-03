@@ -87,7 +87,7 @@ class _CircuitBreaker:
         if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
             self.disabled = True
             log.warning(
-                "Auto-compact circuit breaker opened after %d consecutive failures.",
+                "Auto-compact circuit breaker opened after {} consecutive failures.",
                 self.consecutive_failures,
             )
 
@@ -263,7 +263,7 @@ async def _llm_compact(
 
         except Exception as exc:
             log.warning(
-                "LLM compact attempt %d/%d failed: %s",
+                "LLM compact attempt {}/{} failed: {}",
                 attempt, MAX_COMPACT_RETRIES, exc,
             )
             if attempt < MAX_COMPACT_RETRIES:
@@ -276,7 +276,7 @@ async def _llm_compact(
                 while safe_idx < len(work_messages) and work_messages[safe_idx].get("role") == "tool":
                     safe_idx += 1
                 work_messages = work_messages[safe_idx:]
-                log.info("PTL retry: dropped %d oldest messages (safe boundary at %d)", safe_idx, safe_idx)
+                log.info("PTL retry: dropped {} oldest messages (safe boundary at {})", safe_idx, safe_idx)
 
     return None
 
@@ -340,7 +340,7 @@ class CompactionEngine:
             from compact.thresholds import EFFECTIVE_CONTEXT_WINDOW
             truncated = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=EFFECTIVE_CONTEXT_WINDOW)
             log.warning(
-                "All compaction paths failed; falling back to conservative truncation: %d→%d messages.",
+                "All compaction paths failed; falling back to conservative truncation: {}→{} messages.",
                 len(messages), len(truncated),
             )
             return truncated, CompactResult(
@@ -353,7 +353,7 @@ class CompactionEngine:
             )
 
         log.info(
-            "Compaction complete via %s: %d→%d tokens, removed %d messages.",
+            "Compaction complete via {}: {}→{} tokens, removed {} messages.",
             result.path_used,
             result.tokens_before,
             result.tokens_after,
@@ -374,7 +374,7 @@ class CompactionEngine:
                     log.info("Using session-memory fast-path compaction.")
                     return _session_memory_compact(messages, summary)
             except Exception as exc:
-                log.warning("Session-memory fast-path failed: %s; trying LLM.", exc)
+                log.warning("Session-memory fast-path failed: {}; trying LLM.", exc)
 
         # Path B — LLM summarization
         if self._llm_fn is not None:
