@@ -124,6 +124,10 @@ class ToolExecutor:
             result = result.model_dump()
         elif hasattr(result, "dict"):
             result = result.dict()
+        # model_dump() 后的 dict 放入 tool_message["content"] 会导致 LLM API 拒绝
+        # （因为 content 必须是 str 或 list，不能是 dict）
+        if isinstance(result, dict):
+            result = result.get("message") or str(result)
 
         return result
 
