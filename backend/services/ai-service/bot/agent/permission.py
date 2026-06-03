@@ -18,7 +18,6 @@ WRITE_TOOLS = {
     "write_short_term",
     "write_long_term",
     "write_identity_memory",
-    "todo",
 }
 
 

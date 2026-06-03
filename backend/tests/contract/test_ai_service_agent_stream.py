@@ -778,51 +778,14 @@ class ContextAssemblerTest(unittest.TestCase):
 
 
 class ToolCapabilityTest(unittest.TestCase):
-    def test_tools_handler_registers_todo_load_skill_and_task(self) -> None:
+    def test_tools_handler_registers_load_skill_and_task(self) -> None:
         from bot.agent.tool_handler import ToolsHandler
 
         handler = ToolsHandler()
         tool_names = {tool.name for tool in handler.tools}
 
-        self.assertIn("todo", tool_names)
         self.assertIn("load_skill", tool_names)
         self.assertIn("task", tool_names)
-
-    def test_todo_tool_updates_plan_state_via_tool_executor(self) -> None:
-        from bot.agent.plan.planner import Planner
-        from bot.agent.runtime import TurnContext
-        from bot.agent.tool_executor import ToolExecutor
-        from bot.agent.tool_handler import ToolsHandler
-
-        planner = Planner()
-        context = TurnContext(
-            app_id="701",
-            session_id="session-701",
-            turn_id="turn-701",
-            user_input="更新计划",
-            plan_state=planner.get_state(),
-            metadata={"planner": planner},
-        )
-        executor = ToolExecutor(ToolsHandler())
-
-        result = asyncio.run(
-            executor.execute(
-                {
-                    "name": "todo",
-                    "arguments": {
-                        "items": [
-                            {"content": "Inspect prompt pipeline", "status": "completed"},
-                            {"content": "Implement todo tool", "status": "in_progress", "activeForm": "Implementing todo tool"},
-                        ]
-                    },
-                },
-                context,
-            )
-        )
-
-        self.assertTrue(result["success"])
-        self.assertIn("[>] Implement todo tool", result["data"])
-        self.assertIn("[>] Implement todo tool", context.plan_state)
 
     def test_load_skill_tool_returns_skill_body(self) -> None:
         from bot.agent.runtime import TurnContext
