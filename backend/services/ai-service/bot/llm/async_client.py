@@ -116,9 +116,12 @@ class AsyncLLMClient:
 
                     async def _stream_with_timeout():
                         while True:
-                            chunk = await asyncio.wait_for(
-                                stream_iterator.__anext__(), timeout=min(timeout, 120.0)
-                            )
+                            try:
+                                chunk = await asyncio.wait_for(
+                                    stream_iterator.__anext__(), timeout=min(timeout, 120.0)
+                                )
+                            except StopAsyncIteration:
+                                return
                             yield chunk
 
                     chunk_source = _stream_with_timeout()
