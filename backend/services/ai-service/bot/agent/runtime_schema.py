@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from agent.agent_schema import AgentState
+from agent.task.task_manager import TaskManager
 from context.session_context import SessionContext
 from monitor.telemetry_schema import SpanRecord
 from session.manager import SessionManager
@@ -54,6 +55,7 @@ class RuntimeSessionState:
     runtime: AgentRuntime
     context_manager: SessionContext | None = None  # 整个会话的上下文管理（由 on_session_start hook 初始化）
     session_manager: SessionManager | None = None  # TODO 转移到后台监控模块，负责落盘的
+    task_manager: TaskManager | None = None  # 任务看板，跟随 session 生命周期
 
 
     # Monitoring (initialised by on_session_start hook)

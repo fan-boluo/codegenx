@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 # from agent.assembler import get_context_assembler
 from agent.agent_schema import AgentState
+from agent.task.task_manager import TaskManager
 from agent.tool_executor import MEMORY_TOOL_NAMES
 from monitor.monitor_pipeline import get_monitor_pipeline
 from bot.session.manager import SessionManager
@@ -37,10 +38,15 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
 
     session_manager = SessionManager(str(req.app_id))
     session.session_manager = session_manager
+
+    task_manager = TaskManager(app_id=session.app_id, session_id=session.session_id)
+    session.task_manager = task_manager
+
     session.context_manager = SessionContext(
         session_id=session.session_id,
         app_id=session.app_id,
         db_name=session.db_name,
+        task_manager=task_manager,
     )
 
     # await get_context_assembler().build_fix_context(session)

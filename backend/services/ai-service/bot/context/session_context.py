@@ -23,6 +23,7 @@ class SessionContext:
     session_id: str = ""
     app_id: str = ""
     db_name: str | None = None
+    task_manager: TaskManager | None = None
 
     memory: MemoryManager = field(init=False)
     # 压缩，不要类
@@ -46,7 +47,7 @@ class SessionContext:
 
     def __post_init__(self) -> None:
         self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id)
-        self.task = TaskManager(app_id=self.app_id, session_id=self.session_id)
+        self.task = self.task_manager or TaskManager(app_id=self.app_id, session_id=self.session_id)
         self._session_memory = SessionMemory(session_id=self.session_id,app_id=self.app_id)
         self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_memory,llm_fn=AsyncLLMClient().invoke)
         self.system_prompt = ""
