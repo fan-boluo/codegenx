@@ -168,13 +168,17 @@ def _session_memory_compact(
     synthetic_tokens = estimate_tokens([user_context, assistant_ack])
     tail_budget = max(MIN_TOKENS_AFTER, MAX_TOKENS_AFTER - synthetic_tokens)
     kept = _keep_last_n_messages(messages, max_tokens=tail_budget)
+    # 最多保留 N-2 条消息，避免压缩后消息数反而增加
+    max_tail = max(MIN_TEXT_MESSAGES, len(messages) - 2)
+    if len(kept) > max_tail:
+        kept = kept[-max_tail:]
 
     new_messages = [user_context, assistant_ack] + kept
     return CompactResult(
         messages=new_messages,
         summary=session_summary,
         path_used="session_memory",
-        messages_removed=len(messages) - len(kept),
+        messages_removed=max(0, len(messages) - len(new_messages)),
         tokens_before=tokens_before,
         tokens_after=estimate_tokens(new_messages),
     )
@@ -196,6 +200,11 @@ async def _call_llm_for_summary(
     compact_messages = list(messages) + [
         {"role": "user", "content": BASE_COMPACT_PROMPT}
     ]
+    # 标准化内容，避免 dict/list 等非字符串 content 导致 LLM API 拒绝
+    for msg in compact_messages:
+        content = msg.get("content")
+        if not isinstance(content, str):
+            msg["content"] = str(content)
 
     result = llm_fn(compact_messages)
 
@@ -247,8 +256,12 @@ async def _llm_compact(
             # 保留最后 N 条非系统消息，避免摘要丢失最近的细节上下文
             synthetic_tokens = estimate_tokens([user_context, assistant_ack])
             tail_budget = max(MIN_TOKENS_AFTER, MAX_TOKENS_AFTER - synthetic_tokens)
-            new_messages = [user_context, assistant_ack]
+            # 最多保留 N-2 条消息，避免压缩后消息数反而增加
+            max_tail = max(MIN_TEXT_MESSAGES, len(messages) - 2)
             kept_tail = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=tail_budget)
+            if len(kept_tail) > max_tail:
+                kept_tail = kept_tail[-max_tail:]
+            new_messages = [user_context, assistant_ack]
             if kept_tail:
                 new_messages.extend(kept_tail)
             breaker.record_success()
@@ -256,7 +269,7 @@ async def _llm_compact(
                 messages=new_messages,
                 summary=summary,
                 path_used="llm",
-                messages_removed=len(messages) - len(new_messages),
+                messages_removed=max(0, len(messages) - len(new_messages)),
                 tokens_before=tokens_before,
                 tokens_after=estimate_tokens(new_messages),
             )
