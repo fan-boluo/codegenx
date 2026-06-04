@@ -1,8 +1,10 @@
 import asyncio
+import contextlib
 import json
 from shared.config.log_config import log
 from typing import AsyncGenerator, Dict, Any, List, Optional
 from openai import AsyncOpenAI
+import httpx
 from bot.utils.config import load_config
 
 
@@ -28,6 +30,53 @@ def _safe_build_tool_calls(tool_calls_buffer: dict) -> list[dict[str, Any]]:
         })
     return tool_calls_list
 
+
+async def _stream_chunk_generator(agen, timeout_seconds: float):
+    """Stream-level timeout via queue.
+
+    A background task pulls from the upstream (httpx) async generator and pushes
+    chunks into a queue.  The foreground reads from the queue with
+    ``asyncio.wait_for`` — so the wait_for timeout only cancels ``queue.get()``
+    (which is safe to cancel), never an httpx coroutine.
+    """
+    from asyncio.queues import Queue
+
+    queue: Queue = Queue()
+    pump_done = False
+
+    async def _pump():
+        nonlocal pump_done
+        try:
+            async for item in agen:
+                await queue.put(item)
+        finally:
+            pump_done = True
+            await queue.put(None)  # sentinel
+
+    pump_task = asyncio.ensure_future(_pump())
+
+    try:
+        while True:
+            item = await asyncio.wait_for(queue.get(), timeout=timeout_seconds)
+            if item is None:
+                # Pump finished cleanly, check for exception
+                if pump_task.done() and pump_task.exception():
+                    raise pump_task.exception()
+                return
+            yield item
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        if not pump_task.done():
+            pump_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump_task
+        raise
+    except Exception:
+        if not pump_task.done():
+            pump_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump_task
+        raise
+
 class AsyncLLMClient:
     """Async LLM Client wrapping OpenAI's Async interface."""
     def __init__(self, model_name: Optional[str] = None):
@@ -42,7 +91,8 @@ class AsyncLLMClient:
         
         self.client = AsyncOpenAI(
             api_key=self.api_key.strip(),
-            base_url=self.model_base_url.strip()
+            base_url=self.model_base_url.strip(),
+            timeout=httpx.Timeout(600.0, read=120.0, write=30.0, connect=30.0, pool=10.0),
         )
         log.info(f"Init AsyncLLMClient with base_url={self.model_base_url}, model={self.model_name}")
 
@@ -108,49 +158,38 @@ class AsyncLLMClient:
             finish_reason = None
 
             try:
-                # 可选超时包装
+                async def _consume_stream():
+                    nonlocal finish_reason
+                    async for chunk in stream:
+                        if not chunk.choices:
+                            continue
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        if choice.finish_reason:
+                            finish_reason = choice.finish_reason
+
+                        if delta.content:
+                            yield {"type": "content", "data": delta.content}
+
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                idx = tc.index
+                                if idx not in tool_calls_buffer:
+                                    tool_calls_buffer[idx] = {
+                                        "id": tc.id or "",
+                                        "name": tc.function.name if tc.function else "",
+                                        "arguments": tc.function.arguments if tc.function and tc.function.arguments else ""
+                                    }
+                                else:
+                                    if tc.function and tc.function.arguments:
+                                        tool_calls_buffer[idx]["arguments"] += tc.function.arguments
+
+                chunk_source = _consume_stream()
                 if timeout is not None:
-                    stream_iterator = stream.__aiter__()
+                    chunk_source = _stream_chunk_generator(chunk_source, timeout)
 
-                    async def _stream_with_timeout():
-                        while True:
-                            try:
-                                chunk = await asyncio.wait_for(
-                                    stream_iterator.__anext__(), timeout=min(timeout, 120.0)
-                                )
-                            except StopAsyncIteration:
-                                return
-                            yield chunk
-
-                    chunk_source = _stream_with_timeout()
-                else:
-                    chunk_source = stream
-
-                async for chunk in chunk_source:
-                    if not chunk.choices:
-                        continue
-                    choice = chunk.choices[0]
-                    delta = choice.delta
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
-
-                    # Stream Content Chunks directly
-                    if delta.content:
-                        yield {"type": "content", "data": delta.content}
-
-                    # Accumulate Tool Calls
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            idx = tc.index
-                            if idx not in tool_calls_buffer:
-                                tool_calls_buffer[idx] = {
-                                    "id": tc.id or "",
-                                    "name": tc.function.name if tc.function else "",
-                                    "arguments": tc.function.arguments if tc.function and tc.function.arguments else ""
-                                }
-                            else:
-                                if tc.function and tc.function.arguments:
-                                    tool_calls_buffer[idx]["arguments"] += tc.function.arguments
+                async for chunk_item in chunk_source:
+                    yield chunk_item
 
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 # 流中断时仍然返回已累积的 tool_calls 和 finish_reason
