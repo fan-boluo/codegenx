@@ -3,7 +3,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from constants import LOG_FILE
+from shared.constants import LOG_FILE
 
 
 # Trace < Debug < Info < Success < Warning < Error < Critical

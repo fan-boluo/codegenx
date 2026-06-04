@@ -22,8 +22,6 @@ from shared.schema.app import AppAddRequest, AppAdminUpdateRequest, AppDeployReq
 from shared.schema.common import PageData
 
 from core.auth_proxy import JWTUser
-from chat_history import ChatHistoryService
-from core.screenshot_service import ScreenshotService
 from infra.db_manager import create_project_database, list_database_tables
 
 
@@ -33,7 +31,6 @@ settings = get_settings()
 class AppService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
-        self.screenshot_service = ScreenshotService()
 
     async def create_app(self, app_add_request: AppAddRequest, login_user: JWTUser, trace_id: str | None = None) -> int:
         app_name = app_add_request.app_name.strip()
@@ -77,55 +74,54 @@ class AppService:
         log.info("app-service create app completed traceId={} userId={} appId={}", trace_id, login_user.user_id, app.id)
         return app.id
 
-    async def deploy_app(self, request: AppDeployRequest, login_user: JWTUser) -> dict[str, str | None]:
-        app = await self._get_owned_app(request.app_id, login_user)
-        deploy_key = app.deploy_key or secrets.token_urlsafe(6)[:6]
-        source_dir = get_code_dir(app.id)
-        ThrowUtils.throw_if(not source_dir.exists(), ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码")
-
-        deploy_dir = get_deploy_dir(deploy_key)
-        if deploy_dir.exists():
-            shutil.rmtree(deploy_dir)
-        shutil.copytree(source_dir, deploy_dir)
-
-        deploy_url = self._build_deploy_url(deploy_key)
-        screenshot_url = None
-        try:
-            screenshot_resource = self.screenshot_service.generate_and_upload_screenshot(
-                self._build_internal_deploy_url(deploy_key),
-                deploy_key,
-            )
-            screenshot_url = self._build_cover_url(deploy_key, screenshot_resource)
-        except Exception as exc:
-            log.warning(
-                "app-service deploy screenshot skipped appId={} deployKey={} deployUrl={} error={}",
-                app.id,
-                deploy_key,
-                deploy_url,
-                exc,
-            )
-        app.deploy_key = deploy_key
-        app.deployed_time = datetime.utcnow()
-        if screenshot_url:
-            app.cover = screenshot_url
-        await self.db.commit()
-        log.info(
-            "app-service deploy completed appId={} deployKey={} deployUrl={} screenshotUrl={}",
-            app.id,
-            deploy_key,
-            deploy_url,
-            screenshot_url,
-        )
-        return {
-            "deployKey": deploy_key,
-            "deployUrl": deploy_url,
-            "screenshotUrl": screenshot_url,
-        }
+    # async def deploy_app(self, request: AppDeployRequest, login_user: JWTUser) -> dict[str, str | None]:
+    #     app = await self._get_owned_app(request.app_id, login_user)
+    #     deploy_key = app.deploy_key or secrets.token_urlsafe(6)[:6]
+    #     source_dir = get_code_dir(app.id)
+    #     ThrowUtils.throw_if(not source_dir.exists(), ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码")
+    #
+    #     deploy_dir = get_deploy_dir(deploy_key)
+    #     if deploy_dir.exists():
+    #         shutil.rmtree(deploy_dir)
+    #     shutil.copytree(source_dir, deploy_dir)
+    #
+    #     deploy_url = self._build_deploy_url(deploy_key)
+    #     screenshot_url = None
+    #     try:
+    #         screenshot_resource = self.screenshot_service.generate_and_upload_screenshot(
+    #             self._build_internal_deploy_url(deploy_key),
+    #             deploy_key,
+    #         )
+    #         screenshot_url = self._build_cover_url(deploy_key, screenshot_resource)
+    #     except Exception as exc:
+    #         log.warning(
+    #             "app-service deploy screenshot skipped appId={} deployKey={} deployUrl={} error={}",
+    #             app.id,
+    #             deploy_key,
+    #             deploy_url,
+    #             exc,
+    #         )
+    #     app.deploy_key = deploy_key
+    #     app.deployed_time = datetime.utcnow()
+    #     if screenshot_url:
+    #         app.cover = screenshot_url
+    #     await self.db.commit()
+    #     log.info(
+    #         "app-service deploy completed appId={} deployKey={} deployUrl={} screenshotUrl={}",
+    #         app.id,
+    #         deploy_key,
+    #         deploy_url,
+    #         screenshot_url,
+    #     )
+    #     return {
+    #         "deployKey": deploy_key,
+    #         "deployUrl": deploy_url,
+    #         "screenshotUrl": screenshot_url,
+    #     }
 
     async def delete_app(self, app_id: int, login_user: JWTUser) -> bool:
         await self._get_owned_app(app_id, login_user)
         await self.db.execute(delete(App).where(App.id == app_id))
-        await ChatHistoryService(self.db).delete_by_app_id(app_id)
         await self.db.commit()
         return True
 
@@ -259,7 +255,6 @@ class AppService:
     async def _delete_app_by_id(self, app_id: int) -> None:
         await self._get_existing_app(app_id)
         await self.db.execute(delete(App).where(App.id == app_id))
-        await ChatHistoryService(self.db).delete_by_app_id(app_id)
         await self.db.commit()
 
     async def _list_app_vo_by_page(self, query_request: AppQueryRequest) -> PageData[AppVO]:

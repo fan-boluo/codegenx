@@ -1,11 +1,9 @@
 import asyncio
 import json
-from shared.config.log_config import logging
+from shared.config.log_config import log
 from typing import AsyncGenerator, Dict, Any, List, Optional
 from openai import AsyncOpenAI
 from bot.utils.config import load_config
-
-logger = logging.getLogger(__name__)
 
 
 def _safe_build_tool_calls(tool_calls_buffer: dict) -> list[dict[str, Any]]:
@@ -18,7 +16,7 @@ def _safe_build_tool_calls(tool_calls_buffer: dict) -> list[dict[str, Any]]:
             try:
                 args = json.loads(raw_args)
             except (json.JSONDecodeError, TypeError) as exc:
-                logger.warning(
+                log.warning(
                     "Failed to parse tool call arguments for %s, using raw string: %s",
                     v.get("name", "unknown"), exc,
                 )
@@ -46,7 +44,7 @@ class AsyncLLMClient:
             api_key=self.api_key.strip(),
             base_url=self.model_base_url.strip()
         )
-        logger.info(f"Init AsyncLLMClient with base_url={self.model_base_url}, model={self.model_name}")
+        log.info(f"Init AsyncLLMClient with base_url={self.model_base_url}, model={self.model_name}")
 
     async def invoke(
         self,
@@ -73,7 +71,7 @@ class AsyncLLMClient:
             message = completion.choices[0].message
             return message.content or ""
         except Exception as e:
-            logger.error(f"LLM Invoke Error: {e}")
+            log.error(f"LLM Invoke Error: {e}")
             raise e
 
     async def invoke_stream(
@@ -156,7 +154,7 @@ class AsyncLLMClient:
 
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 # 流中断时仍然返回已累积的 tool_calls 和 finish_reason
-                logger.warning("LLM stream interrupted (timeout/cancel), returning partial result")
+                log.warning("LLM stream interrupted (timeout/cancel), returning partial result")
                 if tool_calls_buffer:
                     tool_calls_list = _safe_build_tool_calls(tool_calls_buffer)
                     if tool_calls_list:
@@ -175,5 +173,5 @@ class AsyncLLMClient:
                 yield {"type": "response_info", "data": {"finish_reason": finish_reason}}
 
         except Exception as e:
-            logger.error(f"LLM Stream Error: {e}")
+            log.error(f"LLM Stream Error: {e}")
             raise e

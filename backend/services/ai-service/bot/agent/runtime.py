@@ -15,8 +15,8 @@ from agent.runtime_schema import (
 )
 from agent.session_pool import SessionPool
 from bot.llm.llm_recovery import LLMRecoveryMixin
-from bot.agent.hook.registry import register_all_hooks
-from bot.agent.hook.runner import HookRunner
+from bot.hook.registry import register_all_hooks
+from bot.hook.runner import HookRunner
 from bot.agent.tool_executor import ToolExecutor
 from bot.agent.tool_handler import get_tool_registry
 from bot.bus import MessageBus, RuntimeTurnEvent
