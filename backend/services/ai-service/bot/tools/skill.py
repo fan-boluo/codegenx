@@ -3,7 +3,7 @@ from typing import Any
 
 from bot.skill.skill_loader import SkillLoader
 from bot.tools.base import BaseTool, ToolResult
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 
 class LoadSkillTool(BaseTool):

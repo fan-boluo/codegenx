@@ -41,7 +41,7 @@ from shared.schema.ai_service import (
     AiServiceStopRequest,
     AiServiceStopResponse
 )
-
+from guardrail.prompt_safety_input_guardrail import validate_prompt_safety
 
 def _load_local_module(module_name: str, file_name: str):
 	spec = importlib.util.spec_from_file_location(f"ai_service_{module_name}", LOCAL_SERVICES_ROOT / file_name)
@@ -98,10 +98,11 @@ async def generate_code_stream(request: AiServiceGenerateRequest):
 		return StreamingResponse(event_stream(), media_type="text/plain")
 	except Exception as exc:
 		log.exception(
-			"ai-service public stream failed traceId={} requestId={} appId={}",
+			"ai-service public stream failed traceId={} requestId={} appId={} error:{}",
 			trace_id,
 			request_id,
 			request.app_id,
+			str(exc)
 		)
 		raise
 
@@ -242,6 +243,7 @@ def _validate_call_context(request: AiServiceGenerateRequest) -> tuple[str, str,
 		raise BusinessException(ErrorCode.PARAMS_ERROR, "requestId 不能为空")
 	if not session_id:
 		raise BusinessException(ErrorCode.PARAMS_ERROR, "sessionId 不能为空")
+	validate_prompt_safety(request.message)
 	return trace_id, request_id, session_id
 
 

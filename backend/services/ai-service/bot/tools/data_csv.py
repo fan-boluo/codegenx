@@ -21,7 +21,7 @@ from bot.data_analysis.stats_engine import (
     _resolve_sample_pct,
     _HAS_PANDAS,
 )
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 # CSV 宽表上限（比 MySQL 宽松）
 MAX_COLS_CSV_WIDE = 30

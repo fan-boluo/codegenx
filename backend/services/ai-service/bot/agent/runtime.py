@@ -573,16 +573,32 @@ class AgentRuntime(LLMRecoveryMixin):
                     f"{tool_call.get('name')}"
                 )
 
-            await self.hook_runner.dispatch(
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": tool_call.get("id", ""),
+                "name": tool_call.get("name", ""),
+                "content": "",
+            }
+            log.debug("PreToolUse {},{},{}", session_state.request_id, turn_state.step_counter,
+                      turn_state.active_step_id)
+            pre_result = await self.hook_runner.dispatch(
                 "PreToolUse", turn_state, session=session_state, tool_call=tool_call
             )
+            if pre_result.get("action") == "blocked":
+                messages = pre_result.get("messages", "Blocked by hook")
+                tool_message["content"] = f"Tool blocked by PreToolUse hook :{messages}"
+                session_state.context_manager.add_tool_message(tool_message)
+                continue
+            if pre_result.get("action") == "inject":
+                messages = pre_result.get("messages", "")
+                tool_message["content"] = f" PreToolUse message :{messages}"
+                session_state.context_manager.add_tool_message(tool_message)
             await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
                 ),
             )
-            log.debug("PreToolUse {},{},{}",session_state.request_id, turn_state.step_counter, turn_state.active_step_id)
             result = await self.tool_executor.execute(tool_call, turn_state, session_state)
             self._raise_if_stop_requested(session_state)
             await self.hook_runner.dispatch(
@@ -593,12 +609,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 result=result,
             )
             log.debug("PostToolUse {},{},{}",session_state.request_id, turn_state.step_counter, turn_state.active_step_id)
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": tool_call.get("id", ""),
-                "name": tool_call.get("name", ""),
-                "content": result,
-            }
+
             session_state.context_manager.add_tool_message(tool_message)
             await self._publish_runtime_event(
                 session_state,

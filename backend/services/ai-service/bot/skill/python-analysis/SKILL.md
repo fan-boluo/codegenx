@@ -1,7 +1,6 @@
 ---
 name: python-analysis
 description: "生成 Python（pandas/numpy）数据分析代码，支持数据加载、清洗、聚合、统计检验等。"
-metadata: { "openclaw": { "emoji": "🐍", "always": true } }
 ---
 
 # Python 数据分析技能

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from bot.tools.base import BaseTool, ToolResult
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 # 可根据文件扩展名检查的文件类型
 SUPPORTED_SUFFIXES = frozenset({".py"})

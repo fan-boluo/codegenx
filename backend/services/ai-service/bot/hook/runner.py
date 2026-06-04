@@ -1,7 +1,7 @@
 import inspect
 from typing import Any, Callable, Dict, List
 
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 class HookRunner:
     def __init__(self):
@@ -25,6 +25,17 @@ class HookRunner:
             return merged
         merged.setdefault("results", []).append(callback_result)
         return merged
+    def _normalize_result(self, callback_result: Any) -> dict[str, Any]:
+        """
+        将hook的返回值统一转化为标准格式
+
+        """
+        if callback_result is None:
+            return {}
+        if isinstance(callback_result, dict):
+            return callback_result
+        return {"result":callback_result}
+
 
     async def dispatch(self, event_name: str, state: Any, **kwargs) -> dict[str, Any]:
         """
@@ -33,8 +44,13 @@ class HookRunner:
         """
         if event_name not in self._hooks:
             return {}
+        result = {
+            "hook_name":event_name,
+            "action":"", # continue blocked inject
+            "message":""
+        }
 
-        merged_result: dict[str, Any] = {}
+        merged_result: dict[str, Any] = {"success": True,"errors":[]}
         
         for callback in self._hooks[event_name]:
             log.debug(f"Dispatching hook '{event_name}', running callback '{callback.__name__}'")
@@ -43,10 +59,14 @@ class HookRunner:
                     callback_result = await callback(state, **kwargs)
                 else:
                     callback_result = callback(state, **kwargs)
-                merged_result = self._merge_result(merged_result, callback_result)
+
+                normalized_result = self._normalize_result(callback_result)
+                merged_result.update(normalized_result)
+                result['action'] = "continue"
             except Exception as e:
                 log.error(f"Error executing hook '{event_name}' in '{callback.__name__}': {e}")
-                # 允许异常向外抛出，主循环捕获后会转 OnError
-                raise
+                # 不抛异常，hook不能影响主循环
+                result['action'] = "blocked"
+                result['message'] = f'{callback.__name__}: {str(e)}'
 
-        return merged_result
+        return result

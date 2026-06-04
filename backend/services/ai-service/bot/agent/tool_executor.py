@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.runtime_schema import ActivateTurn, RuntimeSessionState
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 from bot.agent.tool_handler import ToolRegistry
 from shared.constants import get_code_dir
 
@@ -98,6 +98,14 @@ class ToolExecutor:
         if not tool:
             log.error(f"Unknown tool called: {tool_name}")
             return {"error": f"未知工具：{tool_name}"}
+        
+        # 2 检查工具合法性
+        # try:
+        #     validate_params(tool_input)
+        # except ValueError as e:
+        #     error_message = str(e)
+        #     log.error(f"参数验证失败：{error_message}")
+        #     return {"error": error_message}
 
         # 2. 安全检查 (安全边界前置)
         error_msg = self._perform_safety_checks(tool_name, tool_input, safe_paths)

@@ -9,7 +9,7 @@ from typing import Any, Callable
 from pydantic import BaseModel
 from bot.tools.base import Tool, BaseTool
 from bot.tools.file import WriteFileTool, ReadFileTool
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 # 工具目录
 BUILTIN_TOOLS_DIR = Path(__file__).parent.parent / "tools"

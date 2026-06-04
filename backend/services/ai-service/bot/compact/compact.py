@@ -29,7 +29,7 @@ Circuit breaker
 from __future__ import annotations
 
 import asyncio
-import logging
+from shared.config.log_config import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 

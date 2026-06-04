@@ -42,17 +42,11 @@ class AgentAdapterService:
             self._runtime = runtime
         return runtime
 
-    def _init_telemetry(self) -> bool:
-        # OTLP telemetry removed — monitor module now uses its own collectors.
-        return False
-
     async def startup(self) -> None:
         async with self._startup_lock:
             if self._started:
                 return
             # TODO 后台任务在哪里启动，现在有的是健康检查和session poll
-            # 开启监控
-            telemetry_started = self._init_telemetry()
             runtime = self._get_runtime()
             # runtime.start 启动runtime需要的任务
             await runtime.start()

@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from bot.utils.context_utils import ensure_app_workdir
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 from shared.constants import get_memory_dir, get_code_dir
 from prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE, AUTO_MEMORY_PROMPT
 

@@ -1,6 +1,6 @@
 import asyncio
 import json
-import logging
+from shared.config.log_config import logging
 from typing import AsyncGenerator, Dict, Any, List, Optional
 from openai import AsyncOpenAI
 from bot.utils.config import load_config

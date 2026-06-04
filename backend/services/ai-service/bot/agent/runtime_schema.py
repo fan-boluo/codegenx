@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from agent.agent_schema import AgentState
-from agent.task.task_manager import TaskManager
+from task.task_manager import TaskManager
 from context.session_context import SessionContext
 from monitor.telemetry_schema import SpanRecord
 from session.manager import SessionManager

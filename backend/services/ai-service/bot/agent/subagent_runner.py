@@ -8,7 +8,7 @@ from uuid import uuid4
 from bot.agent.runtime import AgentRuntime, AgentState
 from bot.agent.tool_executor import ToolExecutor
 from bot.agent.tool_handler import ToolRegistry
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 from shared.constants import get_code_dir
 from shared.schema.ai_service import AiServiceGenerateRequest
 

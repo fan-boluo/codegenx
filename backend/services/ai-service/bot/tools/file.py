@@ -20,7 +20,7 @@ from bot.tools.truncate_utils import (
     format_size,
     truncate_head,
 )
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 from shared.constants import get_code_dir
 
 class TextContent(BaseModel):

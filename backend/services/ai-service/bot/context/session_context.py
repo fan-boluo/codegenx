@@ -2,7 +2,7 @@ from dataclasses import field, dataclass
 from typing import Any, Dict
 
 from agent.agent_schema import AgentEvent, AgentState, AgentEventType
-from agent.task.task_manager import TaskManager
+from task.task_manager import TaskManager
 from llm.async_client import AsyncLLMClient
 from shared.config.log_config import log
 from context.assembler import ContextAssembler

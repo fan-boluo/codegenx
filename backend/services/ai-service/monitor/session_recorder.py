@@ -7,7 +7,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 from shared.constants import get_session_dir
 
 

@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 # 可选依赖
 try:

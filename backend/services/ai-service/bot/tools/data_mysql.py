@@ -19,7 +19,7 @@ from bot.data_analysis.stats_engine import (
     format_numeric_stats, format_categorical_stats, format_correlation,
     _resolve_sample_pct,
 )
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 import numpy as np
 

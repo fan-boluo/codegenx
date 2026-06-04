@@ -1,7 +1,6 @@
 ---
 name: feature-engineering
 description: "生成特征工程代码，包含缺失值处理、编码、标准化、特征构造等预处理步骤，用于机器学习建模前的数据准备。"
-metadata: { "openclaw": { "emoji": "🔧", "always": true } }
 ---
 
 # 特征工程技能

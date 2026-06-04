@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from bot.tools.base import BaseTool, ToolResult
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 
 # ═══════════════════════════════════════════════════════════

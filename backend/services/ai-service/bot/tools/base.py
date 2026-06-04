@@ -4,7 +4,7 @@ from typing import Callable, Any
 
 from pydantic import BaseModel
 
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 
 class Tool(BaseModel):

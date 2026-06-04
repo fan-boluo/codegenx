@@ -1,7 +1,6 @@
 ---
 name: modeling
 description: "生成机器学习建模代码，支持分类、回归、聚类、时间序列预测任务，包含模型选择、训练、评估、调优。"
-metadata: { "openclaw": { "emoji": "🤖", "always": true } }
 ---
 
 # 机器学习建模技能

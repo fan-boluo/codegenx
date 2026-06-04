@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 from shared.constants import get_session_dir
 
 

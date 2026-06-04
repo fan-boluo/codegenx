@@ -6,7 +6,7 @@ from threading import Lock
 import yaml
 from pydantic import BaseModel
 
-from bot.utils.log_utils import log
+from shared.config.log_config import log
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent
 _SKILL_CACHE_LOCK = Lock()

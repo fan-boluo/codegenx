@@ -1,7 +1,6 @@
 ---
 name: report
 description: "生成数据分析报告（Markdown 格式）的要求，在要写报告前务必查阅此文档"
-metadata: { "openclaw": { "emoji": "📋", "always": true } }
 ---
 
 # 分析报告生成技能

@@ -1,5 +1,5 @@
-from bot.agent.hook.runner import HookRunner
-from bot.agent.hook.handlers import (
+from bot.hook.runner import HookRunner
+from bot.hook.handlers import (
     on_session_start,
     on_turn_start,
     pre_llm_call,

@@ -17,7 +17,7 @@ from shared.config.log_config import log
 from shared.constants import DEFAULT_APP_PRIORITY, get_code_dir, get_deploy_dir
 from shared.exceptions.error_code import ErrorCode
 from shared.exceptions.throw_utils import ThrowUtils
-from shared.orm.app import App
+from orm.app import App
 from shared.schema.app import AppAddRequest, AppAdminUpdateRequest, AppDeployRequest, AppQueryRequest, AppUpdateRequest, AppVO
 from shared.schema.common import PageData
 

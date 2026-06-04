@@ -1,7 +1,6 @@
 ---
 name: sql-analysis
 description: "生成数据分析 SQL 语句。适用于 MySQL 数据库查询、表关联、聚合统计等场景。"
-metadata: { "openclaw": { "emoji": "📊", "always": true } }
 ---
 
 # SQL 分析技能

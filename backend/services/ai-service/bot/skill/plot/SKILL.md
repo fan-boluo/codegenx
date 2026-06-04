@@ -1,7 +1,6 @@
 ---
 name: plot
 description: "生成数据可视化代码（matplotlib/seaborn/plotly），支持柱状图、折线图、散点图、热力图等。"
-metadata: { "openclaw": { "emoji": "📈", "always": true } }
 ---
 
 # 数据可视化技能

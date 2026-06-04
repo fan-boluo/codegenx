@@ -31,8 +31,6 @@ from shared.schema.app import AppAddRequest, AppAdminUpdateRequest, AppDeployReq
 from shared.schema.common import BaseResponse, DeleteRequest, PageData
 from shared.utils.result_utils import success
 from app_service import AppService
-from static_service import StaticResourceService
-from chat_history_api import router as chat_history_router
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -42,10 +40,7 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="CodeGenX App Service", version="1.0.0", lifespan=_lifespan)
-static_resource_service = StaticResourceService()
 service_registry = AppServiceRegistry()
-app.include_router(chat_history_router)
-
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
