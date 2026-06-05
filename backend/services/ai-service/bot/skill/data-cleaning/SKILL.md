@@ -1,7 +1,7 @@
-```yaml
+---
 name: data-cleaning
 description: "数据清洗流程及方法"
-```
+---
 
 # data-cleaning
 整体分为：探查→评估→定策略→执行清洗→高级处理→产出校验六段标准化链路，配套规范产出物与示例代码、验收标准
@@ -33,41 +33,53 @@ description: "数据清洗流程及方法"
 **4. 执行核心清洗**
 编写可复用清洗 Python 脚本，全覆盖：缺失处理、异常处置、重复去重、类型转换、编码映射、业务规则修正；
 脚本内置数据校验函数，清洗前后分别调用，量化对比数据质量变化。
-5. 处理高级问题
-多源 / 多表数据对齐、字段口径冲突消解；
-高基数分类字段压缩、异常数值分层离散分箱。
-6. 产出结果与校验
+
+**5. 处理高级问题**
+多源 / 多表数据对齐、字段口径冲突消解；如果有的话
+
+**6. 产出结果与校验**
 全量校验清洗后数据完整性、字段一致性、数据合规性。
-二、标准化产出内容规范
-可复用清洗脚本：模块化封装，支持重复调用
-清洗后数据文件：无论源数据是 CSV / 数据库表，统一输出.csv；
-约束：原始数据＞50 万行时不自动运行清洗，交付脚本提示用户自行执行
-清洗总结报告：原始数据质量概述、分步清洗执行明细、清洗前后指标对比
-三、Python 代码示例
-python
-运行
+**标准化产出内容规范**
+- 可复用清洗脚本：模块化封装，支持重复调用
+- 清洗后数据文件：无论源数据是 CSV / 数据库表，统一输出.csv；
+  约束：原始数据＞50 万行时不自动运行清洗，交付脚本提示用户自行执行
+- 清洗总结报告：原始数据质量概述、分步清洗执行明细、清洗前后指标对比
+
+# Python 代码示例
+```python
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 # 1.读取原始数据
 df = pd.read_csv('data/raw.csv')
 
-# ①缺失值探查：字段缺失率降序排序
-missing = df.isna().mean().sort_values(ascending=False)
+def analysis_data(df):
+    # 数据质量探查
+    
+    # ①缺失值探查：字段缺失率降序排序
+    missing = df.isna().mean().sort_values(ascending=False)
+    
+    # ②日期类型规范化
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    
+    # ③IQR四分位标记amount数值异常
+    q1 = df['amount'].quantile(0.25)
+    q3 = df['amount'].quantile(0.75)
+    ir = q3 - q1
+    # True=异常数据
+    df['amount_outlier'] = ~df['amount'].between(q1 - 1.5*ir, q3 + 1.5*ir)
 
-# ②日期类型规范化
-if 'date' in df.columns:
-    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    # 可扩展：去重df.drop_duplicates()、缺失填充、分箱离散、多源合并等逻辑
+    
+# 探查数据情况，输出数据质量信息
+analysis_data(df)
 
-# ③IQR四分位标记amount数值异常
-q1 = df['amount'].quantile(0.25)
-q3 = df['amount'].quantile(0.75)
-ir = q3 - q1
-# True=异常数据
-df['amount_outlier'] = ~df['amount'].between(q1 - 1.5*ir, q3 + 1.5*ir)
+# 清洗策略执行
 
-# 可扩展：去重df.drop_duplicates()、缺失填充、分箱离散、多源合并等逻辑
-四、验收检查点
+# 前后对比
+```
+# 验收检查点
 输出完整业务清洗流程 + 每一步处理的判定依据；
 全场景覆盖：缺失值、异常值、重复值、类型规范化、多源数据对齐；
 交付可复用清洗脚本 + 验证示例 + 清洗总结文档。
