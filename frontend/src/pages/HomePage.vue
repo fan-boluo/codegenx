@@ -289,35 +289,35 @@ watch(
 <style scoped>
 #homePage {
   min-height: calc(100vh - 64px);
-  padding: 48px 32px;
+  padding: 56px 32px 64px;
 }
 
 .welcome-section,
 .apps-panel,
 .create-guide-panel {
-  max-width: 1240px;
+  max-width: 1200px;
   margin: 0 auto 28px;
 }
 
 .create-guide-panel {
   display: flex;
-  min-height: calc(100vh - 64px - 140px);
+  min-height: calc(100vh - 64px - 200px);
 }
 
 /* Welcome Card */
 .welcome-card {
   text-align: center;
-  padding: 64px 36px;
+  padding: 80px 48px;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
 }
 
 .welcome-icon {
-  font-size: 40px;
+  font-size: 44px;
   color: var(--accent-primary);
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 /* Create Guide Card */
@@ -329,23 +329,23 @@ watch(
   justify-content: center;
   align-items: center;
   text-align: center;
-  padding: 48px 36px;
+  padding: 64px 48px;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
 }
 
 .guide-icon {
-  font-size: 36px;
+  font-size: 40px;
   color: var(--accent-primary);
-  margin-bottom: 20px;
+  margin-bottom: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 64px;
-  height: 64px;
-  border-radius: 12px;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius-lg);
   background: var(--accent-primary-subtle);
 }
 
@@ -388,10 +388,10 @@ watch(
 /* Section Title */
 .section-title {
   margin: 0;
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  line-height: 1.2;
+  line-height: 1.25;
   color: var(--text-primary);
 }
 
@@ -424,32 +424,33 @@ watch(
 /* App Card */
 .app-card {
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-card);
-  transition: all 0.2s var(--ease-out);
+  transition: all 0.25s var(--ease-out);
   animation: fade-in-up 0.4s var(--ease-out) both;
 }
 
 .app-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-4px);
   box-shadow: var(--shadow-card-hover);
-  border-color: var(--border-strong);
+  border-color: var(--accent-primary-light);
 }
 
 /* Add App Card */
 .add-app-card {
   cursor: pointer;
   min-height: 380px;
-  border: 1px dashed var(--border-strong);
+  border: 2px dashed var(--border-default);
   background: var(--bg-page);
-  transition: all 0.2s var(--ease-out);
+  transition: all 0.25s var(--ease-out);
 }
 .add-app-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-4px);
   box-shadow: var(--shadow-card-hover);
   border-color: var(--accent-primary);
+  background: var(--accent-primary-subtle);
 }
 
 .add-app-content {
@@ -467,13 +468,13 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  width: 60px;
+  height: 60px;
+  border-radius: var(--radius-lg);
   background: var(--accent-primary-subtle);
-  font-size: 24px;
+  font-size: 26px;
   color: var(--accent-primary);
-  transition: all 0.2s var(--ease-out);
+  transition: all 0.25s var(--ease-out);
 }
 .add-app-card:hover .add-app-icon {
   background: var(--accent-primary-light);
@@ -586,18 +587,19 @@ watch(
 
 .example-tag {
   cursor: pointer;
-  padding: 6px 14px;
-  border-radius: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
+  line-height: 1.5;
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  transition: all 0.15s var(--ease-out);
+  transition: all 0.2s var(--ease-out);
 }
 .example-tag:hover {
   color: var(--accent-primary);
   background: var(--accent-primary-subtle);
-  border-color: var(--accent-primary);
+  border-color: var(--accent-primary-light);
 }
 
 /* Override Ant Design card padding */

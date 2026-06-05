@@ -60,19 +60,19 @@ const handleViewWork = () => {
 <style scoped>
 .app-card {
   background: var(--bg-surface);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-card);
-  transition: all 0.2s var(--ease-out);
+  transition: all 0.25s var(--ease-out);
   cursor: pointer;
   position: relative;
 }
 
 .app-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-4px);
   box-shadow: var(--shadow-card-hover);
-  border-color: var(--border-strong);
+  border-color: var(--accent-primary-light);
 }
 
 .app-card--featured {

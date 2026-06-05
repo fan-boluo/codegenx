@@ -1,34 +1,34 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Backgrounds */
-  --bg-page: #F8FAFC;
+  /* Backgrounds — ultra-light, airy feel */
+  --bg-page: #F7F8FA;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #F1F5F9;
-  --bg-hover: #F8FAFC;
+  --bg-subtle: #F3F5F9;
+  --bg-hover: #EEF1F6;
 
-  /* Accent Colors */
-  --accent-primary: #2563EB;
-  --accent-primary-hover: #1D4ED8;
+  /* Accent Colors — softer blue, closer to the reference */
+  --accent-primary: #3B82F6;
+  --accent-primary-hover: #2563EB;
   --accent-primary-light: #DBEAFE;
   --accent-primary-subtle: #EFF6FF;
 
   /* Text */
-  --text-primary: #0F172A;
-  --text-secondary: #475569;
+  --text-primary: #1E293B;
+  --text-secondary: #64748B;
   --text-muted: #94A3B8;
   --text-inverse: #FFFFFF;
 
-  /* Borders */
-  --border-default: #E2E8F0;
-  --border-strong: #CBD5E1;
-  --border-accent: #2563EB;
+  /* Borders — much softer, thinner feel */
+  --border-default: #E8ECF1;
+  --border-strong: #DDE2E8;
+  --border-accent: #3B82F6;
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.12);
+  /* Shadows — very subtle, ethereal */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.02);
+  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.08);
 
   /* Typography */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -38,6 +38,9 @@
 
   /* Sizing */
   --header-height: 64px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
 }
 
 /* Global Reset */
@@ -64,12 +67,14 @@ html, body {
   min-height: 100vh;
 }
 
-/* Ant Design Light Theme Overrides */
+/* ---- Ant Design Light Theme Overrides ---- */
+
+/* Buttons */
 .ant-btn {
   font-family: var(--font-sans);
   font-weight: 500;
   font-size: 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   transition: all 0.2s var(--ease-out);
   box-shadow: none;
 }
@@ -116,16 +121,18 @@ html, body {
   color: var(--accent-primary-hover) !important;
 }
 
+/* Cards */
 .ant-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-card);
 }
 .ant-card-head {
   border-bottom-color: var(--border-default);
 }
 
+/* Inputs */
 .ant-input,
 .ant-input-number,
 .ant-input-number-input,
@@ -133,7 +140,7 @@ html, body {
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   color: var(--text-primary);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-sans);
   font-size: 14px;
 }
@@ -143,16 +150,32 @@ html, body {
 .ant-input-number:focus,
 .ant-input-number-focused {
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.08);
 }
 .ant-input::placeholder {
   color: var(--text-muted);
 }
 
+/* Textarea */
+.ant-input-textarea textarea {
+  border-radius: var(--radius-sm);
+  border-color: var(--border-default);
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+.ant-input-textarea textarea:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.08);
+}
+.ant-input-textarea textarea:hover {
+  border-color: var(--border-strong);
+}
+
+/* Modal */
 .ant-modal-content {
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-modal);
 }
 .ant-modal-header {
@@ -164,6 +187,7 @@ html, body {
   font-weight: 600;
 }
 
+/* Layout */
 .ant-layout {
   background: transparent !important;
 }
@@ -174,6 +198,7 @@ html, body {
   background: transparent !important;
 }
 
+/* Menu */
 .ant-menu {
   background: transparent !important;
   border-bottom: none !important;
@@ -199,9 +224,10 @@ html, body {
   border-bottom-width: 2px !important;
 }
 
+/* Tag */
 .ant-tag {
   font-family: var(--font-sans);
-  border-radius: 4px;
+  border-radius: 6px;
   font-size: 12px;
 }
 
@@ -214,13 +240,14 @@ html, body {
 }
 
 .ant-alert {
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
 }
 
 .ant-divider {
   border-top-color: var(--border-default);
 }
 
+/* Table */
 .ant-table {
   background: var(--bg-surface);
   font-family: var(--font-sans);
@@ -234,6 +261,7 @@ html, body {
   border-bottom: 1px solid var(--border-default);
 }
 
+/* Descriptions */
 .ant-descriptions-item-label {
   background: var(--bg-subtle);
   color: var(--text-secondary);
@@ -241,6 +269,7 @@ html, body {
   font-size: 13px;
 }
 
+/* Form */
 .ant-form-item-label > label {
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -253,7 +282,53 @@ html, body {
 }
 
 .ant-select-selector {
-  border-radius: 6px !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+/* Dropdown */
+.ant-dropdown-menu {
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card-hover);
+  border: 1px solid var(--border-default);
+  padding: 4px;
+}
+.ant-dropdown-menu-item {
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+
+/* Avatar */
+.ant-avatar {
+  border: 2px solid var(--border-default);
+}
+
+/* Tooltip */
+.ant-tooltip-inner {
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+/* Select dropdown */
+.ant-select-dropdown {
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card-hover);
+  border: 1px solid var(--border-default);
+}
+
+/* Message notification */
+.ant-message-notice-content {
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* Empty state */
+.ant-empty-description {
+  color: var(--text-muted);
+}
+
+/* Badge */
+.ant-badge-count {
+  box-shadow: none;
 }
 
 /* Scrollbar */

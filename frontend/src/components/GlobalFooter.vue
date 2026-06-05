@@ -18,8 +18,8 @@ const currentYear = new Date().getFullYear()
 <style scoped>
 .footer {
   text-align: center;
-  padding: 24px 24px 32px;
-  margin-top: 64px;
+  padding: 32px 24px 40px;
+  margin-top: 80px;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-default);
 }

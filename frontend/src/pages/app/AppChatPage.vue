@@ -1,37 +1,71 @@
 <template>
   <div id="appChatPage" class="ide-layout">
-    <!-- Left Sidebar -->
-    <div v-if="appId" class="left-sidebar" :style="{ width: sidebarWidth + 'px' }">
-      <div class="sidebar-header">
-        <div class="sidebar-project-icon">
-          <AppstoreOutlined />
+    <!-- Activity Bar (VS Code style) -->
+    <div v-if="appId" class="activity-bar">
+      <div class="activity-bar-top">
+        <div
+          class="activity-icon"
+          :class="{ active: sidePanelTab === 'files' }"
+          title="项目文件"
+          @click="switchSidePanel('files')"
+        >
+          <FolderOutlined />
         </div>
-        <span class="sidebar-project-name" :title="appInfo?.appName || '项目'">
-          {{ appInfo?.appName || '项目' }}
+        <div
+          class="activity-icon"
+          :class="{ active: sidePanelTab === 'data' }"
+          title="数据表"
+          @click="switchSidePanel('data')"
+        >
+          <DatabaseOutlined />
+        </div>
+      </div>
+      <div class="activity-bar-bottom">
+        <div class="activity-icon" title="项目详情" @click="showAppDetail">
+          <QuestionCircleOutlined />
+        </div>
+      </div>
+    </div>
+
+    <!-- Side Panel -->
+    <div
+      v-if="appId && sidePanelVisible"
+      class="side-panel"
+      :style="{ width: sidePanelWidth + 'px' }"
+    >
+      <div class="side-panel-header">
+        <span class="side-panel-title">
+          <FolderOutlined v-if="sidePanelTab === 'files'" />
+          <DatabaseOutlined v-else />
+          <span>{{ sidePanelTab === 'files' ? '项目文件' : '数据表' }}</span>
+        </span>
+        <!-- File operation buttons -->
+        <span v-if="sidePanelTab === 'files' && canOperateApp" class="side-panel-actions">
+          <a-tooltip title="新建文件">
+            <a-button type="text" size="small" @click="openCreateFileModal">
+              <template #icon><FileAddOutlined /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="新建文件夹">
+            <a-button type="text" size="small" @click="openCreateFolderModal">
+              <template #icon><FolderAddOutlined /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="上传文件">
+            <a-button type="text" size="small" @click="triggerFileUpload">
+              <template #icon><UploadOutlined /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="删除选中项">
+            <a-button type="text" size="small" :disabled="!selectedFileNode" @click="deleteSelectedNode">
+              <template #icon><DeleteOutlined /></template>
+            </a-button>
+          </a-tooltip>
         </span>
       </div>
 
-      <div class="sidebar-tabs">
-        <div
-          class="sidebar-tab"
-          :class="{ active: leftPanelTab === 'data' }"
-          @click="leftPanelTab = 'data'"
-        >
-          <DatabaseOutlined />
-          <span>数据表</span>
-        </div>
-        <div
-          class="sidebar-tab"
-          :class="{ active: leftPanelTab === 'files' }"
-          @click="switchToFilesTab"
-        >
-          <FolderOutlined />
-          <span>项目文件</span>
-        </div>
-      </div>
-
-      <div class="sidebar-content">
-        <template v-if="leftPanelTab === 'data'">
+      <div class="side-panel-content">
+        <template v-if="sidePanelTab === 'data'">
           <div v-if="loadingDbTables" class="sidebar-loading">
             <a-spin size="small" />
           </div>
@@ -62,29 +96,11 @@
           />
         </template>
       </div>
-
-      <div class="sidebar-actions">
-        <a-tooltip title="项目详情" placement="right">
-          <a-button type="text" size="small" @click="showAppDetail">
-            <template #icon><QuestionCircleOutlined /></template>
-          </a-button>
-        </a-tooltip>
-        <a-tooltip :title="canOperateApp ? '下载代码' : readOnlyTooltip" placement="right">
-          <a-button type="text" size="small" @click="downloadCode" :loading="downloading" :disabled="!canOperateApp">
-            <template #icon><DownloadOutlined /></template>
-          </a-button>
-        </a-tooltip>
-        <a-tooltip :title="canOperateApp ? '部署' : readOnlyTooltip" placement="right">
-          <a-button type="text" size="small" @click="deployApp" :loading="deploying" :disabled="!canOperateApp">
-            <template #icon><CloudUploadOutlined /></template>
-          </a-button>
-        </a-tooltip>
-      </div>
     </div>
 
-    <!-- Resizer: left sidebar ↔ center -->
+    <!-- Resizer: side panel ↔ center -->
     <div
-      v-if="appId"
+      v-if="appId && sidePanelVisible"
       class="resizer"
       @mousedown="onResizeStart('sidebar', $event)"
     />
@@ -92,21 +108,44 @@
     <!-- Center Work Area -->
     <div class="center-work-area">
       <div class="file-tab-bar">
-        <div
-          v-for="tab in fileTabs"
-          :key="tab.path"
-          class="file-tab"
-          :class="{ active: tab.path === activeFileTab }"
-          @click="activateFileTab(tab.path)"
-        >
-          <span class="file-tab-name">{{ tab.name }}</span>
-          <span class="file-tab-close" @click.stop="closeFileTab(tab.path)">
-            <CloseOutlined />
-          </span>
+        <div class="file-tab-bar-left">
+          <div
+            v-for="tab in fileTabs"
+            :key="tab.path"
+            class="file-tab"
+            :class="{ active: tab.path === activeFileTab }"
+            @click="activateFileTab(tab.path)"
+          >
+            <span class="file-tab-dirty" v-if="tab.isDirty" title="未保存的更改"></span>
+            <span class="file-tab-name">{{ tab.name }}</span>
+            <span class="file-tab-close" @click.stop="closeFileTab(tab.path)">
+              <CloseOutlined />
+            </span>
+          </div>
+        </div>
+        <div class="file-tab-bar-right">
+          <a-select
+            v-model:value="selectedPythonEnv"
+            size="small"
+            style="width: 100px;"
+            :options="pythonEnvOptions"
+            placeholder="环境"
+          />
+          <a-tooltip title="运行脚本">
+            <a-button
+              type="text"
+              size="small"
+              :loading="runningScript"
+              :disabled="!activeTabData || !activeTabData.name.endsWith('.py')"
+              @click="runScript"
+            >
+              <template #icon><CaretRightOutlined /></template>
+            </a-button>
+          </a-tooltip>
         </div>
       </div>
 
-      <div class="file-content">
+      <div class="editor-area">
         <div v-if="!fileTabs.length" class="center-empty">
           <div class="center-empty-icon">
             <FileTextOutlined />
@@ -115,12 +154,51 @@
           <p class="center-empty-hint">从左侧「项目文件」中点击文件查看源码</p>
         </div>
 
-        <div v-else-if="activeTabData?.isLoading" class="center-loading">
-          <a-spin size="small" />
-          <span>加载中...</span>
-        </div>
+        <template v-else>
+          <div class="editor-wrapper">
+            <div v-if="showLoading" class="editor-loading-overlay">
+              <a-spin size="default" />
+              <span>加载中...</span>
+            </div>
 
-        <pre v-else class="code-pre"><code class="hljs" v-html="highlightedActiveContent"></code></pre>
+            <VueMonacoEditor
+              v-if="activeTabData"
+              :key="activeFileTab"
+              v-model:value="activeTabData.content"
+              :language="activeTabData.language"
+              :theme="editorTheme"
+              :options="editorOptions"
+              class="monaco-editor-container"
+              @mount="handleEditorMount"
+            />
+          </div>
+        </template>
+      </div>
+
+      <!-- Resizer: editor ↔ output -->
+      <div
+        v-if="fileTabs.length"
+        class="resizer-horizontal"
+        @mousedown="onResizeStart('output', $event)"
+      />
+
+      <!-- Output Panel -->
+      <div v-if="fileTabs.length" class="output-panel" :style="{ height: outputHeight + 'px' }">
+        <div class="output-header">
+          <span class="output-title">输出</span>
+          <a-button type="text" size="small" @click="clearOutput">
+            <template #icon><ClearOutlined /></template>
+          </a-button>
+        </div>
+        <div class="output-content" ref="outputContainer">
+          <div v-if="!outputLines.length" class="output-empty">运行输出将显示在这里</div>
+          <div
+            v-for="(line, i) in outputLines"
+            :key="i"
+            class="output-line"
+            :class="'output-' + line.type"
+          >{{ line.text }}</div>
+        </div>
       </div>
     </div>
 
@@ -216,45 +294,67 @@
     </div>
 
     <AppDetailModal v-model:open="appDetailVisible" :app="appInfo" :show-actions="isOwner || isAdmin" @edit="editApp" @delete="deleteApp" />
-    <DeploySuccessModal v-model:open="deployModalVisible" :deploy-url="deployUrl" @open-site="openDeployedSite" />
+
+    <!-- Create File Modal -->
+    <a-modal v-model:open="createFileModalVisible" title="新建文件" :mask-closable="false">
+      <a-input v-model:value="newItemName" placeholder="输入文件名，如 index.html" @keydown.enter="doCreateFile" />
+      <div v-if="newItemParentPath" style="margin-top: 8px; color: var(--text-muted); font-size: 12px;">
+        创建位置：{{ newItemParentPath }}
+      </div>
+      <template #footer>
+        <a-button @click="createFileModalVisible = false">取消</a-button>
+        <a-button type="primary" :loading="fileOpLoading" @click="doCreateFile">创建</a-button>
+      </template>
+    </a-modal>
+
+    <!-- Create Folder Modal -->
+    <a-modal v-model:open="createFolderModalVisible" title="新建文件夹" :mask-closable="false">
+      <a-input v-model:value="newItemName" placeholder="输入文件夹名，如 components" @keydown.enter="doCreateFolder" />
+      <div v-if="newItemParentPath" style="margin-top: 8px; color: var(--text-muted); font-size: 12px;">
+        创建位置：{{ newItemParentPath }}
+      </div>
+      <template #footer>
+        <a-button @click="createFolderModalVisible = false">取消</a-button>
+        <a-button type="primary" :loading="fileOpLoading" @click="doCreateFolder">创建</a-button>
+      </template>
+    </a-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
-import {
-  deleteApp as deleteAppApi,
-  deployApp as deployAppApi,
-  getAppVoById,
-} from '@/api/appController'
+import { deleteApp as deleteAppApi, getAppVoById } from '@/api/appController'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import AppDetailModal from '@/components/AppDetailModal.vue'
-import DeploySuccessModal from '@/components/DeploySuccessModal.vue'
 import aiAvatar from '@/assets/aiAvatar.png'
-import { API_BASE_URL, getGeneratedPreviewUrl, getStaticPreviewUrl } from '@/config/env'
+import { API_BASE_URL } from '@/config/env'
 import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
-import hljs from 'highlight.js'
+import { VueMonacoEditor, type MonacoEditor } from '@guolao/vue-monaco-editor'
+import '@/config/monacoWorkers'
 
 import {
-  AppstoreOutlined,
+  CaretRightOutlined,
+  ClearOutlined,
   CloseOutlined,
-  CloudUploadOutlined,
   DatabaseOutlined,
-  DownloadOutlined,
+  DeleteOutlined,
+  FileAddOutlined,
   FileTextOutlined,
+  FolderAddOutlined,
   FolderOutlined,
   MessageOutlined,
   QuestionCircleOutlined,
   SendOutlined,
   StopOutlined,
+  UploadOutlined,
 } from '@ant-design/icons-vue'
 
-interface Message {
+interface MessageItem {
   type: 'user' | 'ai'
   content: string
   loading?: boolean
@@ -265,8 +365,17 @@ interface FileTab {
   path: string
   name: string
   content: string
+  originalContent: string
   isLoading: boolean
   lastAccessed: number
+  isDirty: boolean
+  language: string
+}
+
+interface OutputLine {
+  type: 'stdout' | 'stderr' | 'system'
+  text: string
+  timestamp: number
 }
 
 const MAX_OPEN_TABS = 5
@@ -281,7 +390,7 @@ const sessionId = ref('')
 const isCreatingApp = ref(false)
 const suppressAutoInitialMessage = ref(false)
 
-const messages = ref<Message[]>([])
+const messages = ref<MessageItem[]>([])
 const userInput = ref('')
 const isGenerating = ref(false)
 const isStoppingGeneration = ref(false)
@@ -292,22 +401,57 @@ const activeGenerationMessageIndex = ref<number | null>(null)
 const stopRequested = ref(false)
 const abortController = ref<AbortController | null>(null)
 
-const previewUrl = ref('')
-const previewReady = ref(false)
-const previewVersion = ref(0)
-
-const deploying = ref(false)
-const deployModalVisible = ref(false)
-const deployUrl = ref('')
-
-const downloading = ref(false)
-
 // Resizable panels
-const sidebarWidth = ref(260)
+const sidePanelWidth = ref(260)
 const chatWidth = ref(380)
-const resizing = ref<'sidebar' | 'chat' | null>(null)
+const outputHeight = ref(180)
+const resizing = ref<'sidebar' | 'chat' | 'output' | null>(null)
+const outputContainer = ref<HTMLElement>()
 
-const onResizeStart = (target: 'sidebar' | 'chat', e: MouseEvent) => {
+// Monaco editor state
+const editorTheme = ref<'vs' | 'vs-dark'>('vs')
+const monacoEditor = ref<MonacoEditor | null>(null)
+const editorMounted = ref(false)
+const outputLines = ref<OutputLine[]>([])
+
+const showLoading = computed(() => {
+  const tab = activeTabData.value
+  if (!tab) return false
+  if (tab.isLoading) return true
+  if (!editorMounted.value) return true
+  return false
+})
+
+const LANG_MAP: Record<string, string> = {
+  js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
+  vue: 'html', html: 'html', css: 'css', scss: 'scss', less: 'less',
+  json: 'json', py: 'python', md: 'markdown', yaml: 'yaml', yml: 'yaml',
+  sh: 'bash', sql: 'sql', java: 'java', go: 'go', rs: 'rust',
+  xml: 'xml', txt: 'plaintext', c: 'c', cpp: 'cpp', h: 'c',
+}
+
+const getLanguage = (fileName: string): string => {
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
+  return LANG_MAP[ext] || 'plaintext'
+}
+
+const editorOptions = computed(() => ({
+  readOnly: !canOperateApp.value,
+  domReadOnly: !canOperateApp.value,
+  minimap: { enabled: true },
+  fontSize: 13,
+  fontFamily: "'SF Mono', 'Fira Code', Menlo, Consolas, monospace",
+  lineNumbers: 'on' as const,
+  renderWhitespace: 'selection' as const,
+  tabSize: 2,
+  automaticLayout: true,
+  scrollBeyondLastLine: false,
+  wordWrap: 'off' as const,
+  bracketPairColorization: { enabled: true },
+  padding: { top: 8 },
+}))
+
+const onResizeStart = (target: 'sidebar' | 'chat' | 'output', e: MouseEvent) => {
   resizing.value = target
   document.addEventListener('mousemove', onResizeMove)
   document.addEventListener('mouseup', onResizeEnd)
@@ -317,10 +461,16 @@ const onResizeStart = (target: 'sidebar' | 'chat', e: MouseEvent) => {
 const onResizeMove = (e: MouseEvent) => {
   if (resizing.value === 'sidebar') {
     const w = Math.max(200, Math.min(400, e.clientX))
-    sidebarWidth.value = w
+    sidePanelWidth.value = w
   } else if (resizing.value === 'chat') {
     const w = Math.max(260, Math.min(600, window.innerWidth - e.clientX))
     chatWidth.value = w
+  } else if (resizing.value === 'output') {
+    const centerEl = document.querySelector('.center-work-area') as HTMLElement
+    if (!centerEl) return
+    const rect = centerEl.getBoundingClientRect()
+    const h = Math.max(80, Math.min(rect.height * 0.5, rect.bottom - e.clientY))
+    outputHeight.value = h
   }
 }
 
@@ -329,18 +479,6 @@ const onResizeEnd = () => {
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeEnd)
 }
-
-const previewFrameUrl = computed(() => {
-  if (!previewUrl.value) return ''
-  try {
-    const nextUrl = new URL(previewUrl.value, window.location.origin)
-    nextUrl.searchParams.set('_preview_v', String(previewVersion.value))
-    return nextUrl.toString()
-  } catch {
-    const separator = previewUrl.value.includes('?') ? '&' : '?'
-    return `${previewUrl.value}${separator}_preview_v=${previewVersion.value}`
-  }
-})
 
 const isEditMode = ref(false)
 const selectedElementInfo = ref<ElementInfo | null>(null)
@@ -353,36 +491,17 @@ const visualEditor = new VisualEditor({
 const appDetailVisible = ref(false)
 const readOnlyTooltip = '无法在别人的作品下操作哦~'
 
-const leftPanelTab = ref<'data' | 'files'>('data')
+const sidePanelTab = ref<'data' | 'files'>('files')
+const sidePanelVisible = ref(true)
 const sourceFileTree = ref<any[]>([])
 const loadingSourceTree = ref(false)
 
 const fileTabs = ref<FileTab[]>([])
 const activeFileTab = ref<string>('')
+const selectedFileNode = ref<any>(null)
 
 const activeTabData = computed(() => {
   return fileTabs.value.find(t => t.path === activeFileTab.value)
-})
-
-const highlightedActiveContent = computed(() => {
-  if (!activeTabData.value?.content) return ''
-  const ext = activeFileTab.value.split('.').pop() ?? ''
-  const langMap: Record<string, string> = {
-    js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
-    vue: 'xml', html: 'html', css: 'css', scss: 'scss', less: 'less',
-    json: 'json', py: 'python', md: 'markdown', yaml: 'yaml', yml: 'yaml',
-    sh: 'bash', sql: 'sql', java: 'java', go: 'go', rs: 'rust',
-    xml: 'xml', txt: 'plaintext',
-  }
-  const lang = langMap[ext.toLowerCase()]
-  try {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(activeTabData.value.content, { language: lang, ignoreIllegals: true }).value
-    }
-    return hljs.highlightAuto(activeTabData.value.content).value
-  } catch {
-    return activeTabData.value.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  }
 })
 
 const dbTables = ref<any[]>([])
@@ -443,8 +562,22 @@ const loadDbTables = async () => {
   }
 }
 
+const switchSidePanel = (tab: 'data' | 'files') => {
+  if (sidePanelTab.value === tab) {
+    sidePanelVisible.value = !sidePanelVisible.value
+    return
+  }
+  sidePanelTab.value = tab
+  sidePanelVisible.value = true
+  if (tab === 'files' && !sourceFileTree.value.length) {
+    loadSourceTree()
+  } else if (tab === 'data' && !dbTables.value.length) {
+    loadDbTables()
+  }
+}
+
 const switchToFilesTab = async () => {
-  leftPanelTab.value = 'files'
+  sidePanelTab.value = 'files'
   if (!sourceFileTree.value.length) {
     await loadSourceTree()
   }
@@ -457,6 +590,39 @@ const loadFileContent = async (filePath: string): Promise<string> => {
     return res.data.data ?? ''
   }
   throw new Error(res.data.message || '读取文件失败')
+}
+
+const saveCurrentFile = async () => {
+  const tab = activeTabData.value
+  if (!tab || !tab.isDirty || !appId.value) return
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const res = await request.post(
+      `${baseURL}/api/app/code/file/${appId.value}`,
+      { content: tab.content },
+      { params: { path: tab.path } },
+    )
+    if (res.data.code === 0) {
+      tab.originalContent = tab.content
+      tab.isDirty = false
+      message.success('已保存')
+    } else {
+      message.error('保存失败：' + res.data.message)
+    }
+  } catch (error: any) {
+    console.error('保存文件失败:', error)
+    message.error('保存失败：' + (error.message || '未知错误'))
+  }
+}
+
+const handleEditorMount = (editor: MonacoEditor) => {
+  monacoEditor.value = editor
+  editorMounted.value = true
+  editor.addCommand(
+    // Monaco KeyMod.CtrlCmd | Monaco KeyCode.KeyS
+    2048 | 49,
+    () => { saveCurrentFile() },
+  )
 }
 
 const openFileInTab = async (filePath: string, fileName: string) => {
@@ -474,6 +640,10 @@ const openFileInTab = async (filePath: string, fileName: string) => {
         oldest = fileTabs.value[i]
       }
     }
+    if (oldest.isDirty) {
+      message.warning('请先保存或关闭未保存的文件后再打开新文件')
+      return
+    }
     const idx = fileTabs.value.indexOf(oldest)
     fileTabs.value.splice(idx, 1)
   }
@@ -482,14 +652,19 @@ const openFileInTab = async (filePath: string, fileName: string) => {
     path: filePath,
     name: fileName,
     content: '',
+    originalContent: '',
     isLoading: true,
     lastAccessed: Date.now(),
+    isDirty: false,
+    language: getLanguage(fileName),
   }
   fileTabs.value.push(newTab)
   activeFileTab.value = filePath
 
   try {
-    newTab.content = await loadFileContent(filePath)
+    const text = await loadFileContent(filePath)
+    newTab.content = text
+    newTab.originalContent = text
   } catch (error: any) {
     console.error('读取文件失败:', error)
     message.error('读取文件失败：' + (error.message || '未知错误'))
@@ -510,6 +685,23 @@ const activateFileTab = (path: string) => {
 const closeFileTab = (path: string) => {
   const idx = fileTabs.value.findIndex(t => t.path === path)
   if (idx === -1) return
+
+  const tab = fileTabs.value[idx]
+  if (tab.isDirty) {
+    Modal.confirm({
+      title: '未保存的更改',
+      content: `文件 "${tab.name}" 有未保存的更改，确定要关闭吗？`,
+      okText: '关闭',
+      cancelText: '取消',
+      okType: 'danger',
+      onOk: () => { doCloseTab(idx, path) },
+    })
+    return
+  }
+  doCloseTab(idx, path)
+}
+
+const doCloseTab = (idx: number, path: string) => {
   fileTabs.value.splice(idx, 1)
 
   if (activeFileTab.value === path) {
@@ -528,10 +720,253 @@ const closeFileTab = (path: string) => {
 }
 
 const handleSourceFileSelect = async (_keys: string[], { node }: any) => {
+  selectedFileNode.value = node
   if (!node.isLeaf) return
   const filePath: string = node.key
   const fileName: string = node.title
   await openFileInTab(filePath, fileName)
+}
+
+// File operations
+const createFileModalVisible = ref(false)
+const createFolderModalVisible = ref(false)
+const newItemName = ref('')
+const newItemParentPath = ref('')
+const fileUploadInput = ref<HTMLInputElement>()
+const fileOpLoading = ref(false)
+
+// Python env & script running
+const selectedPythonEnv = ref('model')
+const pythonEnvOptions = [
+  { value: 'model', label: 'model' },
+]
+const runningScript = ref(false)
+
+const runScript = async () => {
+  const tab = activeTabData.value
+  if (!tab || !appId.value) return
+  if (tab.isDirty) {
+    message.warning('请先保存文件再运行')
+    return
+  }
+  runningScript.value = true
+  appendOutput('system', `>>> 运行: python ${tab.name}`)
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const url = `${baseURL}/api/app/code/run/${appId.value}`
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify({
+        path: tab.path,
+        env: selectedPythonEnv.value,
+      }),
+    })
+    if (!response.ok) {
+      appendOutput('stderr', `运行失败: HTTP ${response.status}`)
+      return
+    }
+    const reader = response.body?.getReader()
+    if (!reader) {
+      appendOutput('stderr', '运行失败: 无响应')
+      return
+    }
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const event = JSON.parse(trimmed)
+          if (event.event_type === 'output') {
+            const text = typeof event.data === 'string' ? event.data : event.data?.text || ''
+            appendOutput(event.data?.stream || 'stdout', text)
+          } else if (event.event_type === 'done') {
+            appendOutput('system', `>>> 脚本结束，退出码: ${event.data?.code ?? 0}`)
+          } else if (event.event_type === 'error') {
+            appendOutput('stderr', event.data?.message || event.data || '未知错误')
+          }
+        } catch {
+          appendOutput('stdout', trimmed)
+        }
+      }
+    }
+    if (buffer.trim()) {
+      try {
+        const event = JSON.parse(buffer.trim())
+        if (event.event_type === 'done') {
+          appendOutput('system', `>>> 脚本结束，退出码: ${event.data?.code ?? 0}`)
+        }
+      } catch {
+        appendOutput('stdout', buffer.trim())
+      }
+    }
+  } catch (error: any) {
+    appendOutput('stderr', `运行失败: ${error.message || '未知错误'}`)
+  } finally {
+    runningScript.value = false
+  }
+}
+
+const openCreateFileModal = () => {
+  const node = selectedFileNode.value
+  newItemParentPath.value = node ? (node.dataRef?.type === 'dir' ? node.key : node.key.substring(0, node.key.lastIndexOf('/') + 1) || '') : ''
+  newItemName.value = ''
+  createFileModalVisible.value = true
+}
+
+const openCreateFolderModal = () => {
+  const node = selectedFileNode.value
+  newItemParentPath.value = node ? (node.dataRef?.type === 'dir' ? node.key : node.key.substring(0, node.key.lastIndexOf('/') + 1) || '') : ''
+  newItemName.value = ''
+  createFolderModalVisible.value = true
+}
+
+const doCreateFile = async () => {
+  if (!newItemName.value.trim()) return
+  fileOpLoading.value = true
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const filePath = newItemParentPath.value ? `${newItemParentPath.value}/${newItemName.value.trim()}` : newItemName.value.trim()
+    const res = await request.post(`${baseURL}/api/app/code/file/create/${appId.value}`, null, {
+      params: { path: filePath },
+    })
+    if (res.data.code === 0) {
+      message.success('文件创建成功')
+      createFileModalVisible.value = false
+      await loadSourceTree()
+    } else {
+      message.error('创建失败：' + res.data.message)
+    }
+  } catch (error: any) {
+    message.error('创建失败：' + (error.message || '未知错误'))
+  } finally {
+    fileOpLoading.value = false
+  }
+}
+
+const doCreateFolder = async () => {
+  if (!newItemName.value.trim()) return
+  fileOpLoading.value = true
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const folderPath = newItemParentPath.value ? `${newItemParentPath.value}/${newItemName.value.trim()}` : newItemName.value.trim()
+    const res = await request.post(`${baseURL}/api/app/code/folder/create/${appId.value}`, null, {
+      params: { path: folderPath },
+    })
+    if (res.data.code === 0) {
+      message.success('文件夹创建成功')
+      createFolderModalVisible.value = false
+      await loadSourceTree()
+    } else {
+      message.error('创建失败：' + res.data.message)
+    }
+  } catch (error: any) {
+    message.error('创建失败：' + (error.message || '未知错误'))
+  } finally {
+    fileOpLoading.value = false
+  }
+}
+
+const triggerFileUpload = () => {
+  if (!fileUploadInput.value) {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.style.display = 'none'
+    input.addEventListener('change', handleFileUpload)
+    document.body.appendChild(input)
+    fileUploadInput.value = input
+  }
+  fileUploadInput.value.click()
+}
+
+const handleFileUpload = async (e: Event) => {
+  const target = e.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const node = selectedFileNode.value
+    const parentPath = node ? (node.dataRef?.type === 'dir' ? node.key : node.key.substring(0, node.key.lastIndexOf('/') + 1) || '') : ''
+    const filePath = parentPath ? `${parentPath}/${file.name}` : file.name
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await request.post(`${baseURL}/api/app/code/file/upload/${appId.value}`, formData, {
+      params: { path: filePath },
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    if (res.data.code === 0) {
+      message.success('上传成功')
+      await loadSourceTree()
+    } else {
+      message.error('上传失败：' + res.data.message)
+    }
+  } catch (error: any) {
+    message.error('上传失败：' + (error.message || '未知错误'))
+  } finally {
+    target.value = ''
+  }
+}
+
+const deleteSelectedNode = () => {
+  const node = selectedFileNode.value
+  if (!node) return
+  const name = node.title
+  const isDir = node.dataRef?.type === 'dir'
+  Modal.confirm({
+    title: isDir ? '删除文件夹' : '删除文件',
+    content: `确定要删除「${name}」吗？${isDir ? '将同时删除文件夹内的所有内容。' : ''}此操作不可撤销。`,
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        const baseURL = request.defaults.baseURL || API_BASE_URL
+        const res = await request.delete(`${baseURL}/api/app/code/${appId.value}`, {
+          params: { path: node.key },
+        })
+        if (res.data.code === 0) {
+          message.success('删除成功')
+
+          // Close all tabs that are in/under the deleted path
+          const deletedPath = node.key
+          const deletedIsDir = node.dataRef?.type === 'dir'
+          fileTabs.value = fileTabs.value.filter(t => {
+            if (t.path === deletedPath) return false
+            if (deletedIsDir && t.path.startsWith(deletedPath + '/')) return false
+            return true
+          })
+          if (activeFileTab.value && !fileTabs.value.find(t => t.path === activeFileTab.value)) {
+            activeFileTab.value = fileTabs.value.length > 0 ? fileTabs.value[fileTabs.value.length - 1].path : ''
+          }
+
+          selectedFileNode.value = null
+          await loadSourceTree()
+        } else {
+          message.error('删除失败：' + res.data.message)
+        }
+      } catch (error: any) {
+        message.error('删除失败：' + (error.message || '未知错误'))
+      }
+    },
+  })
+}
+
+const clearOutput = () => {
+  outputLines.value = []
+}
+
+const appendOutput = (type: OutputLine['type'], text: string) => {
+  outputLines.value.push({ type, text, timestamp: Date.now() })
+  if (outputContainer.value) {
+    outputContainer.value.scrollTop = outputContainer.value.scrollHeight
+  }
 }
 
 const normalizeUserId = (userId?: string | number | null) => {
@@ -587,9 +1022,7 @@ const finishStream = () => {
 }
 
 const refreshAfterGeneration = async () => {
-  await fetchAppInfo()
-  updatePreview()
-  if (leftPanelTab.value === 'files') {
+  if (sidePanelTab.value === 'files') {
     await loadSourceTree()
   }
 }
@@ -609,10 +1042,34 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
     const errorText = typeof eventData === 'string' ? eventData : eventData?.message || JSON.stringify(eventData)
     const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
     if (targetMessage) { targetMessage.content = '抱歉，当前生成失败，请重试。'; targetMessage.loading = false }
+    appendOutput('stderr', errorText)
     message.error(errorText); finishStream(); return
+  }
+  if (eventType === 'Log_Chunk' || eventType === 'Terminal_Output') {
+    const text = typeof eventData === 'string' ? eventData : eventData?.text || JSON.stringify(eventData)
+    appendOutput('stdout', text)
+    return
   }
   console.debug('收到未处理的事件:', eventType, eventData)
 }
+
+// Reset editor mounted flag when switching tabs (key changes, Monaco recreated)
+watch(activeFileTab, () => {
+  editorMounted.value = false
+})
+
+// Watch for content changes to track dirty state
+watch(
+  () => fileTabs.value.map(t => ({ path: t.path, content: t.content })),
+  () => {
+    for (const tab of fileTabs.value) {
+      if (tab.originalContent !== undefined) {
+        tab.isDirty = tab.content !== tab.originalContent
+      }
+    }
+  },
+  { deep: true },
+)
 
 const isOwner = computed(() => {
   if (!appId.value) return true
@@ -640,7 +1097,7 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
   const autoGenerateInitialMessage = options?.autoGenerateInitialMessage ?? false
   if (!id) {
     appId.value = undefined; clearChatSessionId(); appInfo.value = {}
-    messages.value = []; previewUrl.value = ''; previewReady.value = false
+    messages.value = []; sourceFileTree.value = []
     return
   }
   appId.value = id; ensureChatSessionId(id)
@@ -648,7 +1105,7 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
-      if (messages.value.length >= 2) { updatePreview() }
+      if (messages.value.length >= 2) { /* generated */ }
       if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && autoGenerateInitialMessage) {
         await sendInitialMessage(appInfo.value.initPrompt)
       }
@@ -757,50 +1214,7 @@ const stopGeneration = async () => {
   } catch (error) { console.error('停止生成失败：', error); stopRequested.value = false; isStoppingGeneration.value = false; message.error('停止失败，请重试') }
 }
 
-const updatePreview = () => {
-  const deployKey = appInfo.value?.deployKey
-  if (deployKey) { previewUrl.value = getStaticPreviewUrl(deployKey); previewReady.value = false; previewVersion.value += 1; return }
-  if (appId.value) { previewUrl.value = getGeneratedPreviewUrl(appId.value); previewReady.value = false; previewVersion.value += 1; return }
-  previewUrl.value = ''; previewReady.value = false
-}
-
 const scrollToBottom = () => { if (messagesContainer.value) { messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight } }
-
-const downloadCode = async () => {
-  if (!canOperateApp.value) { message.warning(readOnlyTooltip); return }
-  if (!appId.value) { message.error('项目ID不存在'); return }
-  downloading.value = true
-  try {
-    const baseURL = request.defaults.baseURL || ''
-    const response = await fetch(`${baseURL}/api/app/download/${appId.value}`, { method: 'GET', headers: { ...getAuthHeaders() }, credentials: 'include' })
-    if (!response.ok) throw new Error(`下载失败: ${response.status}`)
-    const contentDisposition = response.headers.get('Content-Disposition')
-    const fileName = contentDisposition?.match(/filename="(.+)"/)?.[1] || `app-${appId.value}.zip`
-    const blob = await response.blob()
-    const downloadUrl = URL.createObjectURL(blob)
-    const link = document.createElement('a'); link.href = downloadUrl; link.download = fileName; link.click()
-    URL.revokeObjectURL(downloadUrl); message.success('代码下载成功')
-  } catch (error) { console.error('下载失败：', error); message.error('下载失败，请重试') }
-  finally { downloading.value = false }
-}
-
-const deployApp = async () => {
-  if (!canOperateApp.value) { message.warning(readOnlyTooltip); return }
-  if (!appId.value) { message.error('项目ID不存在'); return }
-  deploying.value = true
-  try {
-    const res = await deployAppApi({ appId: appId.value as unknown as number })
-    if (res.data.code === 0 && res.data.data) {
-      const deployResult = res.data.data as unknown as { deployUrl?: string; deployKey?: string }
-      deployUrl.value = deployResult.deployUrl || ''
-      if (deployResult.deployKey) { appInfo.value.deployKey = deployResult.deployKey }
-      await fetchAppInfo(); updatePreview(); deployModalVisible.value = true; message.success('部署成功')
-    } else { message.error('部署失败：' + res.data.message) }
-  } catch (error) { console.error('部署失败：', error); message.error('部署失败，请重试') }
-  finally { deploying.value = false }
-}
-
-const openDeployedSite = () => { if (deployUrl.value) { window.open(deployUrl.value, '_blank') } }
 
 const editApp = () => { if (appInfo.value?.id) { router.push(`/app/edit/${appInfo.value.id}`) } }
 const deleteApp = async () => {
@@ -826,18 +1240,33 @@ const getInputPlaceholder = () => {
   return '请描述你的需求，越详细效果越好哦'
 }
 
+// Route navigation guard for unsaved changes
+onBeforeUnmount(() => {
+  const dirtyTabs = fileTabs.value.filter(t => t.isDirty)
+  if (dirtyTabs.length > 0) {
+    const names = dirtyTabs.map(t => t.name).join(', ')
+    const leave = window.confirm(`以下文件有未保存的更改：\n${names}\n\n确定要离开吗？`)
+    if (!leave) { throw new Error('Navigation blocked') }
+  }
+})
+
 watch(() => route.params.id, async (newId, oldId) => {
   if (newId === oldId) return
   const shouldAutoGenerate = !suppressAutoInitialMessage.value
   suppressAutoInitialMessage.value = false
   fileTabs.value = []
   activeFileTab.value = ''
+  sidePanelTab.value = 'files'
+  sidePanelVisible.value = true
   await fetchAppInfo({ appId: typeof newId === 'string' ? newId : undefined, autoGenerateInitialMessage: shouldAutoGenerate })
 })
 
-onMounted(() => { fetchAppInfo() })
+onMounted(() => {
+  sidePanelTab.value = 'files'
+  fetchAppInfo()
+})
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
   abortController.value?.abort()
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeEnd)
@@ -852,8 +1281,65 @@ onUnmounted(() => {
   background: var(--bg-page);
 }
 
-/* ====== Left Sidebar ====== */
-.left-sidebar {
+/* ====== Activity Bar ====== */
+.activity-bar {
+  width: 48px;
+  min-width: 48px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-default);
+  padding: 8px 0;
+}
+
+.activity-bar-top,
+.activity-bar-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.activity-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.activity-icon:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.activity-icon.active {
+  color: var(--accent-primary);
+}
+
+.activity-icon.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 24px;
+  background: var(--accent-primary);
+  border-radius: 0 2px 2px 0;
+}
+
+/* ====== Side Panel ====== */
+.side-panel {
   min-width: 200px;
   flex-shrink: 0;
   display: flex;
@@ -862,67 +1348,41 @@ onUnmounted(() => {
   border-right: 1px solid var(--border-default);
 }
 
-.sidebar-header {
+.side-panel-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: 36px;
   border-bottom: 1px solid var(--border-default);
-}
-
-.sidebar-project-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: var(--accent-primary-subtle);
-  color: var(--accent-primary);
-  font-size: 16px;
   flex-shrink: 0;
 }
 
-.sidebar-project-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border-default);
-}
-
-.sidebar-tab {
-  flex: 1;
+.side-panel-title {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 10px 8px;
+  gap: 8px;
   font-size: 13px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.15s;
-  border-bottom: 2px solid transparent;
-}
-
-.sidebar-tab:hover {
-  color: var(--text-primary);
-  background: var(--bg-page);
-}
-
-.sidebar-tab.active {
-  color: var(--accent-primary);
-  border-bottom-color: var(--accent-primary);
   font-weight: 600;
+  color: var(--text-primary);
 }
 
-.sidebar-content {
+.side-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.side-panel-actions :deep(.ant-btn-text) {
+  color: var(--text-muted);
+}
+
+.side-panel-actions :deep(.ant-btn-text:hover) {
+  color: var(--accent-primary);
+  background: var(--accent-primary-subtle);
+}
+
+.side-panel-content {
   flex: 1;
   overflow-y: auto;
   padding: 4px 0;
@@ -954,25 +1414,7 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-.sidebar-actions {
-  display: flex;
-  justify-content: center;
-  gap: 2px;
-  padding: 6px 8px;
-  border-top: 1px solid var(--border-default);
-  background: var(--bg-subtle);
-}
-
-.sidebar-actions :deep(.ant-btn-text) {
-  color: var(--text-muted);
-}
-
-.sidebar-actions :deep(.ant-btn-text:hover) {
-  color: var(--accent-primary);
-  background: var(--accent-primary-subtle);
-}
-
-/* ====== Resizer ====== */
+/* ====== Resizer (vertical) ====== */
 .resizer {
   width: 4px;
   flex-shrink: 0;
@@ -1001,14 +1443,31 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   height: 36px;
-  background: var(--bg-subtle);
+  background: var(--bg-surface);
   border-bottom: 1px solid var(--border-default);
-  overflow-x: auto;
   flex-shrink: 0;
 }
 
-.file-tab-bar::-webkit-scrollbar {
+.file-tab-bar-left {
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  flex: 1;
+  height: 100%;
+}
+
+.file-tab-bar-left::-webkit-scrollbar {
   height: 0;
+}
+
+.file-tab-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-default);
+  height: 100%;
 }
 
 .file-tab {
@@ -1047,6 +1506,14 @@ onUnmounted(() => {
   background: var(--accent-primary);
 }
 
+.file-tab-dirty {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-primary, #2563eb);
+  flex-shrink: 0;
+}
+
 .file-tab-name {
   max-width: 160px;
   overflow: hidden;
@@ -1075,10 +1542,34 @@ onUnmounted(() => {
   color: #EF4444;
 }
 
-.file-content {
+/* ====== Editor Area ====== */
+.editor-area {
   flex: 1;
   overflow: hidden;
   display: flex;
+}
+
+.monaco-editor-container {
+  flex: 1;
+  height: 100%;
+}
+
+.editor-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.editor-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg-surface);
+  color: var(--text-muted);
 }
 
 .center-empty {
@@ -1118,25 +1609,86 @@ onUnmounted(() => {
   color: var(--text-muted);
 }
 
-.code-pre {
-  flex: 1;
-  margin: 0;
-  padding: 16px;
-  overflow: auto;
-  background: var(--bg-page);
-  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  border: none;
+/* ====== Resizer (horizontal, editor ↔ output) ====== */
+.resizer-horizontal {
+  height: 4px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.15s;
+  position: relative;
+  z-index: 10;
 }
 
-.code-pre code {
-  font-family: inherit;
-  background: transparent;
-  padding: 0;
-  border: none;
-  white-space: pre;
+.resizer-horizontal:hover,
+.resizer-horizontal:active {
+  background: var(--accent-primary);
+}
+
+/* ====== Output Panel ====== */
+.output-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-page);
+}
+
+.output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.output-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.output-header :deep(.ant-btn-text) {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.output-header :deep(.ant-btn-text:hover) {
   color: var(--text-primary);
+}
+
+.output-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 12px;
+  font-family: 'SF Mono', 'Fira Code', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.output-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.output-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.output-stdout {
+  color: var(--text-primary);
+}
+
+.output-stderr {
+  color: #ef4444;
+}
+
+.output-system {
+  color: var(--accent-primary);
 }
 
 /* ====== Right Chat Panel ====== */
@@ -1187,10 +1739,11 @@ onUnmounted(() => {
 
 .user-bubble {
   max-width: 80%;
-  background: var(--accent-primary-subtle);
-  border: 1px solid var(--accent-primary-light);
-  color: var(--text-primary);
+  background: var(--accent-primary);
+  border: none;
+  color: var(--text-inverse);
   border-bottom-right-radius: 4px;
+  box-shadow: var(--shadow-sm);
 }
 
 .ai-bubble {
@@ -1203,6 +1756,8 @@ onUnmounted(() => {
 
 .message-avatar {
   flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 
 .loading-indicator {
@@ -1308,26 +1863,17 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1024px) {
-  .left-sidebar {
+  .side-panel {
     width: 48px;
     min-width: 48px;
   }
-  .left-sidebar .sidebar-project-name,
-  .left-sidebar .sidebar-tab span,
-  .left-sidebar .sidebar-actions :deep(.ant-btn-text) {
+  .side-panel .side-panel-title span,
+  .side-panel .side-panel-actions {
     display: none;
   }
-  .sidebar-header {
+  .side-panel-header {
     justify-content: center;
-    padding: 14px 8px;
-  }
-  .sidebar-tab {
-    padding: 10px 4px;
-    justify-content: center;
-  }
-  .sidebar-actions {
-    flex-direction: column;
-    align-items: center;
+    padding: 0 4px;
   }
   .right-chat-panel {
     width: 300px;
