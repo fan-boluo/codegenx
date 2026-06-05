@@ -33,6 +33,183 @@ class AppProxy:
         base_url = await self.resolve_base_url()
         return f"{base_url}{path}"
 
+    async def request_form(
+        self,
+        *,
+        method: str,
+        path: str,
+        authorization: str | None = None,
+        params: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        headers: dict[str, str] = {}
+        if authorization:
+            headers["Authorization"] = authorization
+        if trace_id:
+            headers["X-Trace-Id"] = trace_id
+
+        started_at = time.perf_counter()
+        base_url = await self.resolve_base_url()
+        url = f"{base_url}{path}"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            try:
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    files=files,
+                )
+            except Exception as exc:
+                invocation_error = ServiceInvocationError(
+                    serviceName=self.service_name,
+                    protocol="http",
+                    operation=f"{method} {path}",
+                    target=url,
+                    message=str(exc),
+                    traceId=trace_id,
+                    retryable=False,
+                )
+                log.error("app-service request failed path={} method={} error={}", path, method, exc)
+                raise BusinessException(ErrorCode.SYSTEM_ERROR, invocation_error.to_message()) from exc
+
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        log.info(
+            "app-service request serviceName={} resolvedInstance={} path={} method={} latencyMs={:.2f} traceId={}",
+            self.service_name,
+            base_url,
+            path,
+            method,
+            latency_ms,
+            trace_id,
+        )
+
+        if response.status_code >= 400:
+            detail = response.text or "调用应用服务失败"
+            invocation_error = ServiceInvocationError(
+                serviceName=self.service_name,
+                protocol="http",
+                operation=f"{method} {path}",
+                target=url,
+                message=detail,
+                traceId=trace_id,
+                code=response.status_code,
+                retryable=response.status_code >= 500,
+            )
+            log.error(
+                "app-service bad response path={} method={} status={} body={}",
+                path,
+                method,
+                response.status_code,
+                detail,
+            )
+            raise BusinessException(ErrorCode.SYSTEM_ERROR, invocation_error.to_message())
+
+        try:
+            return response.json()
+        except Exception as exc:
+            log.error("app-service invalid json path={} method={} body={}", path, method, response.text)
+            invocation_error = ServiceInvocationError(
+                serviceName=self.service_name,
+                protocol="http",
+                operation=f"{method} {path}",
+                target=url,
+                message="应用服务返回格式错误",
+                traceId=trace_id,
+                retryable=False,
+            )
+            raise BusinessException(ErrorCode.SYSTEM_ERROR, invocation_error.to_message()) from exc
+
+    async def forward_passthrough(
+        self,
+        *,
+        method: str,
+        path: str,
+        authorization: str | None = None,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Proxy any request to app-service, forwarding method/path/params/body as-is."""
+        headers: dict[str, str] = {}
+        if authorization:
+            headers["Authorization"] = authorization
+        if trace_id:
+            headers["X-Trace-Id"] = trace_id
+
+        started_at = time.perf_counter()
+        base_url = await self.resolve_base_url()
+        url = f"{base_url}{path}"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            try:
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    json=json_body,
+                )
+            except Exception as exc:
+                invocation_error = ServiceInvocationError(
+                    serviceName=self.service_name,
+                    protocol="http",
+                    operation=f"{method} {path}",
+                    target=url,
+                    message=str(exc),
+                    traceId=trace_id,
+                    retryable=False,
+                )
+                log.error("app-service passthrough failed path={} method={} error={}", path, method, exc)
+                raise BusinessException(ErrorCode.SYSTEM_ERROR, invocation_error.to_message()) from exc
+
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        log.info(
+            "app-service passthrough serviceName={} resolvedInstance={} path={} method={} latencyMs={:.2f} traceId={}",
+            self.service_name,
+            base_url,
+            path,
+            method,
+            latency_ms,
+            trace_id,
+        )
+
+        if response.status_code >= 400:
+            detail = response.text or "调用应用服务失败"
+            invocation_error = ServiceInvocationError(
+                serviceName=self.service_name,
+                protocol="http",
+                operation=f"{method} {path}",
+                target=url,
+                message=detail,
+                traceId=trace_id,
+                code=response.status_code,
+                retryable=response.status_code >= 500,
+            )
+            log.error(
+                "app-service bad response (passthrough) path={} method={} status={} body={}",
+                path,
+                method,
+                response.status_code,
+                detail,
+            )
+            raise BusinessException(ErrorCode.SYSTEM_ERROR, invocation_error.to_message())
+
+        try:
+            return response.json()
+        except Exception as exc:
+            log.error("app-service invalid json (passthrough) path={} method={} body={}", path, method, response.text)
+            invocation_error = ServiceInvocationError(
+                serviceName=self.service_name,
+                protocol="http",
+                operation=f"{method} {path}",
+                target=url,
+                message="应用服务返回格式错误",
+                traceId=trace_id,
+                retryable=False,
+            )
+            raise BusinessException(ErrorCode.SYSTEM_ERROR, invocation_error.to_message()) from exc
+
     async def request_json(
         self,
         *,

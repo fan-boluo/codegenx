@@ -110,74 +110,77 @@
       @mousedown="onResizeStart('sidebar', $event)"
     />
 
-    <!-- Center Work Area -->
-    <div class="center-work-area">
-      <div class="file-tab-bar">
-        <div class="file-tab-bar-left">
-          <div
-            v-for="tab in fileTabs"
-            :key="tab.path"
-            class="file-tab"
-            :class="{ active: tab.path === activeFileTab }"
-            @click="activateFileTab(tab.path)"
-          >
-            <span class="file-tab-dirty" v-if="tab.isDirty" title="未保存的更改"></span>
-            <span class="file-tab-name">{{ tab.name }}</span>
-            <span class="file-tab-close" @click.stop="closeFileTab(tab.path)">
-              <CloseOutlined />
-            </span>
-          </div>
-        </div>
-        <div class="file-tab-bar-right">
-          <a-select
-            v-model:value="selectedPythonEnv"
-            size="small"
-            style="width: 100px;"
-            :options="pythonEnvOptions"
-            placeholder="环境"
-          />
-          <a-tooltip title="运行脚本">
-            <a-button
-              type="text"
-              size="small"
-              :loading="runningScript"
-              :disabled="!activeTabData || !activeTabData.name.endsWith('.py')"
-              @click="runScript"
+    <!-- Center Column: editor + output (vertical stack) -->
+    <div class="center-column">
+      <!-- Editor Panel -->
+      <div class="center-work-area">
+        <div class="file-tab-bar">
+          <div class="file-tab-bar-left">
+            <div
+              v-for="tab in fileTabs"
+              :key="tab.path"
+              class="file-tab"
+              :class="{ active: tab.path === activeFileTab }"
+              @click="activateFileTab(tab.path)"
             >
-              <template #icon><CaretRightOutlined /></template>
-            </a-button>
-          </a-tooltip>
-        </div>
-      </div>
-
-      <div class="editor-area">
-        <div v-if="!fileTabs.length" class="center-empty">
-          <div class="center-empty-icon">
-            <FileTextOutlined />
-          </div>
-          <p class="center-empty-title">暂无打开的文件</p>
-          <p class="center-empty-hint">从左侧「项目文件」中点击文件查看源码</p>
-        </div>
-
-        <template v-else>
-          <div class="editor-wrapper">
-            <div v-if="showLoading" class="editor-loading-overlay">
-              <a-spin size="default" />
-              <span>加载中...</span>
+              <span class="file-tab-dirty" v-if="tab.isDirty" title="未保存的更改"></span>
+              <span class="file-tab-name">{{ tab.name }}</span>
+              <span class="file-tab-close" @click.stop="closeFileTab(tab.path)">
+                <CloseOutlined />
+              </span>
             </div>
-
-            <VueMonacoEditor
-              v-if="activeTabData"
-              :key="activeFileTab"
-              v-model:value="activeTabData.content"
-              :language="activeTabData.language"
-              :theme="editorTheme"
-              :options="editorOptions"
-              class="monaco-editor-container"
-              @mount="handleEditorMount"
-            />
           </div>
-        </template>
+          <div class="file-tab-bar-right">
+            <a-select
+              v-model:value="selectedPythonEnv"
+              size="small"
+              style="width: 100px;"
+              :options="pythonEnvOptions"
+              placeholder="环境"
+            />
+            <a-tooltip title="运行脚本">
+              <a-button
+                type="text"
+                size="small"
+                :loading="runningScript"
+                :disabled="!activeTabData || !activeTabData.name.endsWith('.py')"
+                @click="runScript"
+              >
+                <template #icon><CaretRightOutlined /></template>
+              </a-button>
+            </a-tooltip>
+          </div>
+        </div>
+
+        <div class="editor-area">
+          <div v-if="!fileTabs.length" class="center-empty">
+            <div class="center-empty-icon">
+              <FileTextOutlined />
+            </div>
+            <p class="center-empty-title">暂无打开的文件</p>
+            <p class="center-empty-hint">从左侧「项目文件」中点击文件查看源码</p>
+          </div>
+
+          <template v-else>
+            <div class="editor-wrapper">
+              <div v-if="showLoading" class="editor-loading-overlay">
+                <a-spin size="default" />
+                <span>加载中...</span>
+              </div>
+
+              <VueMonacoEditor
+                v-if="activeTabData"
+                :key="activeFileTab"
+                v-model:value="activeTabData.content"
+                :language="activeTabData.language"
+                :theme="editorTheme"
+                :options="editorOptions"
+                class="monaco-editor-container"
+                @mount="handleEditorMount"
+              />
+            </div>
+          </template>
+        </div>
       </div>
 
       <!-- Resizer: editor ↔ output -->
@@ -418,8 +421,8 @@ const abortController = ref<AbortController | null>(null)
 
 // Resizable panels
 const sidePanelWidth = ref(260)
-const chatWidth = ref(380)
-const outputHeight = ref(180)
+const chatWidth = ref(320)
+const outputHeight = ref(150)
 const resizing = ref<'sidebar' | 'chat' | 'output' | null>(null)
 const outputContainer = ref<HTMLElement>()
 
@@ -481,7 +484,7 @@ const onResizeMove = (e: MouseEvent) => {
     const w = Math.max(260, Math.min(600, window.innerWidth - e.clientX))
     chatWidth.value = w
   } else if (resizing.value === 'output') {
-    const centerEl = document.querySelector('.center-work-area') as HTMLElement
+    const centerEl = document.querySelector('.center-column') as HTMLElement
     if (!centerEl) return
     const rect = centerEl.getBoundingClientRect()
     const h = Math.max(80, Math.min(rect.height * 0.5, rect.bottom - e.clientY))
@@ -1346,8 +1349,8 @@ onBeforeUnmount(() => {
   display: flex;
   overflow: hidden;
   background: var(--bg-page);
-  gap: 8px;
-  padding: 8px;
+  gap: 4px;
+  padding: 4px;
 }
 
 /* ====== Activity Bar ====== */
@@ -1359,9 +1362,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-container);
+  background: var(--bg-page);
+  border-right: 1px solid var(--border-light);
   padding: 8px 0;
 }
 
@@ -1414,9 +1416,8 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-container);
+  background: var(--bg-page);
+  border-right: 1px solid var(--border-light);
   overflow: hidden;
 }
 
@@ -1424,8 +1425,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  height: 40px;
+  padding: 6px 12px;
+  height: 36px;
   border-bottom: 1px solid var(--border-light);
   flex-shrink: 0;
 }
@@ -1513,21 +1514,30 @@ onBeforeUnmount(() => {
   background: var(--accent-primary);
 }
 
-/* ====== Center Work Area ====== */
+/* ====== Center Column ====== */
+.center-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* ====== Center Work Area (Editor) ====== */
 .center-work-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
   border: 1px solid var(--border-light);
-  border-radius: var(--radius-container);
+  border-radius: var(--radius-card);
   overflow: hidden;
 }
 
 .file-tab-bar {
   display: flex;
   align-items: center;
-  height: 40px;
+  height: 36px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-light);
   flex-shrink: 0;
@@ -1716,7 +1726,6 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  margin: 0 8px 8px;
   background: var(--bg-surface);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-card);
@@ -1791,13 +1800,13 @@ onBeforeUnmount(() => {
   flex-direction: column;
   background: var(--bg-surface);
   border: 1px solid var(--border-light);
-  border-radius: var(--radius-container);
+  border-radius: var(--radius-card);
   overflow: hidden;
 }
 
 .messages-container {
   flex: 1;
-  padding: 16px;
+  padding: 12px;
   overflow-y: auto;
   scroll-behavior: smooth;
   display: flex;
@@ -1894,9 +1903,8 @@ onBeforeUnmount(() => {
 }
 
 .input-container {
-  padding: 12px 16px 16px;
-  background: var(--bg-page);
-  border-top: 1px solid var(--border-light);
+  padding: 8px 12px 12px;
+  background: var(--bg-surface);
 }
 
 .input-wrapper {
@@ -1904,7 +1912,7 @@ onBeforeUnmount(() => {
 }
 
 .chat-input {
-  background: var(--bg-surface);
+  background: var(--bg-page);
   border: 1px solid var(--border-light);
   color: var(--text-primary);
   font-size: 14px;

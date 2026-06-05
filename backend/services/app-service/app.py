@@ -16,8 +16,10 @@ LOCAL_SERVICES_ROOT = Path(__file__).resolve().parent / "services"
 if str(LOCAL_SERVICES_ROOT) not in sys.path:
     sys.path.insert(0, str(LOCAL_SERVICES_ROOT))
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from typing import Any
+
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -284,6 +286,134 @@ async def get_app_code_file(
         raise
     except Exception as exc:
         log.exception("get app code file failed appId={} path={}", app_id, path)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/app/code/file/{app_id}", response_model=BaseResponse[bool])
+async def save_app_code_file(
+    app_id: int,
+    path: str = Query(...),
+    payload: dict[str, Any] = Body(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        content = payload.get("content", "")
+        result = await AppService(db).save_code_file(app_id, path, content, current_user)
+        return success(result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("save app code file failed appId={} path={}", app_id, path)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/app/code/file/create/{app_id}", response_model=BaseResponse[bool])
+async def create_app_code_file(
+    app_id: int,
+    path: str = Query(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        result = await AppService(db).create_file(app_id, path, current_user)
+        return success(result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("create app code file failed appId={} path={}", app_id, path)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/app/code/folder/create/{app_id}", response_model=BaseResponse[bool])
+async def create_app_code_folder(
+    app_id: int,
+    path: str = Query(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        result = await AppService(db).create_folder(app_id, path, current_user)
+        return success(result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("create app code folder failed appId={} path={}", app_id, path)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/app/code/file/upload/{app_id}", response_model=BaseResponse[bool])
+async def upload_app_code_file(
+    app_id: int,
+    path: str = Query(...),
+    file: UploadFile = File(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        content = await file.read()
+        result = await AppService(db).upload_file(app_id, path, content, current_user)
+        return success(result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("upload app code file failed appId={} path={}", app_id, path)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.delete("/api/app/code/{app_id}", response_model=BaseResponse[bool])
+async def delete_app_code_node(
+    app_id: int,
+    path: str = Query(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        result = await AppService(db).delete_node(app_id, path, current_user)
+        return success(result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("delete app code node failed appId={} path={}", app_id, path)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/app/code/rename/{app_id}", response_model=BaseResponse[bool])
+async def rename_app_code_node(
+    app_id: int,
+    from_param: str = Query(..., alias="from"),
+    to: str = Query(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        result = await AppService(db).rename_node(app_id, from_param, to, current_user)
+        return success(result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("rename app code node failed appId={} from={} to={}", app_id, from_param, to)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/app/code/run/{app_id}")
+async def run_app_code_script(
+    app_id: int,
+    payload: dict[str, Any] = Body(...),
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+):
+    try:
+        file_path = payload.get("path", "")
+        env = payload.get("env", "model")
+        return StreamingResponse(
+            AppService(db).run_script(app_id, file_path, env, current_user),
+            media_type="text/event-stream",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("run app code script failed appId={} path={}", app_id, file_path)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

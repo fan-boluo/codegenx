@@ -7,6 +7,7 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
+    // 只保留这两个，monaco 插件全部删除
     vue(),
     vueDevTools(),
   ],
@@ -17,6 +18,10 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes('node_modules')) {
             return undefined
+          }
+
+          if (id.includes('monaco-editor')) {
+            return 'monaco-editor'
           }
 
           if (id.includes('echarts')) {
@@ -46,7 +51,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
 })

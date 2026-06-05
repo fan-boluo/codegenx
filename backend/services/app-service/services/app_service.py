@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 from math import ceil
 import os
@@ -7,14 +9,14 @@ from pathlib import Path
 import secrets
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config.config import get_settings
 from shared.config.log_config import log
-from shared.constants import DEFAULT_APP_PRIORITY, get_code_dir, get_deploy_dir
+from shared.constants import DEFAULT_APP_PRIORITY, PYTHON_ENV, get_code_dir, get_deploy_dir
 from shared.exceptions.error_code import ErrorCode
 from shared.exceptions.throw_utils import ThrowUtils
 from orm.app import App
@@ -198,6 +200,130 @@ class AppService:
         if target.stat().st_size > 500 * 1024:
             return "[文件过大，无法预览（超过 500 KB）]"
         return target.read_text(encoding="utf-8", errors="replace")
+
+    async def save_code_file(self, app_id: int, file_path: str, content: str, login_user: JWTUser) -> bool:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_code_dir(app.id).resolve()
+        target = (code_dir / file_path).resolve()
+        code_dir_str = str(code_dir)
+        target_str = str(target)
+        if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return True
+
+    async def create_file(self, app_id: int, file_path: str, login_user: JWTUser) -> bool:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_code_dir(app.id).resolve()
+        target = (code_dir / file_path).resolve()
+        code_dir_str = str(code_dir)
+        target_str = str(target)
+        if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        ThrowUtils.throw_if(not file_path.strip(), ErrorCode.PARAMS_ERROR, "文件名不能为空")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch(exist_ok=False)
+        return True
+
+    async def create_folder(self, app_id: int, dir_path: str, login_user: JWTUser) -> bool:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_code_dir(app.id).resolve()
+        target = (code_dir / dir_path).resolve()
+        code_dir_str = str(code_dir)
+        target_str = str(target)
+        if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        ThrowUtils.throw_if(not dir_path.strip(), ErrorCode.PARAMS_ERROR, "文件夹名不能为空")
+        target.mkdir(parents=True, exist_ok=False)
+        return True
+
+    async def upload_file(self, app_id: int, file_path: str, content: bytes, login_user: JWTUser) -> bool:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_code_dir(app.id).resolve()
+        target = (code_dir / file_path).resolve()
+        code_dir_str = str(code_dir)
+        target_str = str(target)
+        if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        return True
+
+    async def delete_node(self, app_id: int, node_path: str, login_user: JWTUser) -> bool:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_code_dir(app.id).resolve()
+        target = (code_dir / node_path).resolve()
+        code_dir_str = str(code_dir)
+        target_str = str(target)
+        if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        if not target.exists():
+            ThrowUtils.throw_if(True, ErrorCode.NOT_FOUND_ERROR, "文件/文件夹不存在")
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        return True
+
+    async def rename_node(self, app_id: int, old_path: str, new_path: str, login_user: JWTUser) -> bool:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_code_dir(app.id).resolve()
+        old_target = (code_dir / old_path).resolve()
+        new_target = (code_dir / new_path).resolve()
+        code_dir_str = str(code_dir)
+        if not (str(old_target) == code_dir_str or str(old_target).startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        if not (str(new_target) == code_dir_str or str(new_target).startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "新路径无效")
+        ThrowUtils.throw_if(not old_target.exists(), ErrorCode.NOT_FOUND_ERROR, "源文件/文件夹不存在")
+        ThrowUtils.throw_if(new_target.exists(), ErrorCode.PARAMS_ERROR, "目标已存在")
+        new_target.parent.mkdir(parents=True, exist_ok=True)
+        old_target.rename(new_target)
+        return True
+
+    async def run_script(self, app_id: int, file_path: str, env: str, login_user: JWTUser) -> AsyncGenerator[str, None]:
+        app = await self._get_owned_app(app_id, login_user)
+        code_dir = get_code_dir(app.id).resolve()
+        target = (code_dir / file_path).resolve()
+        code_dir_str = str(code_dir)
+        target_str = str(target)
+        if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
+            ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
+        ThrowUtils.throw_if(not target.exists() or not target.is_file(), ErrorCode.NOT_FOUND_ERROR, "文件不存在")
+
+        python_exe = PYTHON_ENV.get(env)
+        if not python_exe:
+            yield f"data: {json.dumps({'event_type': 'error', 'data': {'message': f'未知运行环境: {env}'}})}\n\n"
+            return
+
+        process = await asyncio.create_subprocess_exec(
+            python_exe, str(target),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(code_dir),
+        )
+        stdout_pipe = process.stdout
+        stderr_pipe = process.stderr
+
+        async def read_stream(pipe, tag):
+            while True:
+                line = await pipe.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip("\n")
+                yield f"data: {json.dumps({'event_type': 'output', 'data': {'stream': tag, 'text': text}}, ensure_ascii=False)}\n\n"
+
+        async def drain():
+            async for chunk in read_stream(stdout_pipe, "stdout"):
+                yield chunk
+            async for chunk in read_stream(stderr_pipe, "stderr"):
+                yield chunk
+            await process.wait()
+            yield f"data: {json.dumps({'event_type': 'done', 'data': {'code': process.returncode}}, ensure_ascii=False)}\n\n"
+
+        async for chunk in drain():
+            yield chunk
 
     async def get_db_tables(self, app_id: int, login_user: JWTUser) -> list:
         app = await self._get_owned_app(app_id, login_user)

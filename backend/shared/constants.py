@@ -94,3 +94,8 @@ PREVIEW_CHARS = 2000  # 展示的长度
 # 监控
 # 是否开启
 TELEMETRY_OPEN = False
+
+# python虚拟环境
+PYTHON_ENV = {
+    "model":r"D:\CondaEnvs\model\python.exe"
+}
