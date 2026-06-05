@@ -288,7 +288,7 @@ watch(
 
 <style scoped>
 #homePage {
-  min-height: calc(100vh - 64px);
+  min-height: calc(100vh - 56px);
   padding: 56px 32px 64px;
 }
 
@@ -301,7 +301,7 @@ watch(
 
 .create-guide-panel {
   display: flex;
-  min-height: calc(100vh - 64px - 200px);
+  min-height: calc(100vh - 56px - 200px);
 }
 
 /* Welcome Card */
@@ -309,9 +309,9 @@ watch(
   text-align: center;
   padding: 80px 48px;
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-container);
+  box-shadow: var(--shadow-sm);
 }
 
 .welcome-icon {
@@ -331,9 +331,9 @@ watch(
   text-align: center;
   padding: 64px 48px;
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-container);
+  box-shadow: var(--shadow-sm);
 }
 
 .guide-icon {
@@ -345,8 +345,8 @@ watch(
   justify-content: center;
   width: 72px;
   height: 72px;
-  border-radius: var(--radius-lg);
-  background: var(--accent-primary-subtle);
+  border-radius: var(--radius-card);
+  background: var(--accent-primary-light);
 }
 
 /* Section Eyebrow */
@@ -424,33 +424,33 @@ watch(
 /* App Card */
 .app-card {
   overflow: hidden;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-card);
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  box-shadow: var(--shadow-card);
-  transition: all 0.25s var(--ease-out);
+  border: 1px solid var(--border-light);
+  box-shadow: var(--shadow-sm);
+  transition: all 0.25s ease;
   animation: fade-in-up 0.4s var(--ease-out) both;
 }
 
 .app-card:hover {
   transform: translateY(-4px);
-  box-shadow: var(--shadow-card-hover);
-  border-color: var(--accent-primary-light);
+  box-shadow: var(--shadow-hover);
+  border-color: var(--accent-primary);
 }
 
 /* Add App Card */
 .add-app-card {
   cursor: pointer;
   min-height: 380px;
-  border: 2px dashed var(--border-default);
+  border: 2px dashed var(--border-deep);
   background: var(--bg-page);
-  transition: all 0.25s var(--ease-out);
+  transition: all 0.25s ease;
 }
 .add-app-card:hover {
   transform: translateY(-4px);
-  box-shadow: var(--shadow-card-hover);
+  box-shadow: var(--shadow-hover);
   border-color: var(--accent-primary);
-  background: var(--accent-primary-subtle);
+  background: var(--accent-primary-light);
 }
 
 .add-app-content {
@@ -470,14 +470,15 @@ watch(
   justify-content: center;
   width: 60px;
   height: 60px;
-  border-radius: var(--radius-lg);
-  background: var(--accent-primary-subtle);
+  border-radius: var(--radius-card);
+  background: var(--accent-primary-light);
   font-size: 26px;
   color: var(--accent-primary);
-  transition: all 0.25s var(--ease-out);
+  transition: all 0.25s ease;
 }
 .add-app-card:hover .add-app-icon {
-  background: var(--accent-primary-light);
+  background: var(--accent-primary);
+  color: var(--text-inverse);
 }
 
 .add-app-title {
@@ -588,18 +589,18 @@ watch(
 .example-tag {
   cursor: pointer;
   padding: 8px 16px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-btn);
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-secondary);
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  transition: all 0.2s var(--ease-out);
+  border: 1px solid var(--border-light);
+  transition: all 0.2s ease;
 }
 .example-tag:hover {
   color: var(--accent-primary);
-  background: var(--accent-primary-subtle);
-  border-color: var(--accent-primary-light);
+  background: var(--accent-primary-light);
+  border-color: var(--accent-primary);
 }
 
 /* Override Ant Design card padding */

@@ -134,10 +134,10 @@ const doLogout = async () => {
   position: sticky;
   top: 0;
   z-index: 100;
-  height: var(--header-height);
-  padding: 0 32px;
+  height: 56px;
+  padding: 0 24px;
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-light);
   display: flex;
   align-items: center;
 }
@@ -160,7 +160,7 @@ const doLogout = async () => {
 
 .site-title {
   font-family: var(--font-sans);
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.02em;
@@ -200,15 +200,15 @@ const doLogout = async () => {
   font-family: var(--font-sans);
   font-size: 14px;
   font-weight: 500;
-  border-radius: 6px;
+  border-radius: var(--radius-btn);
   margin: 0 2px;
   padding: 0 16px;
-  transition: all 0.15s var(--ease-out);
+  transition: all 0.2s ease;
 }
 
 .nav-menu :deep(.ant-menu-item:hover) {
   color: var(--accent-primary) !important;
-  background: var(--accent-primary-subtle);
+  background: var(--accent-primary-light);
 }
 
 .nav-menu :deep(.ant-menu-item-selected) {
@@ -231,12 +231,13 @@ const doLogout = async () => {
 .user-trigger {
   cursor: pointer;
   padding: 4px 12px;
-  border-radius: 6px;
-  transition: background 0.15s var(--ease-out);
+  border-radius: var(--radius-btn);
+  transition: all 0.2s ease;
 }
 
 .user-trigger:hover {
   background: var(--bg-hover);
+  box-shadow: var(--shadow-hover);
 }
 
 .user-name {
@@ -249,5 +250,16 @@ const doLogout = async () => {
 .user-info {
   display: flex;
   align-items: center;
+}
+
+.user-info :deep(.ant-avatar) {
+  border-radius: 50%;
+  border: 1px solid var(--border-light);
+  transition: all 0.2s ease;
+}
+
+.user-trigger:hover :deep(.ant-avatar) {
+  box-shadow: var(--shadow-hover);
+  border-color: var(--accent-primary);
 }
 </style>

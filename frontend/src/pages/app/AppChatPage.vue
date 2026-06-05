@@ -56,6 +56,11 @@
               <template #icon><UploadOutlined /></template>
             </a-button>
           </a-tooltip>
+          <a-tooltip title="重命名">
+            <a-button type="text" size="small" :disabled="!selectedFileNode" @click="openRenameModal">
+              <template #icon><EditOutlined /></template>
+            </a-button>
+          </a-tooltip>
           <a-tooltip title="删除选中项">
             <a-button type="text" size="small" :disabled="!selectedFileNode" @click="deleteSelectedNode">
               <template #icon><DeleteOutlined /></template>
@@ -318,6 +323,15 @@
         <a-button type="primary" :loading="fileOpLoading" @click="doCreateFolder">创建</a-button>
       </template>
     </a-modal>
+
+    <!-- Rename Modal -->
+    <a-modal v-model:open="renameModalVisible" title="重命名" :mask-closable="false">
+      <a-input v-model:value="renameNewName" placeholder="输入新名称" @keydown.enter="doRename" />
+      <template #footer>
+        <a-button @click="renameModalVisible = false">取消</a-button>
+        <a-button type="primary" :loading="fileOpLoading" @click="doRename">确定</a-button>
+      </template>
+    </a-modal>
   </div>
 </template>
 
@@ -343,6 +357,7 @@ import {
   CloseOutlined,
   DatabaseOutlined,
   DeleteOutlined,
+  EditOutlined,
   FileAddOutlined,
   FileTextOutlined,
   FolderAddOutlined,
@@ -782,8 +797,11 @@ const runScript = async () => {
       for (const line of lines) {
         const trimmed = line.trim()
         if (!trimmed) continue
+        // Strip SSE "data: " prefix
+        if (!trimmed.startsWith('data: ')) continue
+        const jsonStr = trimmed.slice(6)
         try {
-          const event = JSON.parse(trimmed)
+          const event = JSON.parse(jsonStr)
           if (event.event_type === 'output') {
             const text = typeof event.data === 'string' ? event.data : event.data?.text || ''
             appendOutput(event.data?.stream || 'stdout', text)
@@ -797,9 +815,10 @@ const runScript = async () => {
         }
       }
     }
-    if (buffer.trim()) {
+    if (buffer.trim() && buffer.trim().startsWith('data: ')) {
+      const jsonStr = buffer.trim().slice(6)
       try {
-        const event = JSON.parse(buffer.trim())
+        const event = JSON.parse(jsonStr)
         if (event.event_type === 'done') {
           appendOutput('system', `>>> 脚本结束，退出码: ${event.data?.code ?? 0}`)
         }
@@ -869,6 +888,54 @@ const doCreateFolder = async () => {
     }
   } catch (error: any) {
     message.error('创建失败：' + (error.message || '未知错误'))
+  } finally {
+    fileOpLoading.value = false
+  }
+}
+
+// Rename
+const renameModalVisible = ref(false)
+const renameNewName = ref('')
+
+const openRenameModal = () => {
+  const node = selectedFileNode.value
+  if (!node) return
+  renameNewName.value = node.title
+  renameModalVisible.value = true
+}
+
+const doRename = async () => {
+  const node = selectedFileNode.value
+  if (!node || !renameNewName.value.trim() || renameNewName.value.trim() === node.title) {
+    renameModalVisible.value = false
+    return
+  }
+  fileOpLoading.value = true
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const parentPath = node.key.includes('/') ? node.key.substring(0, node.key.lastIndexOf('/') + 1) : ''
+    const newPath = parentPath ? `${parentPath}${renameNewName.value.trim()}` : renameNewName.value.trim()
+    const res = await request.post(`${baseURL}/api/app/code/rename/${appId.value}`, null, {
+      params: { from: node.key, to: newPath },
+    })
+    if (res.data.code === 0) {
+      message.success('重命名成功')
+      renameModalVisible.value = false
+      // Close old tab for this file
+      const oldTabIdx = fileTabs.value.findIndex(t => t.path === node.key)
+      if (oldTabIdx >= 0) {
+        fileTabs.value.splice(oldTabIdx, 1)
+        if (activeFileTab.value === node.key) {
+          activeFileTab.value = fileTabs.value.length > 0 ? fileTabs.value[Math.min(oldTabIdx, fileTabs.value.length - 1)].path : ''
+        }
+      }
+      selectedFileNode.value = null
+      await loadSourceTree()
+    } else {
+      message.error('重命名失败：' + res.data.message)
+    }
+  } catch (error: any) {
+    message.error('重命名失败：' + (error.message || '未知错误'))
   } finally {
     fileOpLoading.value = false
   }
@@ -1275,10 +1342,12 @@ onBeforeUnmount(() => {
 
 <style scoped>
 #appChatPage.ide-layout {
-  height: calc(100vh - 64px);
+  height: calc(100vh - 56px);
   display: flex;
   overflow: hidden;
   background: var(--bg-page);
+  gap: 8px;
+  padding: 8px;
 }
 
 /* ====== Activity Bar ====== */
@@ -1291,13 +1360,13 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   background: var(--bg-surface);
-  border-right: 1px solid var(--border-default);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-container);
   padding: 8px 0;
 }
 
 .activity-bar-top,
 .activity-bar-bottom {
-  display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
@@ -1309,21 +1378,22 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border-radius: 6px;
+  border-radius: var(--radius-btn);
   color: var(--text-muted);
   font-size: 18px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.2s ease;
   position: relative;
 }
 
 .activity-icon:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+  color: var(--accent-primary);
+  background: var(--accent-primary-light);
 }
 
 .activity-icon.active {
   color: var(--accent-primary);
+  background: var(--accent-primary-light);
 }
 
 .activity-icon.active::before {
@@ -1332,7 +1402,7 @@ onBeforeUnmount(() => {
   left: 0;
   top: 50%;
   transform: translateY(-50%);
-  width: 2px;
+  width: 3px;
   height: 24px;
   background: var(--accent-primary);
   border-radius: 0 2px 2px 0;
@@ -1345,16 +1415,18 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
-  border-right: 1px solid var(--border-default);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-container);
+  overflow: hidden;
 }
 
 .side-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
-  height: 36px;
-  border-bottom: 1px solid var(--border-default);
+  padding: 8px 12px;
+  height: 40px;
+  border-bottom: 1px solid var(--border-light);
   flex-shrink: 0;
 }
 
@@ -1379,13 +1451,12 @@ onBeforeUnmount(() => {
 
 .side-panel-actions :deep(.ant-btn-text:hover) {
   color: var(--accent-primary);
-  background: var(--accent-primary-subtle);
+  background: var(--accent-primary-light);
 }
-
 .side-panel-content {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 8px 0;
 }
 
 .sidebar-loading {
@@ -1412,6 +1483,18 @@ onBeforeUnmount(() => {
 
 .sidebar-tree :deep(.ant-tree-node-content-wrapper) {
   font-size: 13px;
+  border-radius: var(--radius-btn);
+  padding: 5px 8px;
+  margin: 2px 0;
+  transition: all 0.15s ease;
+}
+
+.sidebar-tree :deep(.ant-tree-node-content-wrapper:hover) {
+  background: var(--accent-primary-light);
+}
+
+.sidebar-tree :deep(.ant-tree-node-selected) {
+  background: var(--accent-primary-light) !important;
 }
 
 /* ====== Resizer (vertical) ====== */
@@ -1420,7 +1503,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
-  transition: background 0.15s;
+  transition: background 0.2s;
   position: relative;
   z-index: 10;
 }
@@ -1436,15 +1519,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-container);
   overflow: hidden;
 }
 
 .file-tab-bar {
   display: flex;
   align-items: center;
-  height: 36px;
+  height: 40px;
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-light);
   flex-shrink: 0;
 }
 
@@ -1466,7 +1551,7 @@ onBeforeUnmount(() => {
   gap: 4px;
   padding: 0 8px;
   flex-shrink: 0;
-  border-left: 1px solid var(--border-default);
+  border-left: 1px solid var(--border-light);
   height: 100%;
 }
 
@@ -1480,19 +1565,20 @@ onBeforeUnmount(() => {
   font-size: 13px;
   color: var(--text-secondary);
   cursor: pointer;
-  border-right: 1px solid var(--border-default);
-  white-space: nowrap;
+  border-right: 1px solid var(--border-light);
+  border-radius: var(--radius-btn) var(--radius-btn) 0 0;
   transition: background 0.15s;
   user-select: none;
 }
 
 .file-tab:hover {
   background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .file-tab.active {
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  background: var(--accent-primary-light);
+  color: var(--accent-primary);
   font-weight: 500;
 }
 
@@ -1615,7 +1701,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   cursor: row-resize;
   background: transparent;
-  transition: background 0.15s;
+  transition: background 0.2s;
   position: relative;
   z-index: 10;
 }
@@ -1630,17 +1716,20 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border-default);
-  background: var(--bg-page);
+  margin: 0 8px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-card);
+  overflow: hidden;
 }
 
 .output-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 12px;
+  padding: 6px 12px;
   background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .output-title {
@@ -1654,16 +1743,19 @@ onBeforeUnmount(() => {
 .output-header :deep(.ant-btn-text) {
   color: var(--text-muted);
   font-size: 12px;
+  border-radius: var(--radius-btn);
 }
 
 .output-header :deep(.ant-btn-text:hover) {
-  color: var(--text-primary);
+  color: var(--accent-primary);
+  background: var(--accent-primary-light);
 }
 
 .output-content {
   flex: 1;
   overflow-y: auto;
-  padding: 6px 12px;
+  background: var(--bg-page);
+  padding: 10px 12px;
   font-family: 'SF Mono', 'Fira Code', Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -1698,7 +1790,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
-  border-left: 1px solid var(--border-default);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-container);
   overflow: hidden;
 }
 
@@ -1732,9 +1825,10 @@ onBeforeUnmount(() => {
 
 .message-bubble {
   padding: 10px 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-card);
   line-height: 1.6;
   font-size: 14px;
+  transition: all 0.2s ease;
 }
 
 .user-bubble {
@@ -1749,15 +1843,18 @@ onBeforeUnmount(() => {
 .ai-bubble {
   max-width: 85%;
   background: var(--bg-page);
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-light);
   color: var(--text-primary);
   border-bottom-left-radius: 4px;
 }
 
 .message-avatar {
   flex-shrink: 0;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+}
+
+.message-avatar :deep(.ant-avatar) {
+  border: 1px solid var(--border-light);
+  border-radius: 50%;
 }
 
 .loading-indicator {
@@ -1769,36 +1866,37 @@ onBeforeUnmount(() => {
 
 .create-mode-hint {
   margin-bottom: 20px;
-  padding: 20px;
-  border-radius: 8px;
+  padding: 24px;
+  border-radius: var(--radius-card);
   background: var(--bg-page);
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-light);
   text-align: center;
 }
 
 .hint-icon {
-  font-size: 24px;
+  font-size: 28px;
   color: var(--accent-primary);
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .hint-title {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .hint-description {
-  margin: 0 0 12px;
+  margin: 0;
   line-height: 1.6;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
 .input-container {
   padding: 12px 16px 16px;
   background: var(--bg-page);
-  border-top: 1px solid var(--border-default);
+  border-top: 1px solid var(--border-light);
 }
 
 .input-wrapper {
@@ -1807,16 +1905,19 @@ onBeforeUnmount(() => {
 
 .chat-input {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-light);
   color: var(--text-primary);
   font-size: 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-card);
   resize: none;
-  transition: border-color 0.15s;
+  transition: all 0.2s ease;
+}
+.chat-input:hover {
+  border-color: var(--border-deep);
 }
 .chat-input:focus {
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px var(--accent-primary-light);
 }
 
 .input-actions {
@@ -1825,6 +1926,16 @@ onBeforeUnmount(() => {
   right: 8px;
   display: flex;
   gap: 8px;
+}
+
+/* Send button */
+.input-actions :deep(.ant-btn-primary) {
+  border-radius: 999px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ====== Selected Element Alert ====== */

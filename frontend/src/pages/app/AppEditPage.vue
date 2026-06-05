@@ -203,8 +203,9 @@ onMounted(() => { fetchAppInfo() })
 .edit-card,
 .info-card {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-sm);
 }
 
 .cover-preview {
