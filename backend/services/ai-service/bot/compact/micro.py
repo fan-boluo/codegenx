@@ -54,7 +54,7 @@ CLEAR_TOOL_INPUTS = frozenset({
 MAX_TOOL_RESULT_TOKENS = 2000
 
 
-from compact.thresholds import estimate_tokens
+from compact.thresholds import AUTOCOMPACT_THRESHOLD, estimate_tokens
 
 
 # ── Token estimation ──────────────────────────────────────────────────────────
@@ -68,6 +68,7 @@ def microcompact_messages(
     messages: list[dict],
     protect_last_n_results: int = 1,
     max_result_tokens: int | None = None,
+    min_total_tokens: int | None = None,
 ) -> list[dict]:
     """
     将工具执行结果超长的压缩
@@ -81,6 +82,8 @@ def microcompact_messages(
     protect_last_n_results: 保护最近 N 次的工具调用结果不被清除，保证大模型
                             在后续 turn 中能看到刚刚执行的结果。默认 1。
     max_result_tokens: 工具结果 token 阈值，超过则清除。不传则使用 MAX_TOOL_RESULT_TOKENS。
+    min_total_tokens: 消息整体 token 低于此值时完全跳过压缩。默认取压缩触发阈值的 60%，
+                      确保上下文空间充裕时不会丢失信息。
 
     The function:
       1. Builds an index: tool_call_id → msg_index for every tool message.
@@ -96,6 +99,11 @@ def microcompact_messages(
     Returns a new list; the input is never mutated.
     """
     threshold = max_result_tokens if max_result_tokens is not None else MAX_TOOL_RESULT_TOKENS
+    min_total = min_total_tokens if min_total_tokens is not None else int(AUTOCOMPACT_THRESHOLD * 0.6)
+
+    # 上下文还很宽松，无需清理，保留所有信息
+    if estimate_tokens(messages) < min_total:
+        return messages
 
     # Build tool_call_id → msg_index map (one result per tool message)
     result_index: dict[str, int] = {}
