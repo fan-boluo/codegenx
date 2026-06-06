@@ -11,6 +11,11 @@ import importlib.util
 import sys
 from pathlib import Path
 
+# 确保 backend 根目录在 Python path 中
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from shared.config.log_config import log
 from shared.utils.tools import get_local_ip
 from shared.utils.proto_loader import load_proto_modules

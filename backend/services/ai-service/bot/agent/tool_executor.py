@@ -126,16 +126,16 @@ class ToolExecutor:
 
         # 执行成功则大的输出落盘
         if result.success:
-            result = await session_state.context_manager.persist_large_output(tool_call=tool_call,output=result)
+            await session_state.context_manager.persist_large_output(tool_call=tool_call,output=result)
 
-        if hasattr(result, "model_dump"):
-            result = result.model_dump()
-        elif hasattr(result, "dict"):
-            result = result.dict()
+        # if hasattr(result, "model_dump"):
+        #     result = result.model_dump()
+        # elif hasattr(result, "dict"):
+        #     result = result.dict()
         # model_dump() 后的 dict 放入 tool_message["content"] 会导致 LLM API 拒绝
         # （因为 content 必须是 str 或 list，不能是 dict）
-        if isinstance(result, dict):
-            result = result.get("message") or str(result)
+        # if isinstance(result, dict):
+        #     result = result.get("message") or str(result)
 
         return result
 

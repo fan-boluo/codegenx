@@ -385,24 +385,25 @@ class CompactionEngine:
     async def _run_compaction(
         self, messages: list[dict]
     ) -> CompactResult | None:
+        log.debug("step 执行压缩开始")
         # Path A — session memory fast path
         if self._session_memory is not None:
             try:
                 summary = self._session_memory.load()
                 if summary and summary.strip():
-                    log.info("Using session-memory fast-path compaction.")
+                    log.info("setp 压缩：Using session-memory fast-path compaction.")
                     return _session_memory_compact(messages, summary)
             except Exception as exc:
                 log.warning("Session-memory fast-path failed: {}; trying LLM.", exc)
 
         # Path B — LLM summarization
         if self._llm_fn is not None:
-            log.debug("Using LLM compaction.")
+            log.debug("setp 压缩：Using LLM compaction.")
             result = await _llm_compact(messages, self._llm_fn, self._breaker)
             if result is not None:
                 return result
 
-        log.error("All compaction paths failed.")
+        log.error("setp 压缩：All compaction paths failed.")
         return None
 
 

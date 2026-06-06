@@ -119,6 +119,7 @@ class SessionContext:
         self.chat_messages, result = await self._compaction.compact_if_needed(
             self.chat_messages
         )
+
         if result is not None:
             log.debug("进行step的压缩了")
             yield AgentEvent(

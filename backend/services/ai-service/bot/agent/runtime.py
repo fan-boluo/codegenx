@@ -8,6 +8,9 @@ import time
 import traceback
 from datetime import datetime
 from typing import Any, AsyncGenerator
+
+from sqlalchemy.ext.asyncio import result
+
 from agent.agent_schema import     AgentEvent,AgentState,AgentEventType
 from agent.runtime_schema import (
     RuntimeSessionState,
@@ -298,7 +301,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     raise
                 except Exception as exc:
                     log.opt(exception=True).error("Unhandled error in request {}: {}", session_state.request_id, exc)
-                    await self._publish_request_event(
+                    await self._publish_runtime_event(
                         session_state,
                         AgentEvent(event_type=AgentEventType.ERROR, data=str(exc), state=AgentState.FAILED),
                     )
@@ -425,9 +428,10 @@ class AgentRuntime(LLMRecoveryMixin):
             log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
             try:
                 await context_manager.compact_after_turn()
-            except Exception:
+            except Exception as exc:
+                log.debug(traceback.format_exc())
                 log.exception("compact_after_turn 执行异常（非致命）")
-            await self._publish_request_event(
+            await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.REQUEST_COMPLETED,
@@ -441,7 +445,7 @@ class AgentRuntime(LLMRecoveryMixin):
         except TurnStoppedError as exc:
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.STOPPED
-            await self._publish_request_event(
+            await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.REQUEST_STOPPED,
@@ -454,7 +458,7 @@ class AgentRuntime(LLMRecoveryMixin):
             reason = self._stop_reason(session_state)
             activate_turn.error_text = reason
             activate_turn.state = AgentState.STOPPED
-            await self._publish_request_event(
+            await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.REQUEST_STOPPED,
@@ -469,7 +473,7 @@ class AgentRuntime(LLMRecoveryMixin):
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.FAILED
             await self.hook_runner.dispatch("OnError", activate_turn, session=session_state, error=exc)
-            await self._publish_request_event(
+            await self._publish_runtime_event(
                 session_state,
                 AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
             )
@@ -579,6 +583,7 @@ class AgentRuntime(LLMRecoveryMixin):
                 "tool_call_id": tool_call.get("id", ""),
                 "name": tool_call.get("name", ""),
                 "content": "",
+                "state":""
             }
             log.debug("PreToolUse {},{},{}", session_state.request_id, turn_state.step_counter,
                       turn_state.active_step_id)
@@ -586,11 +591,14 @@ class AgentRuntime(LLMRecoveryMixin):
                 "PreToolUse", turn_state, session=session_state, tool_call=tool_call
             )
             if pre_result.get("action") == "blocked":
+                log.debug("PreToolUse blocked")
                 messages = pre_result.get("messages", "Blocked by hook")
                 tool_message["content"] = f"Tool blocked by PreToolUse hook :{messages}"
+                tool_message['state'] = "blocked"
                 session_state.context_manager.add_tool_message(tool_message)
                 continue
             if pre_result.get("action") == "inject":
+                log.debug("PreToolUse inject")
                 messages = pre_result.get("messages", "")
                 tool_message["content"] = f" PreToolUse message :{messages}"
                 session_state.context_manager.add_tool_message(tool_message)
@@ -610,13 +618,18 @@ class AgentRuntime(LLMRecoveryMixin):
                 result=result,
             )
             log.debug("PostToolUse {},{},{}",session_state.request_id, turn_state.step_counter, turn_state.active_step_id)
-
+            if result.success:
+                tool_message['content'] = result.data or ""
+                tool_message['state'] = "success"
+            else:
+                tool_message['content'] = result.message or ""
+                tool_message['state'] = "failure"
             session_state.context_manager.add_tool_message(tool_message)
             await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.TOOL_EXECUTION_END,
-                    data={"tool_id": tool_call.get("id"), "tool_name": tool_call.get("name"), "result": tool_message["content"]},
+                    data= tool_message,
                     state=AgentState.RUNNING,
                 ),
             )
@@ -639,23 +652,7 @@ class AgentRuntime(LLMRecoveryMixin):
             )
         )
 
-    async def _publish_runtime_event(
-        self,
-        session_state: RuntimeSessionState,
-        event: AgentEvent,
-    ) -> None:
-        await self._record_chat_history(session_state, event)
-        data = self._sanitize_event_data(event)
-        await self.message_bus.publish_outbound(
-            RuntimeTurnEvent(
-                session_id=session_state.session_id,
-                request_id=session_state.request_id,
-                turn_id=session_state.activate_turn.active_step_id,
-                event_type=event.event_type,
-                state=event.state.value,
-                data=data,
-            )
-        )
+
 
     async def _record_chat_history(self, session_state: RuntimeSessionState, event: AgentEvent) -> None:
         """将工具执行结果写入 chat_history JSONL，供前端展示完整对话过程。"""
@@ -671,29 +668,50 @@ class AgentRuntime(LLMRecoveryMixin):
                 "content": str(tc.get("result", "")),
             })
 
-    def _sanitize_event_data(self, event: AgentEvent) -> Any:
+    def _sanitize_event_data(self, event: AgentEvent) -> None:
         """过滤敏感数据，工具事件只描述正在做什么，不传输原始内容。"""
         if event.event_type == AgentEventType.TOOL_EXECUTION_START:
             tc = event.data if isinstance(event.data, dict) else {}
-            return {
+            event.data =  {
                 "tool_name": tc.get("name", ""),
                 "tool_id": tc.get("id", ""),
                 "description": f"执行工具: {tc.get('name', 'unknown')}",
             }
         if event.event_type == AgentEventType.TOOL_EXECUTION_END:
             tc = event.data if isinstance(event.data, dict) else {}
-            result = str(tc.get("result", ""))
-            desc = f"工具执行完成, 输出 {len(result)} 字符"
-            return {
-                "tool_name": tc.get("tool_name", ""),
-                "tool_id": tc.get("tool_id", ""),
+            # TODO 添加友好的工具执行描述
+            # desc = tc.get('content')
+            desc = f"{tc.get('name')} 工具执行完成, {tc.get('state')},输出 {len(tc.get('content') or "")} 字符" # 输出 {len(result)} 字符
+
+            event.data = {
+                "tool_name": tc.get("name", ""),
+                "tool_id": tc.get("tool_call_id", ""),
                 "description": desc,
             }
-        return event.data
 
-    async def _publish_request_event(
-        self, session_state: RuntimeSessionState, event: AgentEvent
+
+    # async def _publish_request_event(
+    #     self, session_state: RuntimeSessionState, event: AgentEvent
+    # ) -> None:
+    #     await self.message_bus.publish_outbound(
+    #         RuntimeTurnEvent(
+    #             session_id=session_state.session_id,
+    #             request_id=session_state.request_id,
+    #             turn_id=session_state.activate_turn.active_step_id,
+    #             event_type=event.event_type,
+    #             state=event.state.value,
+    #             data=event.data,
+    #         )
+    #     )
+    async def _publish_runtime_event(
+        self,
+        session_state: RuntimeSessionState,
+        event: AgentEvent,
     ) -> None:
+        # event结果整理后记录、发布
+        self._sanitize_event_data(event)
+
+        await self._record_chat_history(session_state, event)
         await self.message_bus.publish_outbound(
             RuntimeTurnEvent(
                 session_id=session_state.session_id,

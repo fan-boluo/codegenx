@@ -15,43 +15,34 @@ services:
     ports:
       - '8000:8000'
     env_file:
-      - .env.example
+      - .env
     depends_on:
       - user-service
       - ai-service
-      - chat-service
-      - task-service
+      - app-service
       - mysql
       - redis
-      - rabbitmq
 
   user-service:
     build: ./services/user-service
     ports:
       - '8001:8001'
     env_file:
-      - .env.example
+      - .env
 
   ai-service:
     build: services/ai-service
     ports:
       - '8002:8002'
     env_file:
-      - .env.example
+      - .env
 
   chat-service:
-    build: ./services/chat-service
+    build: ./services/app-service
     ports:
       - '8005:8005'
     env_file:
-      - .env.example
-
-  task-service:
-    build: ./services/task-service
-    ports:
-      - '8004:8004'
-    env_file:
-      - .env.example
+      - .env
 
   mysql:
     image: mysql:8.0
@@ -69,15 +60,6 @@ services:
     ports:
       - '6379:6379'
 
-  rabbitmq:
-    image: rabbitmq:3.12-management
-    ports:
-      - '5672:5672'
-      - '15672:15672'
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -88,8 +70,7 @@ services:
       - api-gateway
       - user-service
       - ai-service
-      - chat-service
-      - task-service
+      - app-service
 
 volumes:
   mysql-data:

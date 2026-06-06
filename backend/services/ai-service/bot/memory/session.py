@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import traceback
 from pathlib import Path
 from shared.config.log_config import log
 from llm.async_client import AsyncLLMClient
@@ -123,6 +124,8 @@ class SessionMemory:
             return False
 
         tool_calls = _count_tool_calls_since(messages, self._extract_msg_idx)
+        log.debug("TOOL_CALLS_BETWEEN_UPDATES:{} ,growth:{},MIN_TOKENS_BETWEEN_UPDATES:{}",
+                  TOOL_CALLS_BETWEEN_UPDATES,growth,MIN_TOKENS_BETWEEN_UPDATES)
         return (
             tool_calls >= TOOL_CALLS_BETWEEN_UPDATES
             or growth >= MIN_TOKENS_BETWEEN_UPDATES * 3
@@ -167,7 +170,10 @@ class SessionMemory:
             summary = await _session_summarize(messages, current_notes,str(self._path))
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(summary, encoding="utf-8")
+            log.debug("session memory 压缩完成:{}",self._path)
         except Exception:
+            log.error("session memory 压缩异常")
+            log.error(traceback.format_exc())
             pass  # extraction failure is non-fatal
         finally:
             self._extracting = False

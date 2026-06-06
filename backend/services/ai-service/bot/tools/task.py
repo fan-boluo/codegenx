@@ -64,7 +64,7 @@ class TaskCreateTool(BaseTool):
                 description=str(params.get("description", "") or ""),
                 depends_on=list(params.get("depends_on") or []),
             )
-            return ToolResult(success=True, data=task)
+            return ToolResult(success=True, data=str(task))
         except Exception as exc:
             log.error("[task_create] {}", exc)
             return ToolResult(success=False, message=f"Error: {exc}")
@@ -120,7 +120,7 @@ class TaskUpdateTool(BaseTool):
                 subject=params.get("subject"),
                 description=params.get("description"),
             )
-            return ToolResult(success=True, data=task)
+            return ToolResult(success=True, data=str(task))
         except Exception as exc:
             log.error("[task_update] {}", exc)
             return ToolResult(success=False, message=f"Error: {exc}")
@@ -160,7 +160,7 @@ class TaskGetTool(BaseTool):
             task = task_manager.get(int(task_id))
             if task is None:
                 return ToolResult(success=False, data=f"Task {task_id} not found.")
-            return ToolResult(success=True, data=task)
+            return ToolResult(success=True, data=str(task))
         except Exception as exc:
             log.error("[task_get] {}", exc)
             return ToolResult(success=False, message=f"Error: {exc}")

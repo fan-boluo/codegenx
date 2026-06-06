@@ -23,6 +23,8 @@ Key difference from full compaction:
 """
 from __future__ import annotations
 
+from compact import should_auto_compact
+from shared.config.log_config import log
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 # Marker written in place of cleared tool results.
@@ -98,6 +100,8 @@ def microcompact_messages(
 
     Returns a new list; the input is never mutated.
     """
+
+    # 现在这个数字是3000,来自配置文件
     threshold = max_result_tokens if max_result_tokens is not None else MAX_TOOL_RESULT_TOKENS
     min_total = min_total_tokens if min_total_tokens is not None else int(AUTOCOMPACT_THRESHOLD * 0.6)
 
@@ -125,7 +129,7 @@ def microcompact_messages(
             if uid:
                 ordered_tool_call_ids.append(uid)
 
-    # 最近 N 个 tool_call_id 受到保护
+    # 最近 N 个 tool_call_id 受到保护 ，这个数字是5
     protected_ids: set[str] = set()
     if protect_last_n_results > 0 and ordered_tool_call_ids:
         protected_ids = set(ordered_tool_call_ids[-protect_last_n_results:])
@@ -190,7 +194,8 @@ def microcompact_messages(
                     }, ensure_ascii=False)
                     new_tc["function"] = f
                     new_tcs.append(new_tc)
-                    log.debug("micro compact clear_inputs: {}", f["arguments"])
+                    log.debug("micro compact clear_inputs: {}",f["arguments"])
+
                 else:
                     new_tcs.append(tc)
             new_messages.append({**msg, "tool_calls": new_tcs})

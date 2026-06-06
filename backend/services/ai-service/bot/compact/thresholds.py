@@ -22,19 +22,18 @@ from __future__ import annotations
 import os
 
 from bot.utils.context_utils import rough_tokens as estimate_tokens
-
+from shared.config.log_config import log
 # ── Context window configuration ──────────────────────────────────────────────
-
+from utils.config import load_config
 # Mock: small so compaction triggers quickly.
 # Real deployment: set this to your model's context window (e.g. 200_000).
-COMPACT_CONTEXT_WINDOW: int = int(
-    os.environ.get("BOT_CONTEXT_WINDOW", "4_000")
-)
 
-# Tokens reserved for compact summary output (mirrors MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+COMPACT_CONTEXT_WINDOW = load_config().get_agent().context_max_tokens or 8000
+
+# 压缩摘要的大小
 MAX_OUTPUT_TOKENS_FOR_SUMMARY = min(500, COMPACT_CONTEXT_WINDOW // 8)
 
-# Effective context = window − reserved output space
+# 去掉摘要后的可用空间
 EFFECTIVE_CONTEXT_WINDOW = COMPACT_CONTEXT_WINDOW - MAX_OUTPUT_TOKENS_FOR_SUMMARY
 
 # Headroom before the hard limit where auto-compact fires
@@ -44,10 +43,10 @@ AUTOCOMPACT_BUFFER_TOKENS = max(200, EFFECTIVE_CONTEXT_WINDOW // 12)
 WARNING_THRESHOLD_BUFFER = max(300, EFFECTIVE_CONTEXT_WINDOW // 8)
 ERROR_THRESHOLD_BUFFER = WARNING_THRESHOLD_BUFFER
 
-# Blocking limit: refuse new queries above this (manual compact required)
+# 拒绝新查询阈值，超过此值需要手动压缩
 MANUAL_COMPACT_BUFFER = max(100, EFFECTIVE_CONTEXT_WINDOW // 30)
 
-# The actual token level that triggers auto-compaction
+# 实际压缩触发的阈值
 AUTOCOMPACT_THRESHOLD = EFFECTIVE_CONTEXT_WINDOW - AUTOCOMPACT_BUFFER_TOKENS
 
 
@@ -66,7 +65,10 @@ def should_auto_compact(messages: list[dict]) -> bool:
     Mirrors shouldAutoCompact() (token check only; recursion guards are in
     engine.py via query_source checks).
     """
-    return estimate_tokens(messages) >= AUTOCOMPACT_THRESHOLD
+
+    estimate_token = estimate_tokens(messages)
+    log.debug("estimate_token: {} AUTOCOMPACT_THRESHOLD:{}",estimate_token, AUTOCOMPACT_THRESHOLD)
+    return  estimate_token >= AUTOCOMPACT_THRESHOLD
 
 
 def calculate_warning_state(messages: list[dict]) -> dict:
