@@ -242,8 +242,35 @@
             <div class="message-avatar">
               <a-avatar :src="aiAvatar" :size="28" />
             </div>
-            <div class="message-bubble ai-bubble">
-              <MarkdownRenderer v-if="messageItem.content" :content="messageItem.content" />
+            <div class="ai-content">
+              <template v-if="messageItem.items?.length">
+                <template v-for="(item, ii) in messageItem.items" :key="ii">
+                  <MarkdownRenderer v-if="item.type === 'text'" :content="item.text || ''" />
+                  <div v-else-if="item.type === 'step' && item.step" class="ai-step-inline" :class="'step-' + item.step.state">
+                    <span class="step-icon">
+                      <LoadingOutlined v-if="item.step.state === 'running'" spin />
+                      <CheckCircleOutlined v-else-if="item.step.state === 'completed'" />
+                      <CloseCircleOutlined v-else />
+                    </span>
+                    <span class="step-desc">{{ item.step.description }}</span>
+                    <span v-if="item.step.detail" class="step-detail">{{ item.step.detail }}</span>
+                  </div>
+                </template>
+              </template>
+              <template v-else>
+                <MarkdownRenderer v-if="messageItem.content" :content="messageItem.content" />
+                <div v-if="messageItem.steps?.length" class="ai-steps">
+                  <div v-for="(step, si) in messageItem.steps" :key="si" class="ai-step" :class="'step-' + step.state">
+                    <span class="step-icon">
+                      <LoadingOutlined v-if="step.state === 'running'" spin />
+                      <CheckCircleOutlined v-else-if="step.state === 'completed'" />
+                      <CloseCircleOutlined v-else />
+                    </span>
+                    <span class="step-desc">{{ step.description }}</span>
+                    <span v-if="step.detail" class="step-detail">{{ step.detail }}</span>
+                  </div>
+                </div>
+              </template>
               <div v-if="messageItem.loading" class="loading-indicator">
                 <a-spin size="small" />
                 <span>AI 正在思考...</span>
@@ -277,6 +304,37 @@
           </div>
         </template>
       </a-alert>
+
+      <!-- Task Board -->
+      <div v-if="visibleTasks.length > 0" class="task-board" :class="{ collapsed: taskBoardCollapsed }">
+        <div class="task-board-header" @click="taskBoardCollapsed = !taskBoardCollapsed">
+          <span class="task-board-title">
+            <CheckSquareOutlined />
+            <span>任务 ({{ visibleTasks.filter(t => t.status === 'completed').length }}/{{ visibleTasks.length }})</span>
+          </span>
+          <span class="task-board-toggle">
+            <UpOutlined v-if="!taskBoardCollapsed" />
+            <DownOutlined v-else />
+          </span>
+        </div>
+        <div v-show="!taskBoardCollapsed" class="task-board-body">
+          <div
+            v-for="task in visibleTasks"
+            :key="task.id"
+            class="task-chip"
+            :class="'task-' + task.status"
+          >
+            <span class="task-chip-indicator">
+              <CheckCircleOutlined v-if="task.status === 'completed'" />
+              <LoadingOutlined v-else-if="task.status === 'in_progress'" />
+              <ClockCircleOutlined v-else />
+            </span>
+            <span class="task-chip-subject">{{ task.subject }}</span>
+            <span class="task-chip-id">#{{ task.id }}</span>
+            <span v-if="task.blockedBy.length" class="task-chip-blocked">{{ task.blockedBy.join(',') }}</span>
+          </div>
+        </div>
+      </div>
 
       <div class="input-container">
         <div class="input-wrapper">
@@ -356,27 +414,60 @@ import '@/config/monacoWorkers'
 
 import {
   CaretRightOutlined,
+  CheckCircleOutlined,
+  CheckSquareOutlined,
   ClearOutlined,
+  ClockCircleOutlined,
+  CloseCircleOutlined,
   CloseOutlined,
   DatabaseOutlined,
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
   FileAddOutlined,
   FileTextOutlined,
   FolderAddOutlined,
   FolderOutlined,
+  LoadingOutlined,
   MessageOutlined,
   QuestionCircleOutlined,
   SendOutlined,
   StopOutlined,
+  UpOutlined,
   UploadOutlined,
 } from '@ant-design/icons-vue'
+
+interface AiStep {
+  eventType: string
+  description: string
+  detail: string
+  state: 'running' | 'completed' | 'failed'
+  timestamp: number
+}
+
+interface ItemEntry {
+  type: 'text' | 'step'
+  text?: string
+  step?: AiStep
+}
+
+interface TaskInfo {
+  id: number
+  subject: string
+  description: string
+  status: 'pending' | 'in_progress' | 'completed' | 'deleted'
+  blockedBy: number[]
+  blocks: number[]
+  owner: string
+}
 
 interface MessageItem {
   type: 'user' | 'ai'
   content: string
   loading?: boolean
   createTime?: string
+  steps?: AiStep[]
+  items?: ItemEntry[]
 }
 
 interface FileTab {
@@ -605,7 +696,10 @@ const loadFileContent = async (filePath: string): Promise<string> => {
   const baseURL = request.defaults.baseURL || API_BASE_URL
   const res = await request.get(`${baseURL}/api/app/code/file/${appId.value}`, { params: { path: filePath } })
   if (res.data.code === 0) {
-    return res.data.data ?? ''
+    const text = res.data.data ?? ''
+    const lines = text.split('\n')
+    const isPythonFile = filePath.endsWith('.py')
+    return (!isPythonFile && lines.length > 100) ? lines.slice(0, 100).join('\n') : text
   }
   throw new Error(res.data.message || '读取文件失败')
 }
@@ -768,6 +862,7 @@ const runScript = async () => {
     return
   }
   runningScript.value = true
+  outputLines.value = []
   appendOutput('system', `>>> 运行: python ${tab.name}`)
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
@@ -1079,6 +1174,13 @@ const applyMessageChunk = (chunk: unknown) => {
   const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
   if (!targetMessage) return
   targetMessage.content = `${targetMessage.content || ''}${String(chunk)}`
+  if (!targetMessage.items) targetMessage.items = []
+  const last = targetMessage.items[targetMessage.items.length - 1]
+  if (last && last.type === 'text') {
+    last.text = (last.text || '') + String(chunk)
+  } else {
+    targetMessage.items.push({ type: 'text', text: String(chunk) })
+  }
   targetMessage.loading = false
   scrollToBottom()
 }
@@ -1097,11 +1199,79 @@ const refreshAfterGeneration = async () => {
   }
 }
 
+const appendAiStep = (step: AiStep) => {
+  const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
+  if (!targetMessage) return
+  if (!targetMessage.steps) targetMessage.steps = []
+  targetMessage.steps.push(step)
+  if (!targetMessage.items) targetMessage.items = []
+  targetMessage.items.push({ type: 'step', step })
+  scrollToBottom()
+}
+
+const updateLastRunningToolStep = (detail: string, state: AiStep['state']) => {
+  const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
+  if (!targetMessage?.steps) return
+  for (let i = targetMessage.steps.length - 1; i >= 0; i--) {
+    if (targetMessage.steps[i].eventType === 'ToolExecutionStart' && targetMessage.steps[i].state === 'running') {
+      targetMessage.steps[i].state = state
+      targetMessage.steps[i].detail = detail
+      scrollToBottom()
+      return
+    }
+  }
+}
+
 const handleStreamEvent = (event: { event_type: string; data: any; state?: string }) => {
   const eventType = event.event_type
   const eventData = event.data
   if (eventType === 'LLM_Response_Chunk') { applyMessageChunk(eventData); return }
+  if (eventType === 'OnTurnStart') {
+    appendAiStep({ eventType, description: '开始处理', detail: '', state: 'completed', timestamp: Date.now() })
+    return
+  }
+  if (eventType === 'LLM_Thinking_Start') {
+    const promptTokens = eventData?.prompt_tokens ?? 0
+    const messageCount = eventData?.message_count ?? 0
+    appendAiStep({ eventType, description: 'AI 思考中', detail: `${promptTokens} tokens, ${messageCount} 条消息`, state: 'completed', timestamp: Date.now() })
+    return
+  }
+  if (eventType === 'ToolExecutionStart') {
+    const toolName = eventData?.tool_name || eventData?.name || eventData?.function?.name || 'unknown'
+    appendAiStep({ eventType, description: `执行工具: ${toolName}`, detail: '', state: 'running', timestamp: Date.now() })
+    return
+  }
+  if (eventType === 'ToolExecutionEnd') {
+    const toolName = eventData?.tool_name || eventData?.name || 'unknown'
+    const description = eventData?.description || ''
+    const isSuccess = description.includes('success')
+    const detail = isSuccess ? description : (description || `失败: ${toolName}`)
+    // 更新任务面板
+    if (eventData?.task_data) {
+      const td = eventData.task_data
+      if (td.action === 'create') {
+        tasks.value.push(td.task as TaskInfo)
+      } else if (td.action === 'update') {
+        const existingIdx = tasks.value.findIndex(t => t.id === td.task.id)
+        if (existingIdx >= 0) {
+          tasks.value[existingIdx] = { ...tasks.value[existingIdx], ...td.task }
+        }
+      }
+    }
+    updateLastRunningToolStep(detail, isSuccess ? 'completed' : 'failed')
+    return
+  }
+  if (eventType === 'CompactEvent') {
+    const tokensBefore = eventData?.tokens_before ?? 0
+    const tokensAfter = eventData?.tokens_after ?? 0
+    const removed = eventData?.messages_removed ?? 0
+    appendAiStep({ eventType, description: '上下文压缩', detail: `tokens: ${tokensBefore} → ${tokensAfter}, 移除 ${removed} 条`, state: 'completed', timestamp: Date.now() })
+    return
+  }
   if (eventType === 'RequestCompleted' || eventType === 'RequestStopped') {
+    if (eventType === 'RequestCompleted') {
+      appendAiStep({ eventType, description: '任务完成', detail: '', state: 'completed', timestamp: Date.now() })
+    }
     if (stopRequested.value) {
       const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
       if (targetMessage && !targetMessage.content) { targetMessage.content = '已停止本次生成。' }
@@ -1110,6 +1280,7 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
   }
   if (eventType === 'Error') {
     const errorText = typeof eventData === 'string' ? eventData : eventData?.message || JSON.stringify(eventData)
+    appendAiStep({ eventType, description: '执行错误，请稍后重试', detail: '', state: 'failed', timestamp: Date.now() })
     const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
     if (targetMessage) { targetMessage.content = '抱歉，当前生成失败，请重试。'; targetMessage.loading = false }
     appendOutput('stderr', errorText)
@@ -1152,6 +1323,11 @@ const isOwner = computed(() => {
 const canOperateApp = computed(() => isOwner.value)
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
 const showAppDetail = () => { appDetailVisible.value = true }
+
+// Task board state
+const tasks = ref<TaskInfo[]>([])
+const taskBoardCollapsed = ref(false)
+const visibleTasks = computed(() => tasks.value.filter(t => t.status !== 'deleted'))
 
 const clearActiveGeneration = (requestId?: string) => {
   if (requestId && activeGenerationRequestId.value && activeGenerationRequestId.value !== requestId) return
@@ -1832,6 +2008,15 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.ai-content {
+  max-width: 85%;
+  min-width: 0;
+}
+
+.ai-content > * {
+  margin-bottom: 4px;
+}
+
 .message-bubble {
   padding: 10px 16px;
   border-radius: var(--radius-card);
@@ -1849,14 +2034,6 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-sm);
 }
 
-.ai-bubble {
-  max-width: 85%;
-  background: var(--bg-page);
-  border: 1px solid var(--border-light);
-  color: var(--text-primary);
-  border-bottom-left-radius: 4px;
-}
-
 .message-avatar {
   flex-shrink: 0;
 }
@@ -1871,6 +2048,206 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   color: var(--text-muted);
+}
+
+.ai-steps {
+  margin-top: 6px;
+}
+
+.ai-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.ai-step .step-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ai-step.step-running .step-icon {
+  color: var(--accent-primary);
+}
+
+.ai-step.step-completed .step-icon {
+  color: #22c55e;
+}
+
+.ai-step.step-failed .step-icon {
+  color: #ef4444;
+}
+
+.ai-step.step-running .step-desc {
+  color: var(--accent-primary);
+}
+
+.ai-step .step-detail {
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.ai-step-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 2px 0;
+  opacity: 0.7;
+}
+
+.ai-step-inline .step-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ai-step-inline.step-running .step-icon {
+  color: var(--accent-primary);
+}
+
+.ai-step-inline.step-completed .step-icon {
+  color: #22c55e;
+}
+
+.ai-step-inline.step-failed .step-icon {
+  color: #ef4444;
+}
+
+.ai-step-inline.step-running .step-desc {
+  color: var(--accent-primary);
+}
+
+.ai-step-inline .step-detail {
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-left: auto;
+  font-size: 11px;
+}
+
+/* ====== Task Board ====== */
+.task-board {
+  margin: 0 12px 8px;
+  background: var(--bg-page);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.task-board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--bg-subtle);
+}
+
+.task-board-header:hover {
+  background: var(--bg-hover);
+}
+
+.task-board-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.task-board-title .anticon {
+  font-size: 13px;
+  color: var(--accent-primary);
+}
+
+.task-board-toggle {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.task-board-body {
+  padding: 4px 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.task-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+.task-chip.task-completed {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.task-chip.task-in_progress {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.task-chip-indicator {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.task-chip.task-completed .task-chip-indicator {
+  color: #22c55e;
+}
+
+.task-chip.task-in_progress .task-chip-indicator {
+  color: var(--accent-primary);
+}
+
+.task-chip.task-pending .task-chip-indicator {
+  color: var(--text-muted);
+}
+
+.task-chip-subject {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-chip-id {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.task-chip-blocked {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .create-mode-hint {
