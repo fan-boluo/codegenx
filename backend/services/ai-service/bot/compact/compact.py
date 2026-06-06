@@ -345,7 +345,13 @@ class CompactionEngine:
 
         tokens_before = estimate_tokens(messages)
         result = await self._run_compaction(messages)
-        if result is None:
+        if result is None or result.tokens_after >= result.tokens_before:
+            if result is not None:
+                log.info(
+                    "Compaction ineffective ({}→{} tokens, +{:.0f}%); falling back to truncation.",
+                    result.tokens_before, result.tokens_after,
+                    (result.tokens_after - result.tokens_before) / max(1, result.tokens_before) * 100,
+                )
             self._breaker.record_failure()
             # Conservative truncation: keep last messages that fit within the effective
             # context window to prevent API errors from overly large context.

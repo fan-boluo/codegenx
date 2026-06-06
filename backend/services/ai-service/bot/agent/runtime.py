@@ -418,6 +418,7 @@ class AgentRuntime(LLMRecoveryMixin):
                     activate_turn.active_steps.pop()
                     activate_turn.active_step_id = ""
                     async for compact_event in context_manager.compact_after_step():
+                        activate_turn.last_step_compacted = True
                         await self._publish_runtime_event(session_state, compact_event)
                 if not activate_turn.requires_followup:
                     break

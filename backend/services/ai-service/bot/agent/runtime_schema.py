@@ -37,6 +37,7 @@ class ActivateTurn:
     llm_recovery_count: int = 0
     last_recovery_kind: str = ""
     error_text: str = ""
+    last_step_compacted: bool = False  # 上一步是否执行了压缩，供告警评估使用
 
     def add_turn_span_id(self, key: str, span_id: str) -> None:
         """Register an active span id for the current turn (e.g. 'turn_span_id', 'llm_span_id')."""

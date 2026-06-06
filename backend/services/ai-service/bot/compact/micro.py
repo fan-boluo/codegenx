@@ -169,9 +169,20 @@ def microcompact_messages(
                 if uid in to_clear_inputs:
                     new_tc = {**tc}
                     f = {**new_tc.get("function", {})}
-                    f["arguments"] = f"[arguments cleared: {name}]"
+                    # 用合法 JSON 替代原 arguments，保留 path 信息，省略实际写入内容
+                    import json as _json
+                    try:
+                        orig_args = _json.loads(f.get("arguments", "{}"))
+                    except Exception:
+                        orig_args = {}
+                    file_path = orig_args.get("path", orig_args.get("file_path", ""))
+                    f["arguments"] = _json.dumps({
+                        "path": file_path,
+                        "note": "Content successfully written, omitted for brevity",
+                    }, ensure_ascii=False)
                     new_tc["function"] = f
                     new_tcs.append(new_tc)
+                    log.debug("micro compact clear_inputs: {}", f["arguments"])
                 else:
                     new_tcs.append(tc)
             new_messages.append({**msg, "tool_calls": new_tcs})

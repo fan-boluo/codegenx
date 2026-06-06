@@ -268,7 +268,11 @@ class MonitorPipeline:
         prompt_tokens = int(kwargs.get("prompt_tokens", 0) or 0)
         projected_total_tokens = int(kwargs.get("projected_total_tokens", 0) or 0)
         telemetry.token_count = prompt_tokens
-        telemetry.token_usage = projected_total_tokens / AUTOCOMPACT_THRESHOLD
+        telemetry.token_usage = projected_total_tokens / AUTOCOMPACT_THRESHOLD if AUTOCOMPACT_THRESHOLD > 0 else 0.0
+        # 从 turn 读取上一步的压缩标记
+        telemetry.context_is_compress = getattr(turn, "last_step_compacted", False)
+        # 重置标记，避免跨 step 污染
+        turn.last_step_compacted = False
 
         metric_collector = self._metric_collectors.get(session.session_id)
         if metric_collector and turn_span_id:
