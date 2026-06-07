@@ -5,6 +5,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import json as json_lib
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AI_SERVICE_ROOT = Path(__file__).resolve().parent
 if str(AI_SERVICE_ROOT) not in sys.path:
@@ -24,24 +26,21 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from monitor.maintenance_service import get_monitor_maintenance_service
-from monitor.monitor_query_service import get_monitor_query_service
 from core.service_registry import AiServiceRegistry
 from shared.config.config import get_settings
 from shared.config.log_config import log
+from shared.constants import get_current_session_dir
+from bot.session.manager import SessionManager
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
-from shared.schema.monitor import (
-    MonitorAlertQueryRequest,
-    MonitorSessionQueryRequest,
-    TokenUsageQueryRequest,
-)
 from shared.schema.ai_service import (
     AiServiceGenerateRequest,
     AiServiceStopRequest,
     AiServiceStopResponse
 )
 from guardrail.prompt_safety_input_guardrail import validate_prompt_safety
+
+from pydantic import BaseModel
 
 def _load_local_module(module_name: str, file_name: str):
 	spec = importlib.util.spec_from_file_location(f"ai_service_{module_name}", LOCAL_SERVICES_ROOT / file_name)
@@ -230,6 +229,59 @@ async def internal_query_token_usage(query: TokenUsageQueryRequest):
 async def get_metrics():
     """Prometheus metrics endpoint (scraped by Prometheus — internal network only)."""
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# ── 会话历史 API ──────────────────────────────────────────
+
+class SessionListItem(BaseModel):
+    session_id: str
+    first_message: str
+    create_time: str
+
+
+@app.get("/api/ai/sessions/{app_id}")
+async def list_sessions(app_id: int, limit: int = Query(default=5, ge=1, le=20)):
+    """列出 app 下最近的 session，从 session_index.json 直接读取（无目录扫描）。"""
+    entries = SessionManager.read_session_index(str(app_id))
+    return [
+        SessionListItem(
+            session_id=e.get("session_id", ""),
+            first_message=e.get("first_message", ""),
+            create_time=e.get("create_time", ""),
+        )
+        for e in entries[:limit]
+    ]
+
+
+@app.get("/api/ai/sessions/{app_id}/{session_id}/messages")
+async def get_session_messages(
+    app_id: int,
+    session_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """加载指定 session 的最近 N 条消息。"""
+    session_dir = get_current_session_dir(app_id, session_id)
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    messages: list[dict] = []
+
+    # 从 chat_history JSONL 读取
+    history_file = session_dir / f"chat_history_{session_id}.jsonl"
+    try:
+        if history_file.exists():
+            lines = history_file.read_text(encoding="utf-8").splitlines()
+            for line in lines[-limit:]:
+                try:
+                    msg = json_lib.loads(line.strip())
+                    if isinstance(msg, dict):
+                        messages.append(msg)
+                except Exception:
+                    continue
+    except Exception as exc:
+        log.warning("读取会话消息失败 session={}/{} err={}", app_id, session_id, exc)
+
+    return messages
 
 
 

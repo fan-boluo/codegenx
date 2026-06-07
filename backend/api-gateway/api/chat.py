@@ -57,3 +57,41 @@ async def stop_chat_generation(
         trace_id=getattr(request.state, "trace_id", None),
         json_body=payload,
     )
+
+
+# ── 会话历史 ──
+
+from fastapi import Query
+
+
+@router.get("/sessions/{app_id}")
+async def list_chat_sessions(
+    app_id: int,
+    limit: int = Query(default=5, ge=1, le=20),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    login_user: JWTUser = Depends(require_login),
+):
+    proxy = ChatProxy()
+    return await proxy.request_json(
+        method="GET",
+        path=f"/api/ai/sessions/{app_id}",
+        authorization=authorization,
+        params={"limit": limit},
+    )
+
+
+@router.get("/sessions/{app_id}/{session_id}/messages")
+async def get_chat_session_messages(
+    app_id: int,
+    session_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    login_user: JWTUser = Depends(require_login),
+):
+    proxy = ChatProxy()
+    return await proxy.request_json(
+        method="GET",
+        path=f"/api/ai/sessions/{app_id}/{session_id}/messages",
+        authorization=authorization,
+        params={"limit": limit},
+    )

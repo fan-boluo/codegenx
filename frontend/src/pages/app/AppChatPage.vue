@@ -94,9 +94,10 @@
           <a-tree
             v-else
             :tree-data="sourceFileTree"
-            :selected-keys="activeFileTab ? [activeFileTab] : []"
+            :selected-keys="selectedNodeKey ? [selectedNodeKey] : []"
             :default-expand-all="true"
-            @select="handleSourceFileSelect"
+            @select="handleTreeNodeSelect"
+            @dblclick="handleSourceFileDoubleClick"
             class="sidebar-tree"
           />
         </template>
@@ -218,6 +219,38 @@
 
     <!-- Right Chat Panel -->
     <div class="right-chat-panel" :style="{ width: chatWidth + 'px' }">
+      <!-- Chat Header -->
+      <div class="chat-header">
+        <span class="chat-header-title">AI 对话</span>
+        <div class="chat-header-actions">
+          <a-tooltip title="新建会话">
+            <a-button type="text" size="small" @click="createNewSession">
+              <template #icon><PlusOutlined /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="会话历史">
+            <a-button type="text" size="small" @click="toggleSessionHistory">
+              <template #icon><HistoryOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
+      </div>
+      <!-- Session History Dropdown -->
+      <div v-if="sessionHistoryVisible" class="session-dropdown">
+        <a-spin :spinning="loadingSessionHistory">
+          <div v-if="!sessionList.length && !loadingSessionHistory" class="session-empty">
+            暂无历史会话
+          </div>
+          <div
+            v-for="sess in sessionList"
+            :key="sess.session_id"
+            class="session-item"
+            @click="loadSession(sess.session_id)"
+          >
+            <div class="session-item-text">{{ sess.first_message }}</div>
+          </div>
+        </a-spin>
+      </div>
       <div class="messages-container" ref="messagesContainer">
         <div v-if="!appId && !messages.length" class="create-mode-hint">
           <div class="hint-icon">
@@ -336,12 +369,12 @@
         </div>
       </div>
 
-      <div class="input-container">
+      <div class="input-container" :style="{ height: inputHeight + 'px' }">
+        <div class="resizer-horizontal input-resizer" @mousedown="onResizeStart('input', $event)" />
         <div class="input-wrapper">
           <a-textarea
             v-model:value="userInput"
             :placeholder="getInputPlaceholder()"
-            :rows="3"
             :maxlength="1000"
             @keydown.enter.prevent="sendMessage"
             :disabled="isGenerating || isCreatingApp || !canOperateApp"
@@ -428,8 +461,10 @@ import {
   FileTextOutlined,
   FolderAddOutlined,
   FolderOutlined,
+  HistoryOutlined,
   LoadingOutlined,
   MessageOutlined,
+  PlusOutlined,
   QuestionCircleOutlined,
   SendOutlined,
   StopOutlined,
@@ -514,7 +549,8 @@ const abortController = ref<AbortController | null>(null)
 const sidePanelWidth = ref(260)
 const chatWidth = ref(320)
 const outputHeight = ref(150)
-const resizing = ref<'sidebar' | 'chat' | 'output' | null>(null)
+const inputHeight = ref(100)
+const resizing = ref<'sidebar' | 'chat' | 'output' | 'input' | null>(null)
 const outputContainer = ref<HTMLElement>()
 
 // Monaco editor state
@@ -580,6 +616,12 @@ const onResizeMove = (e: MouseEvent) => {
     const rect = centerEl.getBoundingClientRect()
     const h = Math.max(80, Math.min(rect.height * 0.5, rect.bottom - e.clientY))
     outputHeight.value = h
+  } else if (resizing.value === 'input') {
+    const chatPanel = document.querySelector('.right-chat-panel') as HTMLElement
+    if (!chatPanel) return
+    const rect = chatPanel.getBoundingClientRect()
+    const h = Math.max(80, Math.min(300, rect.bottom - e.clientY))
+    inputHeight.value = h
   }
 }
 
@@ -598,16 +640,18 @@ const visualEditor = new VisualEditor({
 })
 
 const appDetailVisible = ref(false)
-const readOnlyTooltip = '无法在别人的作品下操作哦~'
+const readOnlyTooltip = '无法在别人的项目下操作哦~'
 
 const sidePanelTab = ref<'data' | 'files'>('files')
 const sidePanelVisible = ref(true)
 const sourceFileTree = ref<any[]>([])
+const sourceRawNodes = ref<any[]>([])
 const loadingSourceTree = ref(false)
 
 const fileTabs = ref<FileTab[]>([])
 const activeFileTab = ref<string>('')
 const selectedFileNode = ref<any>(null)
+const selectedNodeKey = ref<string>('')
 
 const activeTabData = computed(() => {
   return fileTabs.value.find(t => t.path === activeFileTab.value)
@@ -630,7 +674,63 @@ const buildSourceTree = (nodes: any[]): any[] => {
     title: node.name,
     isLeaf: node.type === 'file',
     children: node.children ? buildSourceTree(node.children) : undefined,
+    dataRef: node,
   }))
+}
+
+// Optimistic tree mutations — modify sourceRawNodes then rebuild tree from raw nodes
+const rebuildTreeFromRaw = () => {
+  sourceFileTree.value = buildSourceTree(sourceRawNodes.value)
+}
+
+const addNodeToRaw = (parentPath: string, newNode: { path: string; name: string; type: string; children?: any[] }) => {
+  if (!parentPath) {
+    sourceRawNodes.value.push(newNode)
+    rebuildTreeFromRaw()
+    return
+  }
+  const walk = (nodes: any[]): boolean => {
+    for (const n of nodes) {
+      if (n.path === parentPath && n.type === 'dir') {
+        if (!n.children) n.children = []
+        n.children.push(newNode)
+        return true
+      }
+      if (n.children && walk(n.children)) return true
+    }
+    return false
+  }
+  walk(sourceRawNodes.value)
+  rebuildTreeFromRaw()
+}
+
+const removeNodeFromRaw = (targetPath: string) => {
+  const walk = (nodes: any[]): boolean => {
+    const idx = nodes.findIndex(n => n.path === targetPath)
+    if (idx >= 0) { nodes.splice(idx, 1); return true }
+    for (const n of nodes) {
+      if (n.children && walk(n.children)) return true
+    }
+    return false
+  }
+  walk(sourceRawNodes.value)
+  rebuildTreeFromRaw()
+}
+
+const renameNodeInRaw = (oldPath: string, newPath: string, newName: string) => {
+  const walk = (nodes: any[]): boolean => {
+    for (const n of nodes) {
+      if (n.path === oldPath) {
+        n.path = newPath
+        n.name = newName
+        return true
+      }
+      if (n.children && walk(n.children)) return true
+    }
+    return false
+  }
+  walk(sourceRawNodes.value)
+  rebuildTreeFromRaw()
 }
 
 const loadSourceTree = async () => {
@@ -640,7 +740,8 @@ const loadSourceTree = async () => {
     const baseURL = request.defaults.baseURL || API_BASE_URL
     const res = await request.get(`${baseURL}/api/app/code/tree/${appId.value}`)
     if (res.data.code === 0) {
-      sourceFileTree.value = buildSourceTree(res.data.data || [])
+      sourceRawNodes.value = res.data.data || []
+      sourceFileTree.value = buildSourceTree(sourceRawNodes.value)
     } else {
       message.error('获取源码目录失败：' + res.data.message)
     }
@@ -831,12 +932,14 @@ const doCloseTab = (idx: number, path: string) => {
   }
 }
 
-const handleSourceFileSelect = async (_keys: string[], { node }: any) => {
+const handleTreeNodeSelect = (_keys: string[], { node }: any) => {
   selectedFileNode.value = node
+  selectedNodeKey.value = node.key
+}
+
+const handleSourceFileDoubleClick = async (_e: MouseEvent, node: any) => {
   if (!node.isLeaf) return
-  const filePath: string = node.key
-  const fileName: string = node.title
-  await openFileInTab(filePath, fileName)
+  await openFileInTab(node.key, node.title)
 }
 
 // File operations
@@ -957,7 +1060,7 @@ const doCreateFile = async () => {
     if (res.data.code === 0) {
       message.success('文件创建成功')
       createFileModalVisible.value = false
-      await loadSourceTree()
+      addNodeToRaw(newItemParentPath.value, { path: filePath, name: newItemName.value.trim(), type: 'file' })
     } else {
       message.error('创建失败：' + res.data.message)
     }
@@ -980,7 +1083,7 @@ const doCreateFolder = async () => {
     if (res.data.code === 0) {
       message.success('文件夹创建成功')
       createFolderModalVisible.value = false
-      await loadSourceTree()
+      addNodeToRaw(newItemParentPath.value, { path: folderPath, name: newItemName.value.trim(), type: 'dir', children: [] })
     } else {
       message.error('创建失败：' + res.data.message)
     }
@@ -1019,6 +1122,7 @@ const doRename = async () => {
     if (res.data.code === 0) {
       message.success('重命名成功')
       renameModalVisible.value = false
+      renameNodeInRaw(node.key, newPath, renameNewName.value.trim())
       // Close old tab for this file
       const oldTabIdx = fileTabs.value.findIndex(t => t.path === node.key)
       if (oldTabIdx >= 0) {
@@ -1156,6 +1260,84 @@ const getAppSessionStorageKey = (currentAppId: string) => `codegenx:app-chat-ses
 
 const clearChatSessionId = () => { sessionId.value = '' }
 
+// Session history
+interface SessionListItem {
+  session_id: string
+  first_message: string
+  create_time: string
+}
+const sessionHistoryVisible = ref(false)
+const loadingSessionHistory = ref(false)
+const sessionList = ref<SessionListItem[]>([])
+const loadingMessages = ref(false)
+
+const createNewSession = () => {
+  if (!appId.value) return
+  const storageKey = getAppSessionStorageKey(appId.value)
+  localStorage.removeItem(storageKey)
+  sessionId.value = createClientId()
+  localStorage.setItem(storageKey, sessionId.value)
+  messages.value = []
+  tasks.value = []
+  message.info('已创建新会话')
+}
+
+const toggleSessionHistory = async () => {
+  if (!appId.value) return
+  if (sessionHistoryVisible.value) {
+    sessionHistoryVisible.value = false
+    return
+  }
+  sessionHistoryVisible.value = true
+  loadingSessionHistory.value = true
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const res = await fetch(`${baseURL}/api/chat/sessions/${appId.value}?limit=5`, {
+      headers: { ...getAuthHeaders() },
+    })
+    if (res.ok) {
+      sessionList.value = await res.json()
+    }
+  } catch (e) {
+    console.error('获取会话历史失败', e)
+  } finally {
+    loadingSessionHistory.value = false
+  }
+}
+
+const loadSession = async (sid: string) => {
+  if (!appId.value) return
+  loadingMessages.value = true
+  sessionHistoryVisible.value = false
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const res = await fetch(`${baseURL}/api/chat/sessions/${appId.value}/${sid}/messages?limit=50`, {
+      headers: { ...getAuthHeaders() },
+    })
+    if (!res.ok) throw new Error('load failed')
+    const msgs: any[] = await res.json()
+
+    // Convert JSONL messages to frontend MessageItem format
+    messages.value = msgs.filter((m: any) => m.role === 'user' || m.role === 'assistant').map((m: any) => {
+      if (m.role === 'user') {
+        return { type: 'user', content: m.content || '', createTime: m.create_time }
+      }
+      return { type: 'ai', content: m.content || '', createTime: m.create_time }
+    })
+
+    // Update localStorage with loaded session id
+    const storageKey = getAppSessionStorageKey(appId.value)
+    localStorage.setItem(storageKey, sid)
+    sessionId.value = sid
+    message.success('已加载历史会话')
+  } catch (e) {
+    console.error('加载会话消息失败', e)
+    message.error('加载会话消息失败')
+  } finally {
+    loadingMessages.value = false
+  }
+}
+
 const ensureChatSessionId = (currentAppId?: string) => {
   if (!currentAppId) { clearChatSessionId(); return '' }
   const storageKey = getAppSessionStorageKey(currentAppId)
@@ -1222,6 +1404,17 @@ const updateLastRunningToolStep = (detail: string, state: AiStep['state']) => {
   }
 }
 
+const failAllRunningToolSteps = () => {
+  const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
+  if (!targetMessage?.steps) return
+  for (const step of targetMessage.steps) {
+    if (step.eventType === 'ToolExecutionStart' && step.state === 'running') {
+      step.state = 'failed'
+      step.detail = '执行中断'
+    }
+  }
+}
+
 const handleStreamEvent = (event: { event_type: string; data: any; state?: string }) => {
   const eventType = event.event_type
   const eventData = event.data
@@ -1238,13 +1431,14 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
   }
   if (eventType === 'ToolExecutionStart') {
     const toolName = eventData?.tool_name || eventData?.name || eventData?.function?.name || 'unknown'
-    appendAiStep({ eventType, description: `执行工具: ${toolName}`, detail: '', state: 'running', timestamp: Date.now() })
+    appendAiStep({ eventType, description: `${toolName}`, detail: '', state: 'running', timestamp: Date.now() })
     return
   }
   if (eventType === 'ToolExecutionEnd') {
     const toolName = eventData?.tool_name || eventData?.name || 'unknown'
     const description = eventData?.description || ''
-    const isSuccess = description.includes('success')
+    const toolState = eventData?.state || ''
+    const isSuccess = toolState === 'success'
     const detail = isSuccess ? description : (description || `失败: ${toolName}`)
     // 更新任务面板
     if (eventData?.task_data) {
@@ -1270,7 +1464,7 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
   }
   if (eventType === 'RequestCompleted' || eventType === 'RequestStopped') {
     if (eventType === 'RequestCompleted') {
-      appendAiStep({ eventType, description: '任务完成', detail: '', state: 'completed', timestamp: Date.now() })
+      appendAiStep({ eventType, description: '回答完毕', detail: '', state: 'completed', timestamp: Date.now() })
     }
     if (stopRequested.value) {
       const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
@@ -1280,11 +1474,14 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
   }
   if (eventType === 'Error') {
     const errorText = typeof eventData === 'string' ? eventData : eventData?.message || JSON.stringify(eventData)
-    appendAiStep({ eventType, description: '执行错误，请稍后重试', detail: '', state: 'failed', timestamp: Date.now() })
+    failAllRunningToolSteps()
     const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
-    if (targetMessage) { targetMessage.content = '抱歉，当前生成失败，请重试。'; targetMessage.loading = false }
+    if (targetMessage) {
+      targetMessage.content = `执行错误，请稍后重试\n> ${errorText}`
+      targetMessage.loading = false
+    }
     appendOutput('stderr', errorText)
-    message.error(errorText); finishStream(); return
+    message.error('执行错误，请稍后重试'); finishStream(); return
   }
   if (eventType === 'Log_Chunk' || eventType === 'Terminal_Output') {
     const text = typeof eventData === 'string' ? eventData : eventData?.text || JSON.stringify(eventData)
@@ -1980,6 +2177,64 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+  position: relative;
+}
+.chat-header-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.chat-header-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.session-dropdown {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0 12px 8px;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+
+.session-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.session-item:hover {
+  background: var(--bg-hover);
+}
+.session-item-text {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 12px 0;
+  font-size: 13px;
+}
+
 .messages-container {
   flex: 1;
   padding: 12px;
@@ -2280,12 +2535,30 @@ onBeforeUnmount(() => {
 }
 
 .input-container {
-  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px 12px;
   background: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.input-resizer {
+  cursor: row-resize;
+  height: 4px;
+  flex-shrink: 0;
+  margin-bottom: 4px;
+}
+
+.input-resizer:hover,
+.input-resizer:active {
+  background: var(--accent-primary);
+  border-radius: 2px;
 }
 
 .input-wrapper {
   position: relative;
+  flex: 1;
+  display: flex;
 }
 
 .chat-input {
@@ -2294,8 +2567,9 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   font-size: 14px;
   border-radius: var(--radius-card);
-  resize: none;
   transition: all 0.2s ease;
+  resize: none;
+  width: 100%;
 }
 .chat-input:hover {
   border-color: var(--border-deep);
@@ -2303,6 +2577,12 @@ onBeforeUnmount(() => {
 .chat-input:focus {
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 3px var(--accent-primary-light);
+}
+
+.chat-input :deep(textarea) {
+  resize: vertical;
+  min-height: 60px;
+  padding-bottom: 36px;
 }
 
 .input-actions {
