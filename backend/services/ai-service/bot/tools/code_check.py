@@ -101,7 +101,7 @@ class CodeCheckTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("code_check 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"检查失败: {exc}")
+            return ToolResult(success=False, message=f"检查失败: {exc}", render=f"语法检查失败: {params.get('path', '')}")
 
     async def _do_execute(
         self,
@@ -140,10 +140,12 @@ class CodeCheckTool(BaseTool):
             return ToolResult(
                 success=True,
                 data=f"语法检查通过: {file_path} ({line_count} 行, {len(source)} 字符)",
+                render=f"语法检查通过: {file_path.name}",
             )
         else:
             return ToolResult(
                 success=False,
                 data="\n\n".join(errors),
                 message=f"语法错误: {file_path} 存在 {len(errors)} 个语法错误",
+                render=f"语法错误: {file_path.name}",
             )

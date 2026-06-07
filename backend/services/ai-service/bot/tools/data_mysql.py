@@ -122,7 +122,7 @@ class ListTablesTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("list_tables 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"获取表列表失败: {exc}")
+            return ToolResult(success=False, message=f"获取表列表失败: {exc}", render=f"数据库查询失败")
 
     async def _do_execute(
         self, params: dict, signal: asyncio.Event | None = None,
@@ -132,7 +132,7 @@ class ListTablesTool(BaseTool):
         rows = await mgr.query(db_name, _LIST_TABLES_SQL, (db_name,))
 
         if not rows:
-            return ToolResult(success=True, data=f"数据库 {db_name} 中没有表")
+            return ToolResult(success=True, data=f"数据库 {db_name} 中没有表", render=f"数据库 {db_name}: 无表")
 
         # 补充行数估算
         for r in rows:
@@ -144,7 +144,7 @@ class ListTablesTool(BaseTool):
 
         output = f"数据库 {db_name} 共有 {len(rows)} 张表:\n"
         output += _format_rows(rows)
-        return ToolResult(success=True, data=output)
+        return ToolResult(success=True, data=output, render=f"数据库 {db_name}: {len(rows)} 张表")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -218,7 +218,7 @@ class DescribeTableTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("describe_table 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"获取表结构失败: {exc}")
+            return ToolResult(success=False, message=f"获取表结构失败: {exc}", render=f"表结构查询失败")
 
     async def _do_execute(
         self, params: dict, signal: asyncio.Event | None = None,
@@ -259,7 +259,7 @@ class DescribeTableTool(BaseTool):
             lines.append("── 索引 ──")
             lines.append(_format_rows(indexes))
 
-        return ToolResult(success=True, data="\n".join(lines))
+        return ToolResult(success=True, data="\n".join(lines), render=f"表结构: {db_name}.{table_name} ({n_cols} 列)")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -313,7 +313,7 @@ class SampleRowsTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("sample_rows 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"采样数据失败: {exc}")
+            return ToolResult(success=False, message=f"采样数据失败: {exc}", render=f"{self.name} 采样失败")
 
     async def _do_execute(
         self, params: dict, signal: asyncio.Event | None = None,
@@ -337,7 +337,7 @@ class SampleRowsTool(BaseTool):
         )
         col_names = [c["COLUMN_NAME"] for c in cols]
         if not col_names:
-            return ToolResult(success=False, message=f"表 {db_name}.{table_name} 不存在或无列")
+            return ToolResult(success=False, message=f"表 {db_name}.{table_name} 不存在或无列", render=f"表不存在: {table_name}")
 
         # 查数据
         cols_quoted = ", ".join(f"`{c}`" for c in col_names)
@@ -346,7 +346,7 @@ class SampleRowsTool(BaseTool):
 
         output = f"表 {db_name}.{table_name} 采样 {len(rows)} 行:\n"
         output += _format_rows(rows)
-        return ToolResult(success=True, data=output)
+        return ToolResult(success=True, data=output, render=f"采样: {db_name}.{table_name} ({len(rows)} 行)")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -431,7 +431,7 @@ class DescribeTableStatsTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("describe_table_stats 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"获取统计信息失败: {exc}")
+            return ToolResult(success=False, message=f"获取统计信息失败: {exc}", render=f"统计失败")
 
     async def _do_execute(
         self, params: dict, signal: asyncio.Event | None = None,
@@ -467,7 +467,7 @@ class DescribeTableStatsTool(BaseTool):
             skipped = [c[0] for c in sorted_cols[MAX_COLS_WIDE_TABLE:]]
 
         if not target_cols:
-            return ToolResult(success=False, message=f"在表 {table_name} 中未找到指定列")
+            return ToolResult(success=False, message=f"在表 {table_name} 中未找到指定列", render=f"列不存在")
 
         # 4. 构建状态标注
         notes = []
@@ -581,7 +581,7 @@ class DescribeTableStatsTool(BaseTool):
 
         lines.append("")
         lines.append(f"共统计 {len(numeric_results) + len(categorical_results)} 列")
-        return ToolResult(success=True, data="\n".join(lines))
+        return ToolResult(success=True, data="\n".join(lines), render=f"统计: {db_name}.{table_name} ({len(numeric_results) + len(categorical_results)} 列)")
 
 
 def mask_nan_matrix(matrix: np.ndarray) -> np.ndarray:

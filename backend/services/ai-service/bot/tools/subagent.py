@@ -63,4 +63,5 @@ class SubagentTaskTool(BaseTool):
         result = await runner.run(subagent_context)
         return ToolResult(success=result["success"],
                           data=result["data"]+result.get("details"),
-                          message=str(result))
+                          message=str(result),
+                          render=f"子代理: {subagent_context.description or subagent_context.prompt[:30]}")

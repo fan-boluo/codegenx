@@ -128,7 +128,7 @@ class FindTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("find 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"查找文件失败: {exc}")
+            return ToolResult(success=False, message=f"查找文件失败: {exc}", render=f"查找失败: {params.get('pattern', '')}")
 
     async def _do_execute(
         self,
@@ -192,7 +192,8 @@ class FindTool(BaseTool):
         if not relativized:
             return ToolResult(
                 success=True,
-                data="No files found matching pattern"
+                data="No files found matching pattern",
+                render=f"查找: {pattern} - 无匹配文件",
             )
 
         result_limit_reached = len(relativized) >= effective_limit
@@ -213,4 +214,4 @@ class FindTool(BaseTool):
         if notices:
             result_output += f"\n\n[{'. '.join(notices)}]"
 
-        return ToolResult(success=True, data=result_output)
+        return ToolResult(success=True, data=result_output, render=f"查找: {pattern} - {len(relativized)} 个文件")

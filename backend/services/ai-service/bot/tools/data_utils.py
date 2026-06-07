@@ -216,7 +216,7 @@ class GuessAnalysisTaskTool(BaseTool):
         for i, s in enumerate(suggestions, 1):
             lines.append(f"{i}. {s}")
 
-        return ToolResult(success=True, data="\n".join(lines))
+        return ToolResult(success=True, data="\n".join(lines), render=f"分析建议: {len(columns)} 列, {n_rows} 行")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -398,4 +398,4 @@ class GetTableRelationshipsTool(BaseTool):
             lines.append("")
             lines.append("未发现显式外键或可推断的关联关系")
 
-        return ToolResult(success=True, data="\n".join(lines))
+        return ToolResult(success=True, data="\n".join(lines), render=f"表关系查找: {db_name}")

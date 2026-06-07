@@ -107,7 +107,7 @@ class GrepTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("grep 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"搜索失败: {exc}")
+            return ToolResult(success=False, message=f"搜索失败: {exc}", render=f"搜索失败: {params.get('pattern', '')}")
 
     async def _do_execute(
         self,
@@ -252,7 +252,7 @@ class GrepTool(BaseTool):
             raise asyncio.CancelledError("Operation aborted")
 
         if match_count == 0:
-            return ToolResult(success=True, data="No matches found")
+            return ToolResult(success=True, data="No matches found", render=f"搜索: {pattern} - 无匹配")
 
         output_lines: list[str] = []
         for match in matches:
@@ -281,4 +281,4 @@ class GrepTool(BaseTool):
         if notices:
             output += f"\n\n[{'. '.join(notices)}]"
 
-        return ToolResult(success=True, data=output)
+        return ToolResult(success=True, data=output, render=f"搜索: {pattern} - {match_count} 条匹配")

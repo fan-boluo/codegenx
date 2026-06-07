@@ -135,7 +135,7 @@ class DescribeCsvTool(BaseTool):
             f"── 前 {sample['n_rows_sampled']} 行采样 ──",
             _format_csv_rows(sample["columns"], sample["rows"]),
         ]
-        return ToolResult(success=True, data="\n".join(lines))
+        return ToolResult(success=True, data="\n".join(lines), render=f"CSV 概况: {info['file_name']} ({info['n_cols']} 列)")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -202,7 +202,7 @@ class SampleCsvRowsTool(BaseTool):
 
         output = f"CSV 采样 ({sample['n_rows_sampled']} 行):\n"
         output += _format_csv_rows(sample["columns"], sample["rows"])
-        return ToolResult(success=True, data=output)
+        return ToolResult(success=True, data=output, render=f"CSV 采样: {Path(file_path).name} ({sample['n_rows_sampled']} 行)")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -387,4 +387,4 @@ class DescribeCsvStatsTool(BaseTool):
         lines.append(corr_section)
         lines.append("")
         lines.append(f"共统计 {len(numeric_results) + len(categorical_results)} 列")
-        return ToolResult(success=True, data="\n".join(lines))
+        return ToolResult(success=True, data="\n".join(lines), render=f"CSV 统计: {info['file_name']} ({len(numeric_results) + len(categorical_results)} 列)")
