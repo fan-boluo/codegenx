@@ -339,11 +339,11 @@
       </a-alert>
 
       <!-- Task Board -->
-      <div v-if="visibleTasks.length > 0" class="task-board" :class="{ collapsed: taskBoardCollapsed }">
+      <div v-if="appId && isGenerating" class="task-board" :class="{ collapsed: taskBoardCollapsed }">
         <div class="task-board-header" @click="taskBoardCollapsed = !taskBoardCollapsed">
           <span class="task-board-title">
             <CheckSquareOutlined />
-            <span>任务 ({{ visibleTasks.filter(t => t.status === 'completed').length }}/{{ visibleTasks.length }})</span>
+            <span>任务 {{ visibleTasks.length ? '(' + visibleTasks.filter(t => t.status === 'completed').length + '/' + visibleTasks.length + ')' : '' }}</span>
           </span>
           <span class="task-board-toggle">
             <UpOutlined v-if="!taskBoardCollapsed" />
@@ -351,6 +351,7 @@
           </span>
         </div>
         <div v-show="!taskBoardCollapsed" class="task-board-body">
+          <div v-if="!visibleTasks.length" class="task-board-empty">暂无任务</div>
           <div
             v-for="task in visibleTasks"
             :key="task.id"
@@ -1463,9 +1464,6 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
     return
   }
   if (eventType === 'RequestCompleted' || eventType === 'RequestStopped') {
-    if (eventType === 'RequestCompleted') {
-      appendAiStep({ eventType, description: '回答完毕', detail: '', state: 'completed', timestamp: Date.now() })
-    }
     if (stopRequested.value) {
       const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
       if (targetMessage && !targetMessage.content) { targetMessage.content = '已停止本次生成。' }

@@ -101,14 +101,14 @@ def microcompact_messages(
     Returns a new list; the input is never mutated.
     """
 
-    # 现在这个数字是3000,来自配置文件
+    # 单个执行的结果，现在这个数字是3000,来自配置文件
     threshold = max_result_tokens if max_result_tokens is not None else MAX_TOOL_RESULT_TOKENS
     min_total = min_total_tokens if min_total_tokens is not None else int(AUTOCOMPACT_THRESHOLD * 0.6)
-
+    log.debug("micro compact total messages shreshold: {} ,single reuslt shreshold",min_total,threshold)
     # 上下文还很宽松，无需清理，保留所有信息
     if estimate_tokens(messages) < min_total:
         return messages
-
+    log.debug("micro compact 超过上下文压缩窗口阈值")
     # Build tool_call_id → msg_index map (one result per tool message)
     result_index: dict[str, int] = {}
     for msg_i, msg in enumerate(messages):
@@ -159,7 +159,7 @@ def microcompact_messages(
 
     if not to_clear and not to_clear_inputs:
         return messages  # nothing to do; return original reference
-
+    log.debug("micro compact has tool result to clear:{},{}",to_clear,to_clear_inputs)
     # Build new list, cloning only mutated messages
     new_messages: list[dict] = []
     for msg_i, msg in enumerate(messages):

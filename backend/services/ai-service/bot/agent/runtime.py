@@ -692,22 +692,25 @@ class AgentRuntime(LLMRecoveryMixin):
             # desc = tc.get('content')
             tool_name = tc.get('name')
             # render = self._render_tool_front(tc)
-            # desc = f"{tc.get('name')} 工具执行完成, {tc.get('state')},{render}" # 输出 {len(result)} 字符
+            render_raw = tc.get("render", "")
+            desc = render_raw or tc.get("name", "unknown")
 
             event.data = {
                 "tool_name": tc.get("name", ""),
                 "tool_id": tc.get("tool_call_id", ""),
-                "description": tc.get("render") or tc.get("name", ""),
+                "description": desc,
                 "state": tc.get("state", ""),
             }
             # 附加结构化 task_data 供前端任务面板消费
-            if tool_name in ("task_create", "task_update") and tc.get("render"):
+            if tool_name in ("task_create", "task_update") and render_raw:
                 try:
-                    task_json = json.loads(tc["render"])
+                    task_json = json.loads(render_raw)
                 except (json.JSONDecodeError, TypeError):
                     task_json = None
                 if task_json:
                     event.data["task_data"] = task_json
+                    task = task_json.get("task", {})
+                    event.data["description"] = task.get("subject", tc.get("name", ""))
 
 
     def _render_tool_front(self,tc:dict):
