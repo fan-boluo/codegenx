@@ -19,24 +19,15 @@ if TYPE_CHECKING:
 def _utcnow() -> datetime:
     return datetime.utcnow()
 
-
-# ---------------------------------------------------------------------------
-# Hook implementations
-# ---------------------------------------------------------------------------
-
+# Hook implemants
 
 async def on_session_start(session: RuntimeSessionState, **kwargs):
-
+    """ 初始化sessionManager  ContextManager  TaskManager 这些都是会话级别的"""
     req = session.request
     if req is None:
         log.warning("on_session_start: request is None, skipping")
         return
-
-    # context = kwargs.get("context")
-    # if context is None:
-    #     return
-
-    session_manager = SessionManager(str(req.app_id))
+    session_manager = SessionManager(str(req.app_id),session.session_id)
     session.session_manager = session_manager
 
     task_manager = TaskManager(app_id=session.app_id, session_id=session.session_id)
@@ -48,33 +39,26 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
         db_name=session.db_name,
         task_manager=task_manager,
     )
-
-    # await get_context_assembler().build_fix_context(session)
-    # await session.context_manager.build_system_prompt(session.request.message)
-
+    # 初始化聊天历史
+    session.context_manager.chat_messages = session_manager.get_turn_chat_message_snapshot() or []
     now = _utcnow()
-    # request_dict = req.model_dump()
-    # request_dict["started_at"] = now.isoformat()
-    # session_manager.append_chat_history_message(session.session_id, request_dict)
-
     session.state = AgentState.RUNNING
     session.started_at = now
-
     get_monitor_pipeline().on_session_start(session)
 
 
 async def on_turn_start(turn: Any, **kwargs):
     session = kwargs["session"]
     context = session.context_manager.system_prompt
-    snapshot = {
-        "session": dict(session.audit_context),
-        "turn": {
-            "turn_id": session.request_id,
-            "turn_number": turn.step_counter,
-            "context": context,
-        },
-    }
-    snapshot_path = await session.session_manager.save_turn_snapshot(session.request_id, snapshot)
+    # snapshot = {
+    #     "session": dict(session.audit_context),
+    #     "turn": {
+    #         "turn_id": session.request_id,
+    #         "turn_number": turn.step_counter,
+    #         "context": context,
+    #     },
+    # }  TODO 没想好及这个snapshot怎么使用
+    # snapshot_path = await session.session_manager.save_turn_snapshot(session.request_id, snapshot)
 
     await get_monitor_pipeline().on_turn_start(session, turn)
 
@@ -127,9 +111,9 @@ async def post_tool_use(turn: Any, **kwargs):
             "input": loggable_input,
             "result": result,
         }
-        await session.session_manager.append_tool_log(session.session_id, snapshot)
+        await session.session_manager.append_tool_log(snapshot)
         if tool_name in MEMORY_TOOL_NAMES:
-            await session.session_manager.append_memory_log(session.session_id, snapshot)
+            await session.session_manager.append_memory_log(snapshot)
     except Exception as exc:
         log.debug(f"Session log write failed for tool '{tool_name}': {exc}")
 
@@ -137,8 +121,14 @@ async def post_tool_use(turn: Any, **kwargs):
 
 
 async def on_turn_end(turn: Any, **kwargs):
-    session = kwargs["session"]
-    await get_monitor_pipeline().on_turn_end(session, turn)
+    session_state = kwargs["session"]
+    # 保留上下文快照
+    if session_state.session_manager is not None and session_state.context_manager is not None:
+        await session_state.session_manager.save_turn_chat_message_snapshot(
+            session_state.context_manager.chat_messages,
+            user_id=session_state.user_id
+        )
+    await get_monitor_pipeline().on_turn_end(session_state, turn)
 
 
 async def on_error(turn: Any, **kwargs):

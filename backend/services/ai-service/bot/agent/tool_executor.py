@@ -124,9 +124,9 @@ class ToolExecutor:
         else:
             result = func(**call_kwargs)
 
-        # 执行成功则大的输出落盘
-        if result.success:
-            await session_state.context_manager.persist_large_output(tool_call=tool_call,output=result)
+        # 执行成功则大的输出落盘，没想好大的输出落盘之后怎么衔接上下文 TODO
+        # if result.success:
+        #     await session_state.context_manager.persist_large_output(tool_call=tool_call,output=result)
 
         # if hasattr(result, "model_dump"):
         #     result = result.model_dump()

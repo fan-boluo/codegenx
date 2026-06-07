@@ -24,10 +24,8 @@ class SessionContext:
     app_id: str = ""
     db_name: str | None = None
     task_manager: TaskManager | None = None
-
     memory: MemoryManager = field(init=False)
-    # 压缩，不要类
-
+    _session_memory: SessionMemory = field(init=False)
     # 组装
     assembler:ContextAssembler = field(default_factory=ContextAssembler)
 
@@ -35,15 +33,12 @@ class SessionContext:
     skills = skill_loader.load_all_skills()
 
     task : TaskManager = field(init=False)
-    _session_memory: SessionMemory = field(init=False)
+
     _compaction:CompactionEngine = field(init=False)
 
     system_prompt:str = field(init=False)
-    # 一次turn的聊天历史
+    # 整个会话的聊天历史
     chat_messages:list[dict[str, Any]] = field(init=False)
-
-    # tool_registry : ToolRegistry=field(default_factory=ToolRegistry)
-
 
     def __post_init__(self) -> None:
         self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id)
@@ -51,6 +46,7 @@ class SessionContext:
         self._session_memory = SessionMemory(session_id=self.session_id,app_id=self.app_id)
         self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_memory,llm_fn=AsyncLLMClient().invoke)
         self.system_prompt = ""
+        # 构建初始化的聊天记录，on_session_start从snapshot加载进行初始化
         self.chat_messages = []
         log.info(self.session_id,"SessonContext 启动完毕")
     async def build_system_prompt(self, query:str) -> str:

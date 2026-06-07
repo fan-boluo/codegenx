@@ -313,12 +313,7 @@ class AgentRuntime(LLMRecoveryMixin):
                         session_state.stop_reason = ""
                         session_state.close_signal.set()  # 通知 _wait_for_request_cleanup
                     session_state.touch()
-                    if session_state.session_manager is not None and session_state.context_manager is not None:
-                        await session_state.session_manager.save_history(
-                            session_state.session_id,
-                            session_state.context_manager.chat_messages,
-                            user_id=session_state.user_id
-                        )
+
         finally:
             async with session_state.request_lock:
                 # Only clear processing/worker_task if this is the task that set them.
@@ -373,7 +368,7 @@ class AgentRuntime(LLMRecoveryMixin):
         now = datetime.utcnow()
         request_dict = request.model_dump()
         request_dict["started_at"] = now.isoformat()
-        await session_state.session_manager.append_chat_history_message(session_state.session_id, request_dict)
+        await session_state.session_manager.append_chat_history_message( request_dict,session_state.user_id)
 
 
     # ------------------------------------------------------------------ request execution
@@ -390,7 +385,7 @@ class AgentRuntime(LLMRecoveryMixin):
             user_message = session_state.request.message
             context_manager = session_state.context_manager
             if context_manager is None:
-                raise RuntimeError("context_manager is not initialized — on_session_start may not have run")
+                raise RuntimeError("context_manager is not initialized — on_session_start hook may not have run")
             context_manager.add_user_message(user_message)
             await context_manager.build_system_prompt(user_message)
 
@@ -554,7 +549,7 @@ class AgentRuntime(LLMRecoveryMixin):
         session_state.context_manager.add_assistant_message(assistant_message)
         if session_state.session_manager is not None:
             await session_state.session_manager.append_chat_history_message(
-                session_state.session_id, assistant_message
+                assistant_message,session_state.user_id
             )
 
         turn_state.requires_followup = bool(tool_calls)
@@ -666,12 +661,16 @@ class AgentRuntime(LLMRecoveryMixin):
             return
         if event.event_type == AgentEventType.TOOL_EXECUTION_END:
             tc = event.data if isinstance(event.data, dict) else {}
-            await sm.append_chat_history_message(session_state.session_id, {
+            await sm.append_chat_history_message(
+
+                {
                 "role": "tool",
                 "tool_call_id": tc.get("tool_id", ""),
                 "name": tc.get("tool_name", ""),
-                "content": str(tc.get("result", "")),
-            })
+                "content": str(tc.get("description", "")),
+            },
+                session_state.user_id
+            )
 
     def _sanitize_event_data(self, event: AgentEvent) -> None:
         """过滤敏感数据，工具事件只描述正在做什么，不传输原始内容。"""
