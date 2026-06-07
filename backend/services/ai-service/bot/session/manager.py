@@ -1,23 +1,21 @@
 import asyncio
 import json
-import re
-from datetime import datetime, timezone,timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 
 from shared.config.log_config import log
-from shared.constants import get_current_session_dir
+from shared.constants import get_current_session_dir, get_session_dir
 
 
 PROJECT_DIR = Path(__file__).parent.parent
 
-MAX_FILE_BYTES = 1 * 1024 * 1024  # 单文件最大 1MB
-# 聊天中的
+MAX_FILE_BYTES = 1 * 1024 * 1024
 _CHAT_HISTORY_PREFIX = "chat_history_"
-# turn结束更新记录最新一轮的chat_message，方便后续再打开会话历史加载
 _TURN_SNAPSHOT_PREFIX = "last_chat_snapshot_"
+_SESSION_INDEX_FILE = "session_index.json"
 
 class SessionManager:
 
@@ -147,3 +145,52 @@ class SessionManager:
             with open(snapshot_file, "w", encoding="utf-8") as file:
                 json.dump(snapshot, file, ensure_ascii=False, indent=2)
         return snapshot_file
+
+    async def upsert_session_index(self, first_message: str) -> None:
+        """将当前 session 写入 session_index.json，用于快速列出会话历史。"""
+        index_file = get_session_dir(self.app_id) / _SESSION_INDEX_FILE
+        async with self._lock:
+            entries: list[dict] = []
+            if index_file.exists():
+                try:
+                    content = index_file.read_text(encoding="utf-8")
+                    entries = json.loads(content) if content.strip() else []
+                except Exception:
+                    entries = []
+
+            now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+            # 更新或追加
+            found = False
+            for e in entries:
+                if e.get("session_id") == self.session_id:
+                    e["first_message"] = first_message[:50]
+                    e["create_time"] = now
+                    found = True
+                    break
+            if not found:
+                entries.append({
+                    "session_id": self.session_id,
+                    "first_message": first_message[:50],
+                    "create_time": now,
+                })
+
+            # 只保留最近 100 条
+            entries = entries[-100:]
+
+            with open(index_file, "w", encoding="utf-8") as f:
+                json.dump(entries, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def read_session_index(app_id: str) -> list[dict]:
+        """读取 session 索引列表，按时间倒序。"""
+        index_file = get_session_dir(app_id) / _SESSION_INDEX_FILE
+        if not index_file.exists():
+            return []
+        try:
+            entries = json.loads(index_file.read_text(encoding="utf-8"))
+            if isinstance(entries, list):
+                entries.sort(key=lambda e: e.get("create_time", ""), reverse=True)
+                return entries
+        except Exception:
+            pass
+        return []

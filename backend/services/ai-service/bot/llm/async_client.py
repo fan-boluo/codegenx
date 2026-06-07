@@ -19,7 +19,7 @@ def _safe_build_tool_calls(tool_calls_buffer: dict) -> list[dict[str, Any]]:
                 args = json.loads(raw_args)
             except (json.JSONDecodeError, TypeError) as exc:
                 log.warning(
-                    "Failed to parse tool call arguments for %s, using raw string: %s",
+                    "Failed to parse tool call arguments for {}, using raw string: {}",
                     v.get("name", "unknown"), exc,
                 )
                 args = {"_raw_arguments": raw_args}

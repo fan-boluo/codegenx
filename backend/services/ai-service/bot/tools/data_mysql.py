@@ -121,7 +121,7 @@ class ListTablesTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("list_tables 执行异常: %s", exc)
+            log.warning("list_tables 执行异常: {}", exc)
             return ToolResult(success=False, message=f"获取表列表失败: {exc}", render=f"数据库查询失败")
 
     async def _do_execute(
@@ -217,7 +217,7 @@ class DescribeTableTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("describe_table 执行异常: %s", exc)
+            log.warning("describe_table 执行异常: {}", exc)
             return ToolResult(success=False, message=f"获取表结构失败: {exc}", render=f"表结构查询失败")
 
     async def _do_execute(
@@ -312,7 +312,7 @@ class SampleRowsTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("sample_rows 执行异常: %s", exc)
+            log.warning("sample_rows 执行异常: {}", exc)
             return ToolResult(success=False, message=f"采样数据失败: {exc}", render=f"{self.name} 采样失败")
 
     async def _do_execute(
@@ -430,7 +430,7 @@ class DescribeTableStatsTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("describe_table_stats 执行异常: %s", exc)
+            log.warning("describe_table_stats 执行异常: {}", exc)
             return ToolResult(success=False, message=f"获取统计信息失败: {exc}", render=f"统计失败")
 
     async def _do_execute(
@@ -530,7 +530,7 @@ class DescribeTableStatsTool(BaseTool):
                 log.warning("列 %s 统计超时 (%ds)，已跳过", col, timeout)
             except Exception as exc:
                 skipped_cols.append(col)
-                log.warning("列 %s 统计异常: %s", col, exc)
+                log.warning("列 {} 统计异常: {}", col, exc)
 
         # 7. 格式化输出
         lines = [f"表统计: {db_name}.{table_name} (估算 {est_rows} 行)"]

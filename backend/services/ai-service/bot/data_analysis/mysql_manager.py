@@ -159,14 +159,14 @@ class MysqlManager:
                     rows = await cursor.fetchall()
                     return [dict(r) for r in rows]
                 except asyncio.TimeoutError:
-                    log.warning("MySQL 查询超时 (%ds): %s", timeout_seconds, sql[:120])
+                    log.warning("MySQL 查询超时 ({}s): {}", timeout_seconds, sql[:120])
                     raise
                 finally:
                     await cursor.close()
         except asyncio.TimeoutError:
             raise
         except Exception as exc:
-            log.error("MySQL 查询异常: %s", exc)
+            log.error("MySQL 查询异常: {}", exc)
             raise
 
     async def get_table_rows_estimate(self, db_name: str, table_name: str) -> int:

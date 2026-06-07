@@ -9,6 +9,7 @@ Four tools that give the LLM full CRUD access to the persistent task board:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from bot.tools.base import BaseTool, ToolResult
@@ -64,7 +65,11 @@ class TaskCreateTool(BaseTool):
                 description=str(params.get("description", "") or ""),
                 depends_on=list(params.get("depends_on") or []),
             )
-            return ToolResult(success=True, data=str(task), render=f"创建任务: {task.get('subject', '')}")
+            return ToolResult(
+                success=True,
+                data=str(task),
+                render=json.dumps({"action": "create", "task": task}, ensure_ascii=False),
+            )
         except Exception as exc:
             log.error("[task_create] {}", exc)
             return ToolResult(success=False, message=f"Error: {exc}")
@@ -120,7 +125,11 @@ class TaskUpdateTool(BaseTool):
                 subject=params.get("subject"),
                 description=params.get("description"),
             )
-            return ToolResult(success=True, data=str(task), render=f"更新任务: {task.get('subject', '')} -> {params.get('status', task.get('status', ''))}")
+            return ToolResult(
+                success=True,
+                data=str(task),
+                render=json.dumps({"action": "update", "task": task}, ensure_ascii=False),
+            )
         except Exception as exc:
             log.error("[task_update] {}", exc)
             return ToolResult(success=False, message=f"Error: {exc}")

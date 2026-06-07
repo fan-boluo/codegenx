@@ -613,7 +613,11 @@ class AgentRuntime(LLMRecoveryMixin):
                 result=result,
             )
             log.debug("PostToolUse {},{},{}",session_state.request_id, turn_state.step_counter, turn_state.active_step_id)
-            if result.success:
+            if isinstance(result, dict):
+                # Safety check 失败等返回的 dict
+                tool_message['content'] = result.get('error') or result.get('message') or ''
+                tool_message['state'] = "failure"
+            elif result.success:
                 tool_message['content'] = result.data or ""
                 tool_message['state'] = "success"
             else:
@@ -621,7 +625,8 @@ class AgentRuntime(LLMRecoveryMixin):
                 tool_message['state'] = "failure"
             session_state.context_manager.add_tool_message(tool_message)
             # 附加文件路径供前端渲染
-            tool_message['render'] = result.render or ""
+            tool_message['render'] = result.get('render', '') if isinstance(result, dict) else (result.render or '')
+            tool_message['state'] = tool_message.get('state', '')  # ensure state is set before sanitize strips it
             # tool_name = tool_message.get("name", "")
             # if tool_name in ("read_file", "write_file"):
             #     tool_message["path"] = tool_call.get("arguments", {}).get("path", "")
@@ -692,12 +697,13 @@ class AgentRuntime(LLMRecoveryMixin):
             event.data = {
                 "tool_name": tc.get("name", ""),
                 "tool_id": tc.get("tool_call_id", ""),
-                "description": tc.get("render"),
+                "description": tc.get("render") or tc.get("name", ""),
+                "state": tc.get("state", ""),
             }
             # 附加结构化 task_data 供前端任务面板消费
-            if tool_name in ("task_create", "task_update") and render:
+            if tool_name in ("task_create", "task_update") and tc.get("render"):
                 try:
-                    task_json = json.loads(render)
+                    task_json = json.loads(tc["render"])
                 except (json.JSONDecodeError, TypeError):
                     task_json = None
                 if task_json:

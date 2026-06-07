@@ -45,6 +45,9 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
     user_dict = {"role": "user", "content": req.message}
     await session.session_manager.append_chat_history_message(user_dict, session.user_id)
 
+    # 更新会话索引，供快速列出历史会话
+    await session_manager.upsert_session_index(req.message)
+
     now = _utcnow()
     session.state = AgentState.RUNNING
     session.started_at = now

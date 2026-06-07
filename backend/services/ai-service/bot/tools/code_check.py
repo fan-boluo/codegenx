@@ -100,7 +100,7 @@ class CodeCheckTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("code_check 执行异常: %s", exc)
+            log.warning("code_check 执行异常: {}", exc)
             return ToolResult(success=False, message=f"检查失败: {exc}", render=f"语法检查失败: {params.get('path', '')}")
 
     async def _do_execute(

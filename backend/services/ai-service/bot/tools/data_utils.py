@@ -157,7 +157,7 @@ class GuessAnalysisTaskTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("guess_analysis_task 执行异常: %s", exc)
+            log.warning("guess_analysis_task 执行异常: {}", exc)
             return ToolResult(success=False, message=f"推断分析任务失败: {exc}")
 
     async def _do_execute(
@@ -338,7 +338,7 @@ class GetTableRelationshipsTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("get_table_relationships 执行异常: %s", exc)
+            log.warning("get_table_relationships 执行异常: {}", exc)
             return ToolResult(success=False, message=f"获取表关系失败: {exc}")
 
     async def _do_execute(

@@ -127,7 +127,7 @@ class FindTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("find 执行异常: %s", exc)
+            log.warning("find 执行异常: {}", exc)
             return ToolResult(success=False, message=f"查找文件失败: {exc}", render=f"查找失败: {params.get('pattern', '')}")
 
     async def _do_execute(

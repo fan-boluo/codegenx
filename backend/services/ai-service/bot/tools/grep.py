@@ -106,7 +106,7 @@ class GrepTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("grep 执行异常: %s", exc)
+            log.warning("grep 执行异常: {}", exc)
             return ToolResult(success=False, message=f"搜索失败: {exc}", render=f"搜索失败: {params.get('pattern', '')}")
 
     async def _do_execute(

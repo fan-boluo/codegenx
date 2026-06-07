@@ -193,7 +193,7 @@ class ReadFileTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("read_file 执行异常: %s", exc)
+            log.warning("read_file 执行异常: {}", exc)
             return ToolResult(success=False, message=f"读取文件失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
@@ -380,7 +380,7 @@ class WriteFileTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("write_file 执行异常: %s", exc)
+            log.warning("write_file 执行异常: {}", exc)
             return ToolResult(success=False, message=f"写入文件失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
@@ -487,7 +487,7 @@ class EditFileTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("edit_file 执行异常: %s", exc)
+            log.warning("edit_file 执行异常: {}", exc)
             return ToolResult(success=False, message=f"编辑文件失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
@@ -642,7 +642,7 @@ class ListDirectoryTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("list_directory 执行异常: %s", exc)
+            log.warning("list_directory 执行异常: {}", exc)
             return ToolResult(success=False, message=f"列出目录失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
@@ -787,7 +787,7 @@ class DeleteFileTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("delete_file 执行异常: %s", exc)
+            log.warning("delete_file 执行异常: {}", exc)
             return ToolResult(success=False, message=f"删除文件失败: {exc}",render=f"{self.name} 删除失败")
 
     async def _do_execute(

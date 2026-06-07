@@ -110,7 +110,7 @@ class DescribeCsvTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("describe_csv 执行异常: %s", exc)
+            log.warning("describe_csv 执行异常: {}", exc)
             return ToolResult(success=False, message=f"获取 CSV 信息失败: {exc}")
 
     async def _do_execute(
@@ -184,7 +184,7 @@ class SampleCsvRowsTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("sample_csv_rows 执行异常: %s", exc)
+            log.warning("sample_csv_rows 执行异常: {}", exc)
             return ToolResult(success=False, message=f"CSV 采样失败: {exc}")
 
     async def _do_execute(
@@ -261,7 +261,7 @@ class DescribeCsvStatsTool(BaseTool):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("describe_csv_stats 执行异常: %s", exc)
+            log.warning("describe_csv_stats 执行异常: {}", exc)
             return ToolResult(success=False, message=f"CSV 统计失败: {exc}")
 
     async def _do_execute(
@@ -348,7 +348,7 @@ class DescribeCsvStatsTool(BaseTool):
                     categorical_results[col] = compute_categorical_stats(vals)
             except Exception as exc:
                 incomplete.append(col)
-                log.warning("列 %s 统计异常: %s", col, exc)
+                log.warning("列 {} 统计异常: {}", col, exc)
 
         # 相关性
         corr_section = ""
