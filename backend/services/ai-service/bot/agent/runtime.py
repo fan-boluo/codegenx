@@ -368,7 +368,6 @@ class AgentRuntime(LLMRecoveryMixin):
         now = datetime.utcnow()
         request_dict = request.model_dump()
         request_dict["started_at"] = now.isoformat()
-        await session_state.session_manager.append_chat_history_message( request_dict,session_state.user_id)
 
 
     # ------------------------------------------------------------------ request execution
@@ -622,9 +621,10 @@ class AgentRuntime(LLMRecoveryMixin):
                 tool_message['state'] = "failure"
             session_state.context_manager.add_tool_message(tool_message)
             # 附加文件路径供前端渲染
-            tool_name = tool_message.get("name", "")
-            if tool_name in ("read_file", "write_file"):
-                tool_message["path"] = tool_call.get("arguments", {}).get("path", "")
+            tool_message['render'] = result.render or ""
+            # tool_name = tool_message.get("name", "")
+            # if tool_name in ("read_file", "write_file"):
+            #     tool_message["path"] = tool_call.get("arguments", {}).get("path", "")
             await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
@@ -686,13 +686,13 @@ class AgentRuntime(LLMRecoveryMixin):
             # TODO 添加友好的工具执行描述
             # desc = tc.get('content')
             tool_name = tc.get('name')
-            render = self._render_tool_front(tc)
-            desc = f"{tc.get('name')} 工具执行完成, {tc.get('state')},{render}" # 输出 {len(result)} 字符
+            # render = self._render_tool_front(tc)
+            # desc = f"{tc.get('name')} 工具执行完成, {tc.get('state')},{render}" # 输出 {len(result)} 字符
 
             event.data = {
                 "tool_name": tc.get("name", ""),
                 "tool_id": tc.get("tool_call_id", ""),
-                "description": desc,
+                "description": tc.get("render"),
             }
             # 附加结构化 task_data 供前端任务面板消费
             if tool_name in ("task_create", "task_update") and render:

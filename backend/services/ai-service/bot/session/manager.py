@@ -37,8 +37,8 @@ class SessionManager:
             return self.session_dir / f"{_CHAT_HISTORY_PREFIX}{self.session_id}_{index}.jsonl"
         return self.session_dir / f"{_CHAT_HISTORY_PREFIX}{self.session_id}.jsonl"
 
-    def _turn_chat_message_snapshot_file(self) -> str:
-        return f"{_TURN_SNAPSHOT_PREFIX}{self.session_id}*.jsonl"
+    def _turn_chat_message_snapshot_file(self) -> Path:
+        return self.session_dir / f"{_TURN_SNAPSHOT_PREFIX}{self.session_id}.jsonl"
 
     def _tool_log_file(self, ) -> Path:
         return self.session_dir / f"tool_log_{self.session_id}.jsonl"

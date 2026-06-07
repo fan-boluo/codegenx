@@ -40,7 +40,11 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
         task_manager=task_manager,
     )
     # 初始化聊天历史
-    session.context_manager.chat_messages = session_manager.get_turn_chat_message_snapshot() or []
+
+    session.context_manager.chat_messages = await session_manager.get_turn_chat_message_snapshot() or []
+    user_dict = {"role": "user", "content": req.message}
+    await session.session_manager.append_chat_history_message(user_dict, session.user_id)
+
     now = _utcnow()
     session.state = AgentState.RUNNING
     session.started_at = now
@@ -125,8 +129,7 @@ async def on_turn_end(turn: Any, **kwargs):
     # 保留上下文快照
     if session_state.session_manager is not None and session_state.context_manager is not None:
         await session_state.session_manager.save_turn_chat_message_snapshot(
-            session_state.context_manager.chat_messages,
-            user_id=session_state.user_id
+            session_state.context_manager.chat_messages
         )
     await get_monitor_pipeline().on_turn_end(session_state, turn)
 

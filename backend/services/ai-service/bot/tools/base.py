@@ -19,6 +19,7 @@ class ToolResult(BaseModel):
     success: bool  # 工具执行成果的标志
     data: str=""  # 返回给llm的数据
     message:str = ""  # 失败原因
+    render:str= ""  # 展示用
 
 
 class BaseTool(ABC):

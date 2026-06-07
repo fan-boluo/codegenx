@@ -194,7 +194,7 @@ class ReadFileTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("read_file 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"读取文件失败: {exc}")
+            return ToolResult(success=False, message=f"读取文件失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
             self,
@@ -235,8 +235,8 @@ class ReadFileTool(BaseTool):
                 success=True,
                 data=
                     TextContent(text=text_note).model_dump() +
-                    ImageContent(data=base64_data, mime_type=mime_type).model_dump()
-
+                    ImageContent(data=base64_data, mime_type=mime_type).model_dump(),
+                render = f"{self.name}, 执行结果：成功，path:{absolute_path.name}limit:{limit},offset:{offset}"
             )
         else:
             # Read as text file
@@ -323,7 +323,8 @@ class ReadFileTool(BaseTool):
 
             return ToolResult(
                 success=True,
-                data=output_text + ("\n 以下是执行的details:" + str(details) if details else "")
+                data=output_text + ("\n 以下是执行的details:" + str(details) if details else ""),
+                render = f"{self.name}, 执行结果：成功，path:{absolute_path.name},limit:{limit},offset:{offset}"
             )
 
 
@@ -380,7 +381,7 @@ class WriteFileTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("write_file 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"写入文件失败: {exc}")
+            return ToolResult(success=False, message=f"写入文件失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
             self,
@@ -410,7 +411,8 @@ class WriteFileTool(BaseTool):
 
         return ToolResult(
             success=True,
-            data=f"Successfully wrote {len(content)} bytes to {path}"
+            data=f"Successfully wrote {len(content)} bytes to {path}",
+            render=f"{self.name} 写入成功 {absolute_path.name} {len(content)} bytes"
         )
 
 class EditFileTool(BaseTool):
@@ -486,7 +488,7 @@ class EditFileTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("edit_file 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"编辑文件失败: {exc}")
+            return ToolResult(success=False, message=f"编辑文件失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
             self,
@@ -564,7 +566,7 @@ class EditFileTool(BaseTool):
                     f"No changes made to {path}. "
                     f"The replacement produced identical content."
                 )
-                return ToolResult(success=False, message=message)
+                return ToolResult(success=False, message=message,render = f"{self.name} 执行失败")
 
             # Restore BOM and original line endings
             new_content = bom + _restore_line_endings(new_content, original_ending)
@@ -579,6 +581,7 @@ class EditFileTool(BaseTool):
         return ToolResult(
             success=True,
             data=f"Successfully edited {path}.\n\nDiff:\n{diff}" if diff.strip() else f"Successfully edited {path}.",
+            render=f"{self.name} 修改完成 {absolute_path.name}  "
         )
 
 
@@ -640,7 +643,7 @@ class ListDirectoryTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("list_directory 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"列出目录失败: {exc}")
+            return ToolResult(success=False, message=f"列出目录失败: {exc}",render=f"{self.name} 执行失败")
 
     async def _do_execute(
             self,
@@ -659,12 +662,14 @@ class ListDirectoryTool(BaseTool):
         if not absolute_path.exists():
             return ToolResult(
                 success=False,
-                message=f"目录不存在: {path}"
+                message=f"目录不存在: {path}",
+                render=f"{self.name} 路径解析失败：{path.split("/")[-1]}"
             )
         if not absolute_path.is_dir():
             return ToolResult(
                 success=False,
-                message=f"不是目录: {path}。请使用 read_file 工具读取文件内容。"
+                message=f"不是目录: {path}。请使用 read_file 工具读取文件内容。",
+                render=f"{self.name} 路径解析失败：{path.split("/")[-1]}"
             )
 
         entries: list[str] = []
@@ -717,7 +722,8 @@ class ListDirectoryTool(BaseTool):
         if not entries:
             return ToolResult(
                 success=True,
-                data=f"目录为空: {absolute_path}"
+                data=f"目录为空: {absolute_path}",
+                render=f"{self.name} 路径解析失败：{absolute_path.name}"
             )
 
         header = f"Contents of {absolute_path} ({dir_count} dirs, {file_count} files)"
@@ -726,7 +732,7 @@ class ListDirectoryTool(BaseTool):
         if depth > 1:
             header += f" [depth: {depth}]"
         output = header + ":\n" + "\n".join(entries)
-        return ToolResult(success=True, data=output)
+        return ToolResult(success=True, data=output,render=f"{self.name} 执行成功 {header}")
 
 
 class DeleteFileTool(BaseTool):
@@ -782,7 +788,7 @@ class DeleteFileTool(BaseTool):
             raise
         except Exception as exc:
             log.warning("delete_file 执行异常: %s", exc)
-            return ToolResult(success=False, message=f"删除文件失败: {exc}")
+            return ToolResult(success=False, message=f"删除文件失败: {exc}",render=f"{self.name} 删除失败")
 
     async def _do_execute(
             self,
@@ -801,13 +807,15 @@ class DeleteFileTool(BaseTool):
         except ValueError:
             return ToolResult(
                 success=False,
-                message=f"安全限制: 只能删除工作区内的文件。路径超出工作区范围: {path}"
+                message=f"安全限制: 只能删除工作区内的文件。路径超出工作区范围: {path}",
+                render=f"安全限制: 只能删除工作区内的文件。路径超出工作区范围: {path}"
             )
 
         if not absolute_path.exists():
             return ToolResult(
                 success=False,
-                message=f"文件或目录不存在: {path}"
+                message=f"文件或目录不存在: {path}",
+                render=f"{self.name} 文件或目录不存在 {path.split('/')[-1]} "
             )
 
         if signal and signal.is_set():
@@ -820,7 +828,8 @@ class DeleteFileTool(BaseTool):
             except PermissionError:
                 return ToolResult(
                     success=False,
-                    message=f"没有权限访问目录: {path}"
+                    message=f"没有权限访问目录: {path}",
+                    render=f"{self.name} 没有权限访问目录 {path.split('/')[-1]}"
                 )
 
             if has_contents and not recursive:
@@ -830,24 +839,28 @@ class DeleteFileTool(BaseTool):
                         f"目录不为空: {path}。"
                         f"请使用 list_directory 确认目录内容后，"
                         f"如需删除整个目录请设置 recursive: true 作为安全确认。"
-                    )
+                    ),
+                    render = f"{self.name} 准备删除整个目录 {path.split("/")[-1]} 需要再次确认"
                 )
 
             if has_contents:
                 shutil.rmtree(str(absolute_path))
                 return ToolResult(
                     success=True,
-                    data=f"已递归删除目录: {path}"
+                    data=f"已递归删除目录: {path}",
+                    render=f"{self.name} 已递归删除目录: {path.split("/")[-1]}"
                 )
             else:
                 absolute_path.rmdir()
                 return ToolResult(
                     success=True,
-                    data=f"已删除空目录: {path}"
+                    data=f"已删除空目录: {path}",
+                    render=f"{self.name} 已删除空目录： {path.split('/')[-1]}"
                 )
         else:
             absolute_path.unlink()
             return ToolResult(
                 success=True,
-                data=f"已删除文件: {path}"
+                data=f"已删除文件: {path}",
+                render=f"{self.name} 已删除文件: {path.split('/')[-1]}"
             )
