@@ -479,6 +479,7 @@ interface AiStep {
   detail: string
   state: 'running' | 'completed' | 'failed'
   timestamp: number
+  toolId?: string
 }
 
 interface ItemEntry {
@@ -1392,11 +1393,12 @@ const appendAiStep = (step: AiStep) => {
   scrollToBottom()
 }
 
-const updateLastRunningToolStep = (detail: string, state: AiStep['state']) => {
+const updateLastRunningToolStep = (detail: string, state: AiStep['state'], toolId?: string) => {
   const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
   if (!targetMessage?.steps) return
   for (let i = targetMessage.steps.length - 1; i >= 0; i--) {
     if (targetMessage.steps[i].eventType === 'ToolExecutionStart' && targetMessage.steps[i].state === 'running') {
+      if (toolId && targetMessage.steps[i].toolId && targetMessage.steps[i].toolId !== toolId) continue
       targetMessage.steps[i].state = state
       targetMessage.steps[i].detail = detail
       scrollToBottom()
@@ -1432,7 +1434,7 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
   }
   if (eventType === 'ToolExecutionStart') {
     const toolName = eventData?.tool_name || eventData?.name || eventData?.function?.name || 'unknown'
-    appendAiStep({ eventType, description: `${toolName}`, detail: '', state: 'running', timestamp: Date.now() })
+    appendAiStep({ eventType, description: `${toolName}`, detail: '', state: 'running', timestamp: Date.now(), toolId: eventData?.tool_id || '' })
     return
   }
   if (eventType === 'ToolExecutionEnd') {
@@ -1441,6 +1443,7 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
     const toolState = eventData?.state || ''
     const isSuccess = toolState === 'success'
     const detail = isSuccess ? description : (description || `失败: ${toolName}`)
+    const toolId = eventData?.tool_id || ''
     // 更新任务面板
     if (eventData?.task_data) {
       const td = eventData.task_data
@@ -1453,7 +1456,7 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
         }
       }
     }
-    updateLastRunningToolStep(detail, isSuccess ? 'completed' : 'failed')
+    updateLastRunningToolStep(detail, isSuccess ? 'completed' : 'failed', toolId)
     return
   }
   if (eventType === 'CompactEvent') {
