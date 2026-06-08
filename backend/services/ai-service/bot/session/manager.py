@@ -68,7 +68,7 @@ class SessionManager:
             except (json.JSONDecodeError, Exception):
                 # 文件损坏 → 返回空列表
                 chat_message = []
-
+        log.debug("从上一轮快照加载聊天历史上下文：{} 条",len(chat_message))
         return chat_message
 
     async def _get_latest_write_file(self,  line_bytes: int) -> Path:

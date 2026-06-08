@@ -1,42 +1,43 @@
 <template>
-  <a-layout-header class="header">
-    <div class="header-inner">
-      <RouterLink to="/" class="header-brand">
-        <span class="site-title">CodeGen<span class="title-accent">X</span></span>
-      </RouterLink>
-
+  <div class="global-header">
+    <div class="header-left">
+      <a
+        class="header-logo"
+        href="/"
+        @click.prevent="$router.push('/')"
+      >
+        <img src="../../public/logo.png" alt="logo" class="logo-img" />
+        <span class="logo-text">CodeGenX</span>
+      </a>
       <a-menu
+        v-if="menuItems.length"
         v-model:selectedKeys="selectedKeys"
         mode="horizontal"
         :items="menuItems"
         @click="handleMenuClick"
-        class="nav-menu"
-        :overflowedIndicator="null"
+        class="header-menu"
       />
-
-      <div class="user-area">
-        <div v-if="loginUserStore.loginUser.id" class="user-info">
-          <a-dropdown>
-            <a-space class="user-trigger">
-              <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="32" />
-              <span class="user-name">{{ loginUserStore.loginUser.userName ?? '无名' }}</span>
-            </a-space>
-            <template #overlay>
-              <a-menu>
-                <a-menu-item @click="doLogout">
-                  <LogoutOutlined />
-                  退出登录
-                </a-menu-item>
-              </a-menu>
-            </template>
-          </a-dropdown>
-        </div>
-        <div v-else>
-          <a-button type="primary" href="/user/login" size="small">登录</a-button>
-        </div>
-      </div>
     </div>
-  </a-layout-header>
+    <div class="header-right">
+      <div v-if="loginUserStore.loginUser.id" class="user-info">
+        <a-dropdown>
+          <div class="user-dropdown-trigger">
+            <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="28" />
+            <span class="user-name">{{ loginUserStore.loginUser.userName }}</span>
+          </div>
+          <template #overlay>
+            <a-menu @click="doLogout">
+              <a-menu-item key="logout">
+                <LogoutOutlined />
+                <span>退出登录</span>
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+      </div>
+      <a-button v-else type="primary" href="/user/login" size="small">登录</a-button>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -45,6 +46,7 @@ import { useRouter } from 'vue-router'
 import { type MenuProps, message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser.ts'
 import { userLogout } from '@/api/userController.ts'
+import { useIdleTimeout } from '@/composables/useIdleTimeout'
 import {
   LogoutOutlined,
   HomeOutlined,
@@ -55,30 +57,21 @@ import {
 
 const loginUserStore = useLoginUserStore()
 const router = useRouter()
-const selectedKeys = ref<string[]>(['/'])
 
-router.afterEach((to) => {
-  selectedKeys.value = [to.path]
-})
+const selectedKeys = ref<string[]>([])
 
-const originItems = [
+const originItems: MenuProps['items'] = [
   {
     key: '/',
     icon: () => h(HomeOutlined),
-    label: '我的项目',
-    title: '我的项目',
+    label: '首页',
+    title: '首页',
   },
   {
-    key: '/admin/appManage',
+    key: '/projects',
     icon: () => h(AppstoreOutlined),
-    label: '项目管理',
-    title: '项目管理',
-  },
-  {
-    key: '/admin/userManage',
-    icon: () => h(HomeOutlined),
-    label: '用户管理',
-    title: '用户管理',
+    label: '项目',
+    title: '项目',
   },
   {
     key: '/admin/chatManage',
@@ -94,14 +87,13 @@ const originItems = [
   },
 ]
 
-const filterMenus = (menus = [] as MenuProps['items']) => {
-  return menus?.filter((menu) => {
-    const menuKey = menu?.key as string
-    if (menuKey?.startsWith('/admin')) {
-      const loginUser = loginUserStore.loginUser
-      if (!loginUser || loginUser.userRole !== 'admin') {
-        return false
-      }
+const filterMenus = (items: MenuProps['items']): MenuProps['items'] => {
+  if (!items) return []
+  return items.filter(item => {
+    if (!item) return false
+    const key = 'key' in item ? (item as any).key : ''
+    if (key.startsWith('/admin')) {
+      return loginUserStore.loginUser.userRole === 'admin'
     }
     return true
   })
@@ -117,10 +109,30 @@ const handleMenuClick: MenuProps['onClick'] = (e) => {
   }
 }
 
+const clearLocalAuth = () => {
+  loginUserStore.setLoginUser({ userName: '未登录' })
+  localStorage.removeItem('token')
+  // 清理所有 session 相关 localStorage
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith('codegenx:app-chat-session:')) {
+      localStorage.removeItem(key)
+    }
+  }
+}
+
+const performIdleLogout = () => {
+  if (!loginUserStore.loginUser.id) return
+  clearLocalAuth()
+  message.warning('长时间未操作，已自动退出登录')
+  router.push('/user/login')
+}
+
+useIdleTimeout(performIdleLogout)
+
 const doLogout = async () => {
   const res = await userLogout()
   if (res.data.code === 0) {
-    loginUserStore.setLoginUser({ userName: '未登录' })
+    clearLocalAuth()
     message.success('退出登录成功')
     await router.push('/user/login')
   } else {
@@ -129,137 +141,4 @@ const doLogout = async () => {
 }
 </script>
 
-<style scoped>
-.header {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  height: 56px;
-  padding: 0 24px;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-light);
-  display: flex;
-  align-items: center;
-}
-
-.header-inner {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: 100%;
-  gap: 0;
-}
-
-.header-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  text-decoration: none;
-  flex-shrink: 0;
-}
-
-.site-title {
-  font-family: var(--font-sans);
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-  white-space: nowrap;
-}
-
-.title-accent {
-  color: var(--accent-primary);
-  font-weight: 700;
-}
-
-.nav-menu {
-  background: transparent !important;
-  flex: 1;
-  min-width: 0;
-  overflow: visible !important;
-  display: flex;
-  justify-content: center;
-  border-bottom: none !important;
-}
-
-.nav-menu :deep(.ant-menu-overflow) {
-  display: none !important;
-}
-
-.nav-menu :deep(.ant-menu-overflow-item) {
-  display: none !important;
-}
-
-.nav-menu :deep(.ant-menu-item),
-.nav-menu :deep(.ant-menu-submenu) {
-  display: inline-flex !important;
-}
-
-.nav-menu :deep(.ant-menu-item) {
-  color: var(--text-secondary);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 500;
-  border-radius: var(--radius-btn);
-  margin: 0 2px;
-  padding: 0 16px;
-  transition: all 0.2s ease;
-}
-
-.nav-menu :deep(.ant-menu-item:hover) {
-  color: var(--accent-primary) !important;
-  background: var(--accent-primary-light);
-}
-
-.nav-menu :deep(.ant-menu-item-selected) {
-  color: var(--accent-primary) !important;
-  background: transparent;
-  font-weight: 600;
-}
-
-.nav-menu :deep(.ant-menu-item-selected::after) {
-  border-bottom: 2px solid var(--accent-primary) !important;
-}
-
-.user-area {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.user-trigger {
-  cursor: pointer;
-  padding: 4px 12px;
-  border-radius: var(--radius-btn);
-  transition: all 0.2s ease;
-}
-
-.user-trigger:hover {
-  background: var(--bg-hover);
-  box-shadow: var(--shadow-hover);
-}
-
-.user-name {
-  font-family: var(--font-sans);
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-}
-
-.user-info :deep(.ant-avatar) {
-  border-radius: 50%;
-  border: 1px solid var(--border-light);
-  transition: all 0.2s ease;
-}
-
-.user-trigger:hover :deep(.ant-avatar) {
-  box-shadow: var(--shadow-hover);
-  border-color: var(--accent-primary);
-}
-</style>
+<style scoped></style>

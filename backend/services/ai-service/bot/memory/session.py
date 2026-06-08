@@ -30,30 +30,16 @@ from llm.async_client import AsyncLLMClient
 from bot.utils.context_utils import rough_tokens
 from .paths import get_session_memory_path
 from .prompts import SESSION_MEMORY_TEMPLATE, build_extraction_prompt
+from utils.config import load_config
 
 # ── Thresholds (scaled-down; mirrors DEFAULT_SESSION_MEMORY_CONFIG) ───────────
 # Production: minimumMessageTokensToInit = 10_000
 #             minimumTokensBetweenUpdate  =  5_000
 #             toolCallsBetweenUpdates     =      3
-MIN_TOKENS_TO_INIT = 300           # start tracking once context reaches this
+COMPACT_CONTEXT_WINDOW = load_config().get_agent().context_max_tokens or 8000
+MIN_TOKENS_TO_INIT = 6000           # 当前上下文窗口时8000start tracking once context reaches this
 MIN_TOKENS_BETWEEN_UPDATES = 150   # extract after this many new tokens
-TOOL_CALLS_BETWEEN_UPDATES = 3     # …or after this many tool calls
-
-
-# ── Token estimation ──────────────────────────────────────────────────────────
-
-def _rough_tokens(messages: list[dict]) -> int:
-    """Rough token estimate: total characters / 4 (no tiktoken dependency)."""
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            total += sum(len(str(item.get("content", ""))) for item in content)
-        for tc in msg.get("tool_calls", []):
-            total += len(str(tc.get("input") or tc.get("function", {}).get("arguments", "")))
-    return total // 4
+TOOL_CALLS_BETWEEN_UPDATES = 5     # …or after this many tool calls
 
 
 def _count_tool_calls_since(messages: list[dict], since_idx: int) -> int:
@@ -112,7 +98,7 @@ class SessionMemory:
         if self._extracting:
             return False  # never overlap
 
-        current = _rough_tokens(messages)
+        current = rough_tokens(messages)
 
         if not self._initialized:
             if current < MIN_TOKENS_TO_INIT:
@@ -143,7 +129,7 @@ class SessionMemory:
             return
         self._extracting = True
         self._extract_msg_idx = len(messages)
-        self._tokens_at_last_extract = _rough_tokens(messages)
+        self._tokens_at_last_extract = rough_tokens(messages)
         self._extract_task = asyncio.create_task(self._extract(list(messages)))
 
     def load(self) -> str:

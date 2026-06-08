@@ -118,13 +118,14 @@ class CodeCheckTool(BaseTool):
             raise asyncio.CancelledError("Operation aborted")
 
         if not file_path.exists():
-            return ToolResult(success=False, message=f"文件不存在: {file_path}")
+            return ToolResult(success=False, message=f"文件不存在: {file_path}",render=f"{self.name} 文件不存在 {file_path.name}")
 
         suffix = file_path.suffix.lower()
         if suffix not in SUPPORTED_SUFFIXES:
             return ToolResult(
                 success=False,
                 message=f"不支持的文件类型 '{suffix}'，当前仅支持: {', '.join(sorted(SUPPORTED_SUFFIXES))}",
+                render=f"{self.name} 不支持的文件类型 '{suffix}"
             )
 
         is_valid, errors = await asyncio.get_event_loop().run_in_executor(
@@ -140,12 +141,12 @@ class CodeCheckTool(BaseTool):
             return ToolResult(
                 success=True,
                 data=f"语法检查通过: {file_path} ({line_count} 行, {len(source)} 字符)",
-                render=f"语法检查通过: {file_path.name}",
+                render=f"语法检查通过: {file_path.name} ({line_count} 行, {len(source)} 字符)",
             )
         else:
             return ToolResult(
                 success=False,
                 data="\n\n".join(errors),
                 message=f"语法错误: {file_path} 存在 {len(errors)} 个语法错误",
-                render=f"语法错误: {file_path.name}",
+                render=f"语法错误: {file_path.name} 存在 {len(errors)} 个语法错误",
             )

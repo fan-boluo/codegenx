@@ -95,3 +95,18 @@ async def get_chat_session_messages(
         authorization=authorization,
         params={"limit": limit},
     )
+
+
+@router.get("/sessions/{app_id}/{session_id}/alive")
+async def check_chat_session_alive(
+    app_id: int,
+    session_id: str,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    login_user: JWTUser = Depends(require_login),
+):
+    proxy = ChatProxy()
+    return await proxy.request_json(
+        method="GET",
+        path=f"/api/ai/sessions/{app_id}/{session_id}/alive",
+        authorization=authorization,
+    )

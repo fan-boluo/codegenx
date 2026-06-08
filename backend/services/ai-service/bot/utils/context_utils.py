@@ -5,7 +5,6 @@ from typing import Any
 
 from shared.constants import get_code_dir
 
-
 def rough_tokens(messages: list[dict]) -> int:
     """Rough token estimate for a message list: total characters ÷ 4.
 

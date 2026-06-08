@@ -703,46 +703,42 @@ class AgentRuntime(LLMRecoveryMixin):
             }
             # 附加结构化 task_data 供前端任务面板消费
             if tool_name in ("task_create", "task_update") and render_raw:
-                try:
-                    task_json = json.loads(render_raw)
-                except (json.JSONDecodeError, TypeError):
-                    task_json = None
-                if task_json:
-                    event.data["task_data"] = task_json
-                    task = task_json.get("task", {})
+                task = tc.get('content') or ""
+                if task:
+                    event.data["task_data"] = task
                     event.data["description"] = task.get("subject", tc.get("name", ""))
 
 
-    def _render_tool_front(self,tc:dict):
-        """返回工具执行结果的人类可读渲染字符串，供前端展示。"""
-        tool_name = tc.get('name')
-        content = tc.get('content', '')
-
-        if tool_name == "read_file":
-            path = tc.get("path", "")
-            filename = path.split("/")[-1] if path else "unknown"
-            return f"文件: {filename}"
-
-        elif tool_name == "write_file":
-            path = tc.get("path", "")
-            filename = path.split("/")[-1] if path else "unknown"
-            return f"文件: {filename}"
-
-        elif tool_name == "task_create":
-            try:
-                task_dict = ast.literal_eval(content)
-                return json.dumps({"action": "create", "task": task_dict}, ensure_ascii=False)
-            except Exception:
-                return ""
-
-        elif tool_name == "task_update":
-            try:
-                task_dict = ast.literal_eval(content)
-                return json.dumps({"action": "update", "task": task_dict}, ensure_ascii=False)
-            except Exception:
-                return ""
-
-        return ""
+    # def _render_tool_front(self,tc:dict):
+    #     """返回工具执行结果的人类可读渲染字符串，供前端展示。"""
+    #     tool_name = tc.get('name')
+    #     content = tc.get('content', '')
+    #
+    #     if tool_name == "read_file":
+    #         path = tc.get("path", "")
+    #         filename = path.split("/")[-1] if path else "unknown"
+    #         return f"文件: {filename}"
+    #
+    #     elif tool_name == "write_file":
+    #         path = tc.get("path", "")
+    #         filename = path.split("/")[-1] if path else "unknown"
+    #         return f"文件: {filename}"
+    #
+    #     elif tool_name == "task_create":
+    #         try:
+    #             task_dict = ast.literal_eval(content)
+    #             return json.dumps({"action": "create", "task": task_dict}, ensure_ascii=False)
+    #         except Exception:
+    #             return ""
+    #
+    #     elif tool_name == "task_update":
+    #         try:
+    #             task_dict = ast.literal_eval(content)
+    #             return json.dumps({"action": "update", "task": task_dict}, ensure_ascii=False)
+    #         except Exception:
+    #             return ""
+    #
+    #     return ""
 
 
 

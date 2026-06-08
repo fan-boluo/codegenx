@@ -284,6 +284,12 @@ async def get_session_messages(
     return messages
 
 
+@app.get("/api/ai/sessions/{app_id}/{session_id}/alive")
+async def check_session_alive(app_id: int, session_id: str):
+    """检查 session 在内存池中是否活跃。"""
+    alive = await agent_service._get_runtime().session_pool.exists(session_id)
+    return {"alive": alive}
+
 
 def _validate_call_context(request: AiServiceGenerateRequest) -> tuple[str, str, str]:
 	trace_id = str(request.trace_id or "").strip()

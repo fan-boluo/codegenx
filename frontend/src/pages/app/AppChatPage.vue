@@ -288,6 +288,11 @@
                     <span class="step-desc">{{ item.step.description }}</span>
                     <span v-if="item.step.detail" class="step-detail">{{ item.step.detail }}</span>
                   </div>
+                  <div v-else-if="item.type === 'tool' && item.toolResult" class="tool-result-inline">
+                    <span class="tool-icon"><CodeOutlined /></span>
+                    <span class="tool-name">{{ item.toolResult.name }}</span>
+                    <span v-if="item.toolResult.detail" class="tool-detail">{{ item.toolResult.detail }}</span>
+                  </div>
                 </template>
               </template>
               <template v-else>
@@ -339,7 +344,7 @@
       </a-alert>
 
       <!-- Task Board -->
-      <div v-if="appId && isGenerating" class="task-board" :class="{ collapsed: taskBoardCollapsed }">
+      <div v-if="appId && tasks.length" class="task-board" :class="{ collapsed: taskBoardCollapsed }">
         <div class="task-board-header" @click="taskBoardCollapsed = !taskBoardCollapsed">
           <span class="task-board-title">
             <CheckSquareOutlined />
@@ -455,6 +460,7 @@ import {
   CloseCircleOutlined,
   CloseOutlined,
   DatabaseOutlined,
+  CodeOutlined,
   DeleteOutlined,
   DownOutlined,
   EditOutlined,
@@ -483,9 +489,10 @@ interface AiStep {
 }
 
 interface ItemEntry {
-  type: 'text' | 'step'
+  type: 'text' | 'step' | 'tool'
   text?: string
   step?: AiStep
+  toolResult?: { name: string; detail: string }
 }
 
 interface TaskInfo {
@@ -1307,6 +1314,64 @@ const toggleSessionHistory = async () => {
   }
 }
 
+/**
+ * 将 API 返回的 JSONL 消息转换为前端 MessageItem[]。
+ * tool 角色消息合并入其前的 assistant 消息 items 中。
+ */
+const convertMessagesFromApi = (msgs: any[]): MessageItem[] => {
+  const merged: MessageItem[] = msgs
+    .filter((m: any) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
+    .reduce((acc: MessageItem[], m: any) => {
+      if (m.role === 'user') {
+        acc.push({ type: 'user', content: m.content || '', createTime: m.create_time })
+      } else if (m.role === 'tool') {
+        const lastAi = [...acc].reverse().find(it => it.type === 'ai')
+        if (lastAi) {
+          if (!lastAi.items) lastAi.items = []
+          const toolName = m.name || 'tool'
+          const shortContent = (m.content || '').length > 100
+            ? (m.content || '').substring(0, 100) + '...'
+            : (m.content || '')
+          lastAi.items.push({
+            type: 'tool',
+            toolResult: { name: toolName, detail: shortContent },
+          })
+        }
+      } else if (m.role === 'assistant') {
+        const item: MessageItem = { type: 'ai', content: m.content || '', createTime: m.create_time }
+        if (m.tool_calls && Array.isArray(m.tool_calls)) {
+          item.items = []
+          for (const tc of m.tool_calls) {
+            const fn = tc.function || tc
+            item.items.push({
+              type: 'step',
+              step: {
+                eventType: 'ToolExecutionStart',
+                description: fn.name || 'unknown',
+                detail: '',
+                state: 'running',
+                timestamp: new Date(m.create_time || Date.now()).getTime(),
+              },
+            })
+          }
+        }
+        acc.push(item)
+      }
+      return acc
+    }, [])
+  for (let i = 1; i < merged.length; i++) {
+    const msg = merged[i]
+    if (msg.type === 'ai' && msg.items) {
+      for (const item of msg.items) {
+        if (item.type === 'step' && item.step) {
+          item.step.state = 'completed'
+        }
+      }
+    }
+  }
+  return merged
+}
+
 const loadSession = async (sid: string) => {
   if (!appId.value) return
   loadingMessages.value = true
@@ -1319,13 +1384,7 @@ const loadSession = async (sid: string) => {
     if (!res.ok) throw new Error('load failed')
     const msgs: any[] = await res.json()
 
-    // Convert JSONL messages to frontend MessageItem format
-    messages.value = msgs.filter((m: any) => m.role === 'user' || m.role === 'assistant').map((m: any) => {
-      if (m.role === 'user') {
-        return { type: 'user', content: m.content || '', createTime: m.create_time }
-      }
-      return { type: 'ai', content: m.content || '', createTime: m.create_time }
-    })
+    messages.value = convertMessagesFromApi(msgs)
 
     // Update localStorage with loaded session id
     const storageKey = getAppSessionStorageKey(appId.value)
@@ -1337,6 +1396,40 @@ const loadSession = async (sid: string) => {
     message.error('加载会话消息失败')
   } finally {
     loadingMessages.value = false
+  }
+}
+
+const loadLatestSessionMessages = async () => {
+  if (!appId.value) return
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    // 获取最近的会话列表
+    const sessionsRes = await fetch(`${baseURL}/api/chat/sessions/${appId.value}?limit=1`, {
+      headers: { ...getAuthHeaders() },
+    })
+    if (!sessionsRes.ok) return
+    const sessions: SessionListItem[] = await sessionsRes.json()
+    if (!sessions.length) return
+    const latestSessionId = sessions[0].session_id
+    // 有历史会话则加载消息
+    await loadSession(latestSessionId)
+  } catch (e) {
+    console.error('加载最近会话失败', e)
+  }
+}
+
+const checkSessionAlive = async (sid: string): Promise<boolean> => {
+  if (!appId.value) return false
+  try {
+    const baseURL = request.defaults.baseURL || API_BASE_URL
+    const res = await fetch(`${baseURL}/api/chat/sessions/${appId.value}/${sid}/alive`, {
+      headers: { ...getAuthHeaders() },
+    })
+    if (!res.ok) return false
+    const data = await res.json()
+    return data.alive === true
+  } catch {
+    return false
   }
 }
 
@@ -1378,7 +1471,8 @@ const finishStream = () => {
 }
 
 const refreshAfterGeneration = async () => {
-  if (sidePanelTab.value === 'files') {
+  if (hadFileChangeInGeneration.value) {
+    hadFileChangeInGeneration.value = false
     await loadSourceTree()
   }
 }
@@ -1456,6 +1550,10 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
         }
       }
     }
+    const FILE_MODIFY_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'bash', 'subagent'])
+    if (isSuccess && FILE_MODIFY_TOOLS.has(toolName)) {
+      hadFileChangeInGeneration.value = true
+    }
     updateLastRunningToolStep(detail, isSuccess ? 'completed' : 'failed', toolId)
     return
   }
@@ -1527,6 +1625,9 @@ const tasks = ref<TaskInfo[]>([])
 const taskBoardCollapsed = ref(false)
 const visibleTasks = computed(() => tasks.value.filter(t => t.status !== 'deleted'))
 
+// Track file-modifying tools for intelligent tree refresh
+const hadFileChangeInGeneration = ref(false)
+
 const clearActiveGeneration = (requestId?: string) => {
   if (requestId && activeGenerationRequestId.value && activeGenerationRequestId.value !== requestId) return
   activeGenerationRequestId.value = ''
@@ -1552,6 +1653,20 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
       if (messages.value.length >= 2) { /* generated */ }
       if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && autoGenerateInitialMessage) {
         await sendInitialMessage(appInfo.value.initPrompt)
+      } else if (messages.value.length === 0) {
+        // 尝试恢复本地存储的 session
+        const storageKey = getAppSessionStorageKey(id)
+        const storedSid = localStorage.getItem(storageKey)?.trim()
+        if (storedSid && await checkSessionAlive(storedSid)) {
+          // session 还活着 → 加载历史，接着聊
+          await loadSession(storedSid)
+        } else {
+          // session 已过期或不存在 → 清理旧ID，新session
+          if (storedSid) localStorage.removeItem(storageKey)
+          const newSid = createClientId()
+          localStorage.setItem(storageKey, newSid)
+          sessionId.value = newSid
+        }
       }
       await loadSourceTree()
       await loadDbTables()
@@ -2394,6 +2509,34 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 
+/* Tool result inline in history */
+.tool-result-inline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  margin: 2px 0;
+  border-radius: 4px;
+  background: var(--bg-page);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.tool-result-inline .tool-icon {
+  font-size: 11px;
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+.tool-result-inline .tool-name {
+  font-weight: 500;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.tool-result-inline .tool-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ====== Task Board ====== */
 .task-board {
   margin: 0 12px 8px;
@@ -2439,14 +2582,14 @@ onBeforeUnmount(() => {
 .task-board-body {
   padding: 4px 8px;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 4px;
-  max-height: 120px;
+  max-height: 200px;
   overflow-y: auto;
 }
 
 .task-chip {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
   padding: 2px 8px;

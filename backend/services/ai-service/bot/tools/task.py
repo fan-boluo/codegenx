@@ -72,7 +72,7 @@ class TaskCreateTool(BaseTool):
             )
         except Exception as exc:
             log.error("[task_create] {}", exc)
-            return ToolResult(success=False, message=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}",render=f"{self.name} 任务创建失败")
 
 
 class TaskUpdateTool(BaseTool):
@@ -132,7 +132,7 @@ class TaskUpdateTool(BaseTool):
             )
         except Exception as exc:
             log.error("[task_update] {}", exc)
-            return ToolResult(success=False, message=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}",render=f"{self.name} 任务更新失败")
 
 
 class TaskGetTool(BaseTool):
@@ -172,7 +172,7 @@ class TaskGetTool(BaseTool):
             return ToolResult(success=True, data=str(task), render=f"获取任务: {task.get('subject', '')}")
         except Exception as exc:
             log.error("[task_get] {}", exc)
-            return ToolResult(success=False, message=f"Error: {exc}")
+            return ToolResult(success=False, message=f"Error: {exc}",render=f"{self.name} 任务获取失败")
 
 
 class TaskListTool(BaseTool):

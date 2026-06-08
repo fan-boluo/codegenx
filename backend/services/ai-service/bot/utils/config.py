@@ -22,7 +22,7 @@ class AgentConfig(Base):
     name: str = ""
     defaults: bool = False
     workspace: str = "~/.bot/workspace"
-    model: str = "dashscope-qwen/qwen3.6-plus"
+    model: str = "dashscope-qwen/qwen3.7-plus"
     provider: str = (
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     )
