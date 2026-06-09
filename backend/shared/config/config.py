@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     nacos_namespace:str = "public"
     nacos_schema:str= "http"
     nacos_heartbeat_interval_seconds: int = 5
+    nacos_user:str=""
+    nacos_password:str=""
 
     qdrant_url:str = "localhost"
     qdrant_port: int = 6333
@@ -87,9 +89,10 @@ class Settings(BaseSettings):
     jwt_secret:str = "rainbow"
     @property
     def mysql_dsn(self) -> str:
+        from urllib.parse import quote_plus
         return (
             "mysql+aiomysql://"
-            f"{self.mysql_user}:{self.mysql_password}"
+            f"{self.mysql_user}:{quote_plus(self.mysql_password)}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}"
             f"?charset={self.mysql_charset}"
         )

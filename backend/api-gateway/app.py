@@ -8,6 +8,8 @@ import traceback
 import uuid
 from pathlib import Path
 
+from core.dynamic_router import router as dynamic_router
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -18,13 +20,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from api.health import router as health_router
-from api.user import router as user_router
-from api.app import router as app_router
-from api.chat import router as chat_router
-from api.chat_history import router as chat_history_router
-from api.stats import router as stats_router
-from api.blacklist import router as blacklist_router
+# from api.health import router as health_router
+# from api.user import router as user_router
+# from api.app import router as app_router
+# from api.chat import router as chat_router
+# from api.chat_history import router as chat_history_router
+# from api.stats import router as stats_router
+# from api.blacklist import router as blacklist_router
+
 from shared.utils.result_utils import error
 from shared.exceptions.error_code import ErrorCode
 from shared.config.log_config import log
@@ -49,9 +52,16 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
         response.headers["X-Trace-Id"] = request_id
         return response
 
+async def on_startup():
+    """ 应用启动时自动加载路由 """
+    log.info("正在加载路由配置")
+    from core.dynamic_router import RouteLoader
+    RouteLoader.load_routes()
+    log.info("路由配置加载完成")
+
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name)
+    app = FastAPI(title=settings.app_name,on_startup=[on_startup])
     # fastapi的中间件是倒序执行的，先添加的后执行，这个黑名单拦截是最后执行的
     app.add_middleware(IpBlacklistMiddleware)
     app.add_middleware(TraceIdMiddleware)
@@ -122,13 +132,14 @@ def create_app() -> FastAPI:
             content=error(ErrorCode.SYSTEM_ERROR.get_code(), "系统错误").model_dump(by_alias=True),
         )
 
-    app.include_router(user_router, prefix=settings.app_base_path)
-    app.include_router(app_router, prefix=settings.app_base_path)
-    app.include_router(chat_router, prefix=settings.app_base_path)
-    app.include_router(chat_history_router, prefix=settings.app_base_path)
-    app.include_router(health_router, prefix=settings.app_base_path)
-    app.include_router(stats_router, prefix=settings.app_base_path)
-    app.include_router(blacklist_router, prefix=settings.app_base_path)
+    # app.include_router(user_router, prefix=settings.app_base_path)
+    # app.include_router(app_router, prefix=settings.app_base_path)
+    # app.include_router(chat_router, prefix=settings.app_base_path)
+    # app.include_router(chat_history_router, prefix=settings.app_base_path)
+    # app.include_router(health_router, prefix=settings.app_base_path)
+    # app.include_router(stats_router, prefix=settings.app_base_path)
+    # app.include_router(blacklist_router, prefix=settings.app_base_path)
+    app.include_router(dynamic_router, prefix=settings.app_base_path)
 
     return app
 

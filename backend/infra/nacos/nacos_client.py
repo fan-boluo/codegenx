@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 from shared.config.config import get_settings
 from shared.config.log_config import log
@@ -8,10 +10,40 @@ class NacosClient:
         self.server_addr = settings.nacos_server_addr
         self.namespace_id = settings.nacos_namespace
         self.schema = settings.nacos_schema
+        self.user = settings.nacos_user
+        self.password = settings.nacos_password
+        self._token = None
+        self._token_expiry = None
 
     @property
     def base_url(self):
         return f"{self.schema}://{self.server_addr}"
+
+    async def _login(self) -> str:
+        """登录获取 JWT Token"""
+        url = f"{self.base_url}/nacos/v1/auth/users/login"
+        params = {"username": self.user, "password": self.password}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, data=params)
+            r.raise_for_status()
+            data = r.json()
+            print(data)
+            self._token = data.get("accessToken")
+            self._token_expiry = data.get("tokenTtl")
+            log.info(f"Nacos 登录成功，Token 有效期至: {self._token_expiry}")
+            return self._token
+
+    async def _ensure_token(self):
+        """确保 Token 存在且未过期"""
+        if not self._token:
+            await self._login()
+        # 简单检查：如果 Token 过期，重新登录
+        # 注意：这里可以添加更完善的过期检查逻辑
+
+    async def _get_headers(self):
+        """获取请求头，包含 Bearer Token"""
+        await self._ensure_token()
+        return {"Authorization": f"Bearer {self._token}"}
 
     async def register_instance(self, service_name: str, ip: str, port: int):
         url = f"{self.base_url}/nacos/v1/ns/instance"
@@ -24,8 +56,9 @@ class NacosClient:
             "enable": "true",
             "weight": "1.0",
         }
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, params=params)
+        headers = await self._get_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, params=params,headers=headers)
             r.raise_for_status()
             print(f"✅ Nacos 注册响应: {r.text}")
         log.info(f"Registered instance: {service_name},ip:{ip},port:{port}")
@@ -39,16 +72,18 @@ class NacosClient:
             "port": str(port),
             "namespaceId": self.namespace_id,
         }
-        async with httpx.AsyncClient() as client:
-            r = await client.delete(url, params=params)
+        headers = await self._get_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, params=params, headers=headers)
             r.raise_for_status()
         log.info(f"Deregistered instance: {service_name}")
 
     async def _get_instances(self, service_name: str):
         url = f"{self.base_url}/nacos/v1/ns/instance/list"
         params = {"serviceName": service_name, "namespaceId": self.namespace_id}
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url, params=params)
+        headers = await self._get_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, params=params, headers=headers)
             r.raise_for_status()
             data = r.json()
             return data.get("hosts", [])
@@ -88,25 +123,13 @@ class NacosClient:
             "namespaceId": self.namespace_id,
             "beat": '{"ip":"%s","port":%s,"serviceName":"%s"}' % (ip, port, service_name)
         }
-        async with httpx.AsyncClient() as client:
+        headers = await self._get_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, params=params, headers=headers)
             await client.put(url, params=params)
 
 nacos_client = NacosClient()
-# GROUP = "DEFAULT_GROUP"
-# def keep_heartbeat(service_name, ip, port, interval=5):
-#     """持续心跳（必须）"""
-#     while True:
-#         try:
-#             client.send_heartbeat(
-#                 service_name=service_name,
-#                 ip=ip,
-#                 port=port,
-#                 group_name=GROUP
-#             )
-#         except:
-#             pass
-#         time.sleep(interval)
 
-# def start_heartbeat(service_name, ip, port):
-#     t = threading.Thread(target=keep_heartbeat, args=(service_name, ip, port), daemon=True)
-#     t.start()
+
+if __name__ == '__main__':
+    asyncio.run(nacos_client.register_instance("test","localhost","8080"))

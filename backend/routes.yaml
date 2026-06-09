@@ -1,0 +1,78 @@
+# 服务发现配置
+discovery:
+  nacos_server_addr: "localhost"
+  nacos_namespace: "public"
+  cache_ttl_seconds: 3
+
+# 全局中间件配置
+middleware:
+  jwt_auth: true
+  ip_blacklist: true
+  global_rate_limit:
+    enabled: true
+    max_requests: 100
+    window_seconds: 60
+
+# 路由规则
+routes:
+  # 用户服务 (gRPC)
+  - path: /user
+    service_name: user-service
+    protocol: grpc
+    target_port: 50051
+    auth_required: true          # 默认需要认证
+    auth_whitelist:              # 白名单：这些方法不需要认证
+      - login
+      - register
+    description: "用户服务 gRPC 接口"
+
+  # 应用服务 (HTTP)
+  - path: /app
+    service_name: app-service
+    protocol: http
+    http_port: 8004
+    auth_required: true
+    description: "应用服务 HTTP 接口"
+    rate_limit:
+      max_requests: 100
+      window_seconds: 60
+
+  # AI 服务 (HTTP)
+  - path: /ai
+    service_name: ai-service
+    protocol: http
+    http_port: 8002
+    auth_required: true
+    description: "AI 服务 HTTP 接口"
+    rate_limit:
+      max_requests: 50
+      window_seconds: 60
+
+  # 监控服务 (HTTP)
+  - path: /monitor
+    service_name: ai-service
+    protocol: http
+    http_port: 8002
+    auth_required: true
+    description: "监控服务 HTTP 接口"
+    rate_limit:
+      max_requests: 30
+      window_seconds: 60
+
+  # 统计数据（特殊处理）
+  - path: /stats
+    service_name: ai-service
+    protocol: http
+    http_port: 8002
+    auth_required: true
+    description: "统计数据接口"
+    rate_limit:
+      max_requests: 30
+      window_seconds: 60
+
+  # 健康检查（无需转发）
+  - path: /health
+    service_name: internal
+    protocol: internal
+    auth_required: false
+    description: "网关健康检查"
