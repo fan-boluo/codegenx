@@ -14,7 +14,7 @@
     </div>
     <div class="app-info">
       <div class="app-info-left">
-        <a-avatar :src="app.user?.userAvatar" :size="36">
+        <a-avatar :src="app.user?.userAvatar || undefined" :size="36">
           {{ app.user?.userName?.charAt(0) || 'U' }}
         </a-avatar>
       </div>

@@ -268,7 +268,9 @@
               {{ messageItem.content }}
             </div>
             <div class="message-avatar">
-              <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="28" />
+              <a-avatar :src="loginUserStore.loginUser.userAvatar || undefined" :size="28">
+                {{ loginUserStore.loginUser.userName?.charAt(0) || 'U' }}
+              </a-avatar>
             </div>
           </div>
           <div v-else class="ai-message">
@@ -1305,7 +1307,8 @@ const toggleSessionHistory = async () => {
       headers: { ...getAuthHeaders() },
     })
     if (res.ok) {
-      sessionList.value = await res.json()
+      const result = await res.json()
+        sessionList.value = result.data || []
     }
   } catch (e) {
     console.error('获取会话历史失败', e)
@@ -1382,7 +1385,8 @@ const loadSession = async (sid: string) => {
       headers: { ...getAuthHeaders() },
     })
     if (!res.ok) throw new Error('load failed')
-    const msgs: any[] = await res.json()
+    const result = await res.json()
+    const msgs: any[] = result.data || []
 
     messages.value = convertMessagesFromApi(msgs)
 
@@ -1408,7 +1412,8 @@ const loadLatestSessionMessages = async () => {
       headers: { ...getAuthHeaders() },
     })
     if (!sessionsRes.ok) return
-    const sessions: SessionListItem[] = await sessionsRes.json()
+    const result = await sessionsRes.json()
+    const sessions: SessionListItem[] = result.data || []
     if (!sessions.length) return
     const latestSessionId = sessions[0].session_id
     // 有历史会话则加载消息
@@ -1426,8 +1431,8 @@ const checkSessionAlive = async (sid: string): Promise<boolean> => {
       headers: { ...getAuthHeaders() },
     })
     if (!res.ok) return false
-    const data = await res.json()
-    return data.alive === true
+    const result = await res.json()
+    return result.data?.alive === true
   } catch {
     return false
   }

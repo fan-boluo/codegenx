@@ -48,23 +48,37 @@ routes:
       max_requests: 50
       window_seconds: 60
 
-  # 监控服务 (HTTP)
+  # 聊天 (HTTP) — 网关显式路由处理 /chat/gen/code 和 /chat/stop，其它透传 ai-service
+  - path: /chat
+    service_name: ai-service
+    protocol: http
+    http_port: 8002
+    auth_required: true
+    strip_prefix: /api/chat
+    target_prefix: /api/ai
+    description: "聊天会话 HTTP 接口"
+
+  # 监控服务 (HTTP) — 路径重写: /api/monitor → /internal/monitor
   - path: /monitor
     service_name: ai-service
     protocol: http
     http_port: 8002
     auth_required: true
+    strip_prefix: /api/monitor
+    target_prefix: /internal/monitor
     description: "监控服务 HTTP 接口"
     rate_limit:
       max_requests: 30
       window_seconds: 60
 
-  # 统计数据（特殊处理）
+  # 统计数据（特殊处理）— 路径重写: /api/stats/admin → /internal
   - path: /stats
     service_name: ai-service
     protocol: http
     http_port: 8002
     auth_required: true
+    strip_prefix: /api/stats/admin
+    target_prefix: /internal
     description: "统计数据接口"
     rate_limit:
       max_requests: 30

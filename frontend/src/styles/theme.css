@@ -388,6 +388,16 @@ html, body {
   background: var(--text-muted);
 }
 
+/* Avatar fallback — when no image, show gradient initials */
+.ant-avatar > img[src=""],
+.ant-avatar:not(:has(img)) {
+  font-weight: 600;
+}
+.ant-avatar:not(:has(img)) {
+  background: linear-gradient(135deg, var(--accent-primary), #6366F1) !important;
+  color: #fff;
+}
+
 /* Keyframes */
 @keyframes fade-in-up {
   from { opacity: 0; transform: translateY(12px); }

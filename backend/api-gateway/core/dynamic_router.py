@@ -6,8 +6,11 @@ import yaml
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from shared.utils.result_utils import success
+
 from core.constants import RATE_LIMIT_API_PREFIX
 from middleware.auth import require_login, JWTUser
+from middleware.jwt_auth import JWTBearer
 from services.discovery_adapter import discovery_adapter
 from services.rate_limit_service import RateLimitService
 from shared.config.config import get_settings
@@ -36,6 +39,8 @@ class RouteConfig:
         self.auth_whitelist = config.get("auth_whitelist", [])
         self.rate_limit = config.get("rate_limit", {})
         self.description = config.get("description", "")
+        self.target_prefix = config.get("target_prefix", "")
+        self.strip_prefix = config.get("strip_prefix", "")
 
     def get_service_base_url(self) -> str:
         """获取服务基础URL"""
@@ -145,6 +150,7 @@ class DynamicRouter:
         self,
         request: Request,
         route_config: RouteConfig,
+        matched_path: str = "",
         grpc_method_name: Optional[str] = None
     ) -> JSONResponse | StreamingResponse:
         """转发请求到目标服务"""
@@ -159,7 +165,7 @@ class DynamicRouter:
         if route_config.protocol == "grpc":
             return await self._forward_grpc(request, route_config, grpc_method_name)
         elif route_config.protocol == "http":
-            return await self._forward_http(request, route_config)
+            return await self._forward_http(request, route_config, matched_path)
         else:
             raise BusinessException(
                 ErrorCode.SYSTEM_ERROR,
@@ -169,17 +175,24 @@ class DynamicRouter:
     async def _forward_http(
         self,
         request: Request,
-        route_config: RouteConfig
+        route_config: RouteConfig,
+        matched_path: str = "",
     ) -> JSONResponse | StreamingResponse:
         """HTTP 请求转发 - 调用 unified_proxy"""
-        # 移除 path 前缀，构建下游路径
+        # 默认用原始路径转发，仅当配置了 strip_prefix 时做路径重写
         path = request.url.path
-        if route_config.path and path.startswith(route_config.path):
-            upstream_path = path[len(route_config.path):]
+        strip_prefix = getattr(route_config, "strip_prefix", "") or ""
+        target_prefix = getattr(route_config, "target_prefix", "")
+
+        if strip_prefix and path.startswith(strip_prefix):
+            upstream_path = path[len(strip_prefix):]
             if not upstream_path.startswith("/"):
                 upstream_path = "/" + upstream_path
         else:
             upstream_path = path
+
+        if target_prefix:
+            upstream_path = target_prefix + upstream_path
 
         # 构建请求头
         headers = {}
@@ -193,6 +206,16 @@ class DynamicRouter:
 
         # 获取请求体
         body = await request.body()
+        content_type = request.headers.get("Content-Type", "")
+
+        # 解析 JSON 请求体
+        json_body = None
+        if body and "application/json" in content_type:
+            try:
+                import json
+                json_body = json.loads(body.decode("utf-8"))
+            except Exception:
+                json_body = None
 
         # 调用 unified_proxy 进行转发
         try:
@@ -202,7 +225,7 @@ class DynamicRouter:
                 method=request.method,
                 headers=headers,
                 params=dict(request.query_params),
-                json_body=None,  # 使用 raw body
+                json_body=json_body,
                 trace_id=trace_id,
                 timeout=120.0
             )
@@ -284,7 +307,7 @@ class DynamicRouter:
             )
 
             return JSONResponse(
-                content=result,
+                content=success(result).model_dump(by_alias=True),
                 status_code=200
             )
         except Exception as exc:
@@ -308,32 +331,14 @@ router = APIRouter()
 async def dynamic_route_forward(
     request: Request,
     full_path: str,
-    jwt_user: JWTUser | None = Depends(lambda: None, use_cache=False)  # 改为可选依赖
+    jwt_user: JWTUser | None = Depends(JWTBearer(auto_error=False)),
 ):
-    """
-    动态路由转发入口
-    根据配置自动将请求转发到对应的服务
-    """
-    print("=== 路由匹配调试 ===")
-    print("full_path:", full_path)
-    print("request.url.path:", request.url.path)
-    # 获取设置
-    settings = get_settings()
-    print("app_base_path:", settings.app_base_path)
-
     # 健康检查路由
     if full_path == "/health" or full_path == "/health/":
-        from shared.utils.result_utils import success
-        from shared.schema.common import BaseResponse
         return success("ok")
 
-    # 获取路由配置（使用完整路径进行匹配）
+    # 获取路由配置
     route_config = RouteLoader.get_route(f"{full_path}")
-    print("route_config found:", route_config)
-    if route_config:
-        print("route_config.path:", route_config.path)
-        print("route_config.service_name:", route_config.service_name)
-        print("route_config.protocol:", route_config.protocol)
 
     if route_config is None:
         log.warning("未找到路由配置 path={}", full_path)
@@ -348,25 +353,16 @@ async def dynamic_route_forward(
         # 移除路由前缀，获取方法名
         path = full_path
 
-        # 构建完整的路由路径: /user（注意: full_path 已经去掉了 /api 前缀）
+        # 构建完整的路由路径
         full_route_path = route_config.path
-        print("=== 路径匹配调试 ===")
-        print("path:", path)
-        print("full_route_path:", full_route_path)
-        print("route_config.path:", route_config.path)
-        print("path.startswith(full_route_path):", path.startswith(full_route_path))
-        # 检查路径是否匹配
         if path.startswith(full_route_path):
-            # 移除完整路由路径，获取方法名
             upstream_path = path[len(full_route_path):]
             if upstream_path.startswith("/"):
                 upstream_path = upstream_path[1:]
             method_name = upstream_path.strip("/")
         else:
-            # 路径不匹配，记录日志
             log.warning("路径不匹配 path={} full_route_path={}", path, full_route_path)
             method_name = None
-    print("method_name", method_name)
 
     # 检查认证要求
     # 1. 如果路由配置 auth_required=false，跳过认证
@@ -383,7 +379,7 @@ async def dynamic_route_forward(
 
     # 转发请求
     dynamic_router = DynamicRouter()
-    return await dynamic_router.forward_request(request, route_config, method_name)
+    return await dynamic_router.forward_request(request, route_config, full_path, method_name)
 
 
 @router.get("/routes")

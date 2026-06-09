@@ -94,20 +94,6 @@ async def add_app(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/api/app/deploy", response_model=BaseResponse[dict])
-async def deploy_app(
-    request: AppDeployRequest,
-    current_user: JWTUser = Depends(require_login),
-    db: AsyncSession = Depends(get_db_session),
-) -> BaseResponse[dict]:
-    try:
-        result = await AppService(db).deploy_app(request, current_user)
-        return success(result)
-    except Exception as exc:
-        log.exception("deploy app failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
 @app.delete("/api/app", response_model=BaseResponse[bool])
 async def delete_app(
     app_id: int = Query(alias="appId"),
@@ -417,26 +403,6 @@ async def run_app_code_script(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.get("/api/static/{deploy_key}")
-@app.get("/api/static/{deploy_key}/{resource_path:path}")
-async def serve_static_resource(deploy_key: str, resource_path: str = ""):
-    try:
-        file_path, media_type = static_resource_service.resolve_resource(deploy_key, resource_path)
-        return FileResponse(path=str(file_path), media_type=media_type)
-    except Exception as exc:
-        log.exception("serve static resource failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.get("/api/preview/{app_id}")
-@app.get("/api/preview/{app_id}/{resource_path:path}")
-async def serve_preview_resource(app_id: int, resource_path: str = ""):
-    try:
-        file_path, media_type = static_resource_service.resolve_preview_resource(app_id, resource_path)
-        return FileResponse(path=str(file_path), media_type=media_type)
-    except Exception as exc:
-        log.exception("serve preview resource failed appId={} resourcePath={}", app_id, resource_path)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/app/db/tables/{app_id}", response_model=BaseResponse[list])

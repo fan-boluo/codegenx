@@ -95,38 +95,6 @@ async def download_app_code(
     )
 
 
-@router.get("/static/{deploy_key}")
-@router.get("/static/{deploy_key}/{resource_path:path}")
-async def serve_static_resource(deploy_key: str, resource_path: str = ""):
-    proxy = AppProxy()
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        upstream_path = f"/api/static/{deploy_key}/{resource_path}" if resource_path else f"/api/static/{deploy_key}"
-        upstream_url = await proxy.build_url(upstream_path)
-        response = await client.get(url=upstream_url)
-
-    return Response(
-        content=response.content,
-        status_code=response.status_code,
-        media_type=response.headers.get("content-type", "application/octet-stream"),
-    )
-
-
-@router.get("/preview/{app_id}")
-@router.get("/preview/{app_id}/{resource_path:path}")
-async def serve_preview_resource(app_id: int, resource_path: str = ""):
-    proxy = AppProxy()
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        upstream_path = f"/api/preview/{app_id}/{resource_path}" if resource_path else f"/api/preview/{app_id}"
-        upstream_url = await proxy.build_url(upstream_path)
-        response = await client.get(url=upstream_url)
-
-    return Response(
-        content=response.content,
-        status_code=response.status_code,
-        media_type=response.headers.get("content-type", "application/octet-stream"),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Catch-all passthrough
 # Any other /api/app/... request is forwarded to app-service as-is.

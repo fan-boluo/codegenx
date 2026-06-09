@@ -81,7 +81,7 @@ class UserService:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "账号重复")
         user = User(
             user_account=user_account,
-            user_password=user_password,
+            user_password=encrypt_password(user_password),
             user_name=user_name or DEFAULT_USER_NAME,
             user_avatar=user_avatar,
             user_profile=user_profile,

@@ -1,16 +1,12 @@
 <template>
   <div class="global-header">
     <div class="header-left">
-      <a
-        class="header-logo"
-        href="/"
-        @click.prevent="$router.push('/')"
-      >
+      <a class="header-logo" href="/" @click.prevent="$router.push('/')">
         <img src="../../public/logo.png" alt="logo" class="logo-img" />
-        <span class="logo-text">CodeGenX</span>
+        <span class="logo-text">数据分析平台</span>
       </a>
       <a-menu
-        v-if="menuItems.length"
+        v-if="loginUserStore.loginUser.id && menuItems.length"
         v-model:selectedKeys="selectedKeys"
         mode="horizontal"
         :items="menuItems"
@@ -18,11 +14,13 @@
         class="header-menu"
       />
     </div>
-    <div class="header-right">
-      <div v-if="loginUserStore.loginUser.id" class="user-info">
+    <div v-if="loginUserStore.loginUser.id" class="header-right">
+      <div class="user-info">
         <a-dropdown>
           <div class="user-dropdown-trigger">
-            <a-avatar :src="loginUserStore.loginUser.userAvatar" :size="28" />
+            <a-avatar :src="loginUserStore.loginUser.userAvatar || undefined" :size="28">
+              {{ loginUserStore.loginUser.userName?.charAt(0) || 'U' }}
+            </a-avatar>
             <span class="user-name">{{ loginUserStore.loginUser.userName }}</span>
           </div>
           <template #overlay>
@@ -35,7 +33,6 @@
           </template>
         </a-dropdown>
       </div>
-      <a-button v-else type="primary" href="/user/login" size="small">登录</a-button>
     </div>
   </div>
 </template>
@@ -68,7 +65,7 @@ const originItems: MenuProps['items'] = [
     title: '首页',
   },
   {
-    key: '/projects',
+    key: '/admin/appManage',
     icon: () => h(AppstoreOutlined),
     label: '项目',
     title: '项目',
@@ -89,7 +86,7 @@ const originItems: MenuProps['items'] = [
 
 const filterMenus = (items: MenuProps['items']): MenuProps['items'] => {
   if (!items) return []
-  return items.filter(item => {
+  return items.filter((item) => {
     if (!item) return false
     const key = 'key' in item ? (item as any).key : ''
     if (key.startsWith('/admin')) {
@@ -141,4 +138,69 @@ const doLogout = async () => {
 }
 </script>
 
-<style scoped></style>
+<style scoped>
+.global-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+  padding: 0 24px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+
+.header-logo {
+  display: flex;
+  align-items: center;
+  margin-right: 40px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.logo-img {
+  height: 32px;
+  width: 32px;
+  margin-right: 8px;
+}
+
+.logo-text {
+  font-size: 23px;
+  font-weight: 600;
+  color: #1677ff;
+}
+
+.header-menu {
+  flex: 1;
+  border-bottom: none;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.user-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-name {
+  margin-left: 8px;
+  font-size: 14px;
+  color: #333;
+}
+</style>

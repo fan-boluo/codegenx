@@ -96,6 +96,33 @@ const handleSubmit = async (values: RegisterFormState) => {
   justify-content: center;
   min-height: calc(100vh - 64px - 100px);
   padding: 24px;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #f0f5ff 0%, #e8f0fe 30%, #f8fafc 60%, #eff6ff 100%);
+}
+
+#userRegisterPage::before {
+  content: '';
+  position: absolute;
+  top: -180px;
+  right: -120px;
+  width: 500px;
+  height: 500px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+#userRegisterPage::after {
+  content: '';
+  position: absolute;
+  bottom: -120px;
+  left: -80px;
+  width: 400px;
+  height: 400px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(99,102,241,0.06) 0%, transparent 70%);
+  pointer-events: none;
 }
 
 .register-card {
