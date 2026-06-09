@@ -12,7 +12,9 @@ from shared.exceptions.error_code import ErrorCode
 from shared.schema.service_invocation import ServiceInvocationError
 
 settings = get_settings()
-
+def camel_to_snake(data: dict) -> dict:
+    import re
+    return {re.sub(r'(?<!^)(?=[A-Z])', '_', k).lower(): v for k, v in data.items()}
 
 class UnifiedProxy:
     """统一代理类，处理 HTTP 和 gRPC 请求转发"""
@@ -141,6 +143,9 @@ class UnifiedProxy:
         # 调用对应的方法
         if hasattr(client, method_name):
             method = getattr(client, method_name)
+            log.debug("原始参数：{}", request_data)
+            request_data = camel_to_snake(request_data)
+            log.debug("转换后参数：{}", request_data)
             return await method(**request_data)
         else:
             raise BusinessException(
