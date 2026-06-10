@@ -21,7 +21,6 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.user import router as user_router
-from api.chat import router as chat_router
 from api.app import router as app_router
 from api.blacklist import router as blacklist_router
 from api.health import router as health_router
@@ -132,7 +131,6 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router, prefix=settings.app_base_path)
     app.include_router(user_router, prefix=settings.app_base_path)
-    app.include_router(chat_router, prefix=settings.app_base_path)
     app.include_router(app_router, prefix=settings.app_base_path)
     app.include_router(blacklist_router, prefix=settings.app_base_path)
     # 动态路由兜底 — 未命中以上显式路由的请求才会走这里

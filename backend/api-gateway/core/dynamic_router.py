@@ -117,6 +117,33 @@ class RouteLoader:
 RouteLoader.load_routes()
 
 
+# URL 路径 → gRPC 方法名的已知映射（无法通过简单规则推导的）
+_GRPC_METHOD_ALIASES: dict[str, str] = {
+    "list_page": "list_users_page",
+}
+
+
+def _url_path_to_grpc_method(url_path: str) -> str:
+    """将 REST 风格 URL 路径转为 gRPC 方法名（snake_case）。
+
+    /list/page/vo  → list_users_page
+    /add           → add_user
+    /get/vo        → get_user
+    """
+    # 替换 / 为 _，去掉首尾下划线
+    method = url_path.strip("/").replace("/", "_").strip("_")
+    # 去掉末尾 _vo 后缀
+    if method.endswith("_vo"):
+        method = method[:-3]
+    # 已知别名
+    if method in _GRPC_METHOD_ALIASES:
+        return _GRPC_METHOD_ALIASES[method]
+    # 单段路径自动追加 _user
+    if "_" not in method:
+        method = f"{method}_user"
+    return method
+
+
 class DynamicRouter:
     """动态路由转发器"""
 
@@ -276,6 +303,9 @@ class DynamicRouter:
 
             # 解析方法名（假设路径格式为 /{methodName}）
             method_name = upstream_path.strip("/")
+
+        # URL 路径 → gRPC 方法名转换: 把 /a/b/c 转为 snake_case
+        method_name = _url_path_to_grpc_method(method_name)
 
         if not method_name:
             raise BusinessException(

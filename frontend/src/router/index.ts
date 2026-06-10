@@ -29,11 +29,6 @@ const router = createRouter({
       component: () => import('@/pages/admin/AppManagePage.vue'),
     },
     {
-      path: '/admin/chatManage',
-      name: '对话管理',
-      component: () => import('@/pages/admin/ChatManagePage.vue'),
-    },
-    {
       path: '/admin/monitor',
       name: '监控中心',
       component: () => import('@/pages/admin/MonitorManagePage.vue'),

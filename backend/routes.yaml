@@ -37,7 +37,7 @@ routes:
       max_requests: 100
       window_seconds: 60
 
-  # AI 服务 (HTTP)
+  # AI 服务 (HTTP) — 统一前缀 /ai，无需路径重写
   - path: /ai
     service_name: ai-service
     protocol: http
@@ -47,16 +47,6 @@ routes:
     rate_limit:
       max_requests: 50
       window_seconds: 60
-
-  # 聊天 (HTTP) — 网关显式路由处理 /chat/gen/code 和 /chat/stop，其它透传 ai-service
-  - path: /chat
-    service_name: ai-service
-    protocol: http
-    http_port: 8002
-    auth_required: true
-    strip_prefix: /api/chat
-    target_prefix: /api/ai
-    description: "聊天会话 HTTP 接口"
 
   # 监控服务 (HTTP) — 路径重写: /api/monitor → /internal/monitor
   - path: /monitor

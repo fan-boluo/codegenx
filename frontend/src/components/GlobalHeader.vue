@@ -48,7 +48,7 @@ import {
   LogoutOutlined,
   HomeOutlined,
   AppstoreOutlined,
-  HistoryOutlined,
+  UserOutlined,
   DashboardOutlined,
 } from '@ant-design/icons-vue'
 
@@ -67,14 +67,14 @@ const originItems: MenuProps['items'] = [
   {
     key: '/admin/appManage',
     icon: () => h(AppstoreOutlined),
-    label: '项目',
-    title: '项目',
+    label: '项目管理',
+    title: '项目管理',
   },
   {
-    key: '/admin/chatManage',
-    icon: () => h(HistoryOutlined),
-    label: '对话管理',
-    title: '对话管理',
+    key: '/admin/userManage',
+    icon: () => h(UserOutlined),
+    label: '用户管理',
+    title: '用户管理',
   },
   {
     key: '/admin/monitor',

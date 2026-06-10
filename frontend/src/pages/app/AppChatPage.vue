@@ -1339,7 +1339,7 @@ const toggleSessionHistory = async () => {
   loadingSessionHistory.value = true
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
-    const res = await fetch(`${baseURL}/api/chat/sessions/${appId.value}?limit=5`, {
+    const res = await fetch(`${baseURL}/api/ai/sessions/${appId.value}?limit=5`, {
       headers: { ...getAuthHeaders() },
     })
     if (res.ok) {
@@ -1358,57 +1358,31 @@ const toggleSessionHistory = async () => {
  * tool 角色消息合并入其前的 assistant 消息 items 中。
  */
 const convertMessagesFromApi = (msgs: any[]): MessageItem[] => {
-  const merged: MessageItem[] = msgs
-    .filter((m: any) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
-    .reduce((acc: MessageItem[], m: any) => {
-      if (m.role === 'user') {
-        acc.push({ type: 'user', content: m.content || '', createTime: m.create_time })
-      } else if (m.role === 'tool') {
-        const lastAi = [...acc].reverse().find(it => it.type === 'ai')
-        if (lastAi) {
-          if (!lastAi.items) lastAi.items = []
-          const toolName = m.name || 'tool'
-          const shortContent = (m.content || '').length > 100
-            ? (m.content || '').substring(0, 100) + '...'
-            : (m.content || '')
-          lastAi.items.push({
-            type: 'tool',
-            toolResult: { name: toolName, detail: shortContent },
-          })
-        }
-      } else if (m.role === 'assistant') {
-        const item: MessageItem = { type: 'ai', content: m.content || '', createTime: m.create_time }
-        if (m.tool_calls && Array.isArray(m.tool_calls)) {
-          item.items = []
-          for (const tc of m.tool_calls) {
-            const fn = tc.function || tc
-            item.items.push({
-              type: 'step',
-              step: {
-                eventType: 'ToolExecutionStart',
-                description: fn.name || 'unknown',
-                detail: '',
-                state: 'running',
-                timestamp: new Date(m.create_time || Date.now()).getTime(),
-              },
-            })
-          }
-        }
-        acc.push(item)
+  const items: MessageItem[] = []
+  for (const m of msgs) {
+    if (m.role === 'user') {
+      items.push({ type: 'user', content: m.content || '', createTime: m.create_time })
+    } else if (m.role === 'assistant') {
+      if (m.content) {
+        items.push({ type: 'ai', content: m.content, createTime: m.create_time })
       }
-      return acc
-    }, [])
-  for (let i = 1; i < merged.length; i++) {
-    const msg = merged[i]
-    if (msg.type === 'ai' && msg.items) {
-      for (const item of msg.items) {
-        if (item.type === 'step' && item.step) {
-          item.step.state = 'completed'
-        }
-      }
+    } else if (m.role === 'tool') {
+      const toolName = m.name || 'tool'
+      const shortContent = (m.content || '').length > 200
+        ? (m.content || '').substring(0, 200) + '...'
+        : (m.content || '')
+      items.push({
+        type: 'ai',
+        content: '',
+        createTime: m.create_time,
+        items: [{
+          type: 'tool',
+          toolResult: { name: toolName, detail: shortContent },
+        }],
+      })
     }
   }
-  return merged
+  return items
 }
 
 const loadSession = async (sid: string) => {
@@ -1417,7 +1391,7 @@ const loadSession = async (sid: string) => {
   sessionHistoryVisible.value = false
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
-    const res = await fetch(`${baseURL}/api/chat/sessions/${appId.value}/${sid}/messages?limit=50`, {
+    const res = await fetch(`${baseURL}/api/ai/sessions/${appId.value}/${sid}/messages?limit=50`, {
       headers: { ...getAuthHeaders() },
     })
     if (!res.ok) throw new Error('load failed')
@@ -1444,7 +1418,7 @@ const loadLatestSessionMessages = async () => {
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
     // 获取最近的会话列表
-    const sessionsRes = await fetch(`${baseURL}/api/chat/sessions/${appId.value}?limit=1`, {
+    const sessionsRes = await fetch(`${baseURL}/api/ai/sessions/${appId.value}?limit=1`, {
       headers: { ...getAuthHeaders() },
     })
     if (!sessionsRes.ok) return
@@ -1463,7 +1437,7 @@ const checkSessionAlive = async (sid: string): Promise<boolean> => {
   if (!appId.value) return false
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
-    const res = await fetch(`${baseURL}/api/chat/sessions/${appId.value}/${sid}/alive`, {
+    const res = await fetch(`${baseURL}/api/ai/sessions/${appId.value}/${sid}/alive`, {
       headers: { ...getAuthHeaders() },
     })
     if (!res.ok) return false
@@ -1764,7 +1738,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
   const controller = new AbortController(); abortController.value = controller
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
-    const url = `${baseURL}/api/chat/gen/code`
+    const url = `${baseURL}/api/ai/chat/gen`
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -1807,13 +1781,17 @@ const stopGeneration = async () => {
   try {
     abortController.value?.abort()
     const baseURL = request.defaults.baseURL || API_BASE_URL
-    await fetch(`${baseURL}/api/chat/stop`, {
+    await fetch(`${baseURL}/api/ai/chat/stop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ appId: Number(appId.value), sessionId: activeGenerationSessionId.value, requestId: activeGenerationRequestId.value, traceId: createClientId(), reason: 'user-stop' }),
     })
-    message.info('停止请求已发送')
-  } catch (error) { console.error('停止生成失败：', error); stopRequested.value = false; isStoppingGeneration.value = false; message.error('停止失败，请重试') }
+    message.info('已停止生成')
+  } catch (error) {
+    console.error('停止请求失败：', error)
+  } finally {
+    finishStream()
+  }
 }
 
 const scrollToBottom = () => { if (messagesContainer.value) { messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight } }

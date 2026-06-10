@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CodeGenX AI Service", version="1.0.0", lifespan=lifespan)
 
 
-@app.post("/api/ai/codegen/stream")
+@app.post("/api/ai/chat/gen")
 async def generate_code_stream(request: AiServiceGenerateRequest):
 	trace_id, request_id, session_id = _validate_call_context(request)
 	log.info(
@@ -116,7 +116,7 @@ async def generate_code_stream(request: AiServiceGenerateRequest):
 		raise
 
 
-@app.post("/api/ai/codegen/stop", response_model=AiServiceStopResponse)
+@app.post("/api/ai/chat/stop")
 async def stop_code_stream(request: AiServiceStopRequest):
 	trace_id, request_id, session_id = _validate_stop_context(request)
 	log.info(

@@ -114,7 +114,7 @@ class UserServiceGrpcClient(GrpcServiceClientBase):
         )
         return response.success
 
-    async def list_users_page(self, page_num: int, page_size: int, user_id: int | None, user_account: str | None, user_name: str | None, user_profile: str | None, user_role: str | None, sort_field: str | None, sort_order: str | None) -> dict[str, object]:
+    async def list_users_page(self, page_num: int, page_size: int, user_id: int | None = None, user_account: str | None = None, user_name: str | None = None, user_profile: str | None = None, user_role: str | None = None, sort_field: str | None = None, sort_order: str | None = None) -> dict[str, object]:
         request = user_pb2.ListUsersPageRequest(
             page_num=page_num,
             page_size=page_size,

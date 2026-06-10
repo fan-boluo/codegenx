@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 import httpx
 from fastapi.responses import StreamingResponse
@@ -63,53 +64,80 @@ class UnifiedProxy:
         # 构建完整 URL
         url = f"{base_url}{path}"
 
-        # 发起请求
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-            try:
-                response = await client.request(
-                    method=method,
-                    url=url,
-                    headers=request_headers,
-                    params=params,
-                    json=json_body,
-                )
-            except Exception as exc:
-                log.error(
-                    "HTTP 请求失败 service={} path={} method={} error={}",
-                    service_name,
-                    path,
-                    method,
-                    exc
-                )
-                raise BusinessException(
-                    ErrorCode.SYSTEM_ERROR,
-                    message=f"服务调用失败: {str(exc)}"
-                )
+        # 使用 stream 模式发送请求，以便根据响应头决定如何处理
+        client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
+        req = client.build_request(
+            method=method,
+            url=url,
+            headers=request_headers,
+            params=params,
+            json=json_body,
+        )
+        try:
+            response = await client.send(req, stream=True)
+        except Exception as exc:
+            await client.aclose()
+            log.error(
+                "HTTP 请求失败 service={} path={} method={} error={}",
+                service_name,
+                path,
+                method,
+                exc
+            )
+            raise BusinessException(
+                ErrorCode.SYSTEM_ERROR,
+                message=f"服务调用失败: {str(exc)}"
+            )
 
         # 处理响应
         content_type = response.headers.get("Content-Type", "")
 
-        # SSE 流式响应
-        if "text/event-stream" in content_type:
-            async def stream_response():
-                async for chunk in response.aiter_bytes():
-                    yield chunk
+        # SSE / text/plain 流式响应：返回 StreamingResponse，httpx client 在流结束时关闭
+        if "text/event-stream" in content_type or "text/plain" in content_type:
+            async def _stream_then_close():
+                try:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+                finally:
+                    await client.aclose()
 
             return StreamingResponse(
-                stream_response(),
+                _stream_then_close(),
                 status_code=response.status_code,
                 headers=dict(response.headers)
             )
 
+        # 非流式响应：立即读取并关闭
+        try:
+            body = await response.aread()
+        except Exception as exc:
+            await client.aclose()
+            log.error(
+                "读取响应失败 service={} status={} error={}",
+                service_name,
+                response.status_code,
+                exc
+            )
+            raise BusinessException(
+                ErrorCode.SYSTEM_ERROR,
+                message=f"读取响应失败: {str(exc)}"
+            )
+        finally:
+            await client.aclose()
+
+        # 非 JSON 响应直接透传原始文本
+        if "application/json" not in content_type:
+            return {"_raw_body": body.decode("utf-8", errors="replace"), "_status": response.status_code}
+
         # 普通 JSON 响应
         try:
-            data = response.json()
-        except Exception as exc:
+            data = json.loads(body)
+        except Exception:
             log.error(
                 "响应解析失败 service={} status={} body={}",
                 service_name,
                 response.status_code,
-                response.text[:200]
+                body[:200].decode("utf-8", errors="replace")
             )
             raise BusinessException(
                 ErrorCode.SYSTEM_ERROR,

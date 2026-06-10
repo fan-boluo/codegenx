@@ -194,11 +194,23 @@ class AppService:
         target = (code_dir / file_path).resolve()
         code_dir_str = str(code_dir)
         target_str = str(target)
+
         if not (target_str == code_dir_str or target_str.startswith(code_dir_str + os.sep)):
             ThrowUtils.throw_if(True, ErrorCode.PARAMS_ERROR, "路径无效")
         ThrowUtils.throw_if(not target.exists() or not target.is_file(), ErrorCode.NOT_FOUND_ERROR, "文件不存在")
-        if target.stat().st_size > 500 * 1024:
-            return "[文件过大，无法预览（超过 500 KB）]"
+
+        max_size = 500 * 1024
+        max_lines = 50
+        file_size = target.stat().st_size
+
+        if file_size > max_size:
+            content = []
+            with target.open("r", encoding="utf-8", errors="replace") as f:
+                for idx, line in enumerate(f):
+                    if idx >= max_lines:
+                        break
+                    content.append(line)
+            return "".join(content) + "[文件超过500KB，仅展示前50行]"
         return target.read_text(encoding="utf-8", errors="replace")
 
     async def save_code_file(self, app_id: int, file_path: str, content: str, login_user: JWTUser) -> bool:
