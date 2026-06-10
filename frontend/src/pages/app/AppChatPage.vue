@@ -525,6 +525,7 @@ interface FileTab {
   lastAccessed: number
   isDirty: boolean
   language: string
+  abortController?: AbortController | null
 }
 
 interface OutputLine {
@@ -572,10 +573,11 @@ const outputLines = ref<OutputLine[]>([])
 
 const showLoading = computed(() => {
   const tab = activeTabData.value
-  if (!tab) return false
-  if (tab.isLoading) return true
-  if (!editorMounted.value) return true
-  return false
+  const shouldShow = !!tab?.isLoading
+  if (tab) {
+    console.log(`[ShowLoading] Tab: ${tab.path}, isLoading: ${tab.isLoading}, shouldShow: ${shouldShow}`)
+  }
+  return shouldShow
 })
 
 const LANG_MAP: Record<string, string> = {
@@ -804,9 +806,9 @@ const switchToFilesTab = async () => {
   }
 }
 
-const loadFileContent = async (filePath: string): Promise<string> => {
+const loadFileContent = async (filePath: string, signal?: AbortSignal): Promise<string> => {
   const baseURL = request.defaults.baseURL || API_BASE_URL
-  const res = await request.get(`${baseURL}/api/app/code/file/${appId.value}`, { params: { path: filePath } })
+  const res = await request.get(`${baseURL}/api/app/code/file/${appId.value}`, { params: { path: filePath }, signal })
   if (res.data.code === 0) {
     const text = res.data.data ?? ''
     const lines = text.split('\n')
@@ -840,6 +842,7 @@ const saveCurrentFile = async () => {
 }
 
 const handleEditorMount = (editor: MonacoEditor) => {
+  console.log(`[EditorMount] Editor mounted for tab: ${activeFileTab.value}`)
   monacoEditor.value = editor
   editorMounted.value = true
   editor.addCommand(
@@ -881,28 +884,47 @@ const openFileInTab = async (filePath: string, fileName: string) => {
     lastAccessed: Date.now(),
     isDirty: false,
     language: getLanguage(fileName),
+    abortController: null,
   }
   fileTabs.value.push(newTab)
   activeFileTab.value = filePath
 
   try {
-    const text = await loadFileContent(filePath)
+    const controller = new AbortController()
+    newTab.abortController = controller
+    console.log(`[FileLoad] Starting load: ${filePath}`)
+    const text = await loadFileContent(filePath, controller.signal)
+    console.log(`[FileLoad] Success: ${filePath}, content length: ${text.length}`)
     newTab.content = text
     newTab.originalContent = text
   } catch (error: any) {
-    console.error('读取文件失败:', error)
-    message.error('读取文件失败：' + (error.message || '未知错误'))
-    closeFileTab(filePath)
+    console.error(`[FileLoad] Error loading ${filePath}:`, error)
+    const errMsg = error?.message || '未知错误'
+    newTab.content = `// 加载失败: ${errMsg}\n// 请尝试重新打开此文件`
+    newTab.originalContent = newTab.content
+    message.error('读取文件失败：' + errMsg)
   } finally {
     newTab.isLoading = false
+    if (newTab.abortController) newTab.abortController = null
+    console.log(`[FileLoad] Finished: ${filePath}, isLoading now false`)
+    // Force Vue to detect object property change by replacing the entire object
+    const idx = fileTabs.value.findIndex(t => t.path === filePath)
+    if (idx >= 0) {
+      fileTabs.value[idx] = { ...fileTabs.value[idx] }
+      console.log(`[FileLoad] Replaced object at index ${idx}`)
+    }
+    await nextTick()
+    console.log(`[FileLoad] After nextTick, activeTabData.isLoading: ${activeTabData.value?.isLoading}`)
   }
 }
 
 const activateFileTab = (path: string) => {
   const tab = fileTabs.value.find(t => t.path === path)
   if (tab) {
+    console.log(`[TabSwitch] Switching to tab: ${path}`)
     tab.lastAccessed = Date.now()
     activeFileTab.value = path
+    console.log(`[TabSwitch] activeFileTab is now: ${activeFileTab.value}`)
   }
 }
 
@@ -911,6 +933,11 @@ const closeFileTab = (path: string) => {
   if (idx === -1) return
 
   const tab = fileTabs.value[idx]
+  // Abort in-flight load if any
+  if (tab.abortController) {
+    try { tab.abortController.abort() } catch (e) { console.warn('abort failed', e) }
+    tab.abortController = null
+  }
   if (tab.isDirty) {
     Modal.confirm({
       title: '未保存的更改',
@@ -1217,6 +1244,15 @@ const deleteSelectedNode = () => {
           // Close all tabs that are in/under the deleted path
           const deletedPath = node.key
           const deletedIsDir = node.dataRef?.type === 'dir'
+          // Abort any in-flight loads for affected tabs
+          for (const t of fileTabs.value) {
+            if (t.path === deletedPath || (deletedIsDir && t.path.startsWith(deletedPath + '/'))) {
+              if (t.abortController) {
+                try { t.abortController.abort() } catch (e) { /* ignore */ }
+                t.abortController = null
+              }
+            }
+          }
           fileTabs.value = fileTabs.value.filter(t => {
             if (t.path === deletedPath) return false
             if (deletedIsDir && t.path.startsWith(deletedPath + '/')) return false
@@ -1597,7 +1633,9 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
 
 // Reset editor mounted flag when switching tabs (key changes, Monaco recreated)
 watch(activeFileTab, () => {
+  console.log(`[EditorLifecycle] activeFileTab changed to: ${activeFileTab.value}`)
   editorMounted.value = false
+  monacoEditor.value = null
 })
 
 // Watch for content changes to track dirty state
