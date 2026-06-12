@@ -4,12 +4,13 @@
     title="项目详情"
     :footer="null"
     width="480px"
+    closable
   >
     <div class="app-detail-content">
       <div class="app-basic-info">
         <div class="info-item">
           <span class="info-label">创建者</span>
-          <UserInfo :user="app?.user" size="small" />
+          <span class="info-value">{{ app?.userName || '未知用户' }}</span>
         </div>
         <div class="info-divider"></div>
         <div class="info-item">
@@ -18,33 +19,12 @@
         </div>
       </div>
 
-      <div v-if="showActions" class="app-actions">
-        <a-space>
-          <a-button type="primary" @click="handleEdit">
-            <template #icon><EditOutlined /></template>
-            修改
-          </a-button>
-          <a-popconfirm
-            title="确定要删除这个项目吗？"
-            @confirm="handleDelete"
-            ok-text="确定"
-            cancel-text="取消"
-          >
-            <a-button danger>
-              <template #icon><DeleteOutlined /></template>
-              删除
-            </a-button>
-          </a-popconfirm>
-        </a-space>
-      </div>
     </div>
   </a-modal>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { EditOutlined, DeleteOutlined } from '@ant-design/icons-vue'
-import UserInfo from './UserInfo.vue'
 import { formatTime } from '@/utils/time'
 
 interface Props {
@@ -63,15 +43,11 @@ const props = withDefaults(defineProps<Props>(), {
   showActions: false,
 })
 
-const emit = defineEmits<Emits>()
-
 const visible = computed({
   get: () => props.open,
   set: (value) => emit('update:open', value),
 })
 
-const handleEdit = () => { emit('edit') }
-const handleDelete = () => { emit('delete') }
 </script>
 
 <style scoped>
@@ -114,8 +90,4 @@ const handleDelete = () => { emit('delete') }
   font-size: 14px;
 }
 
-.app-actions {
-  padding-top: 16px;
-  border-top: 1px solid var(--border-default);
-}
 </style>

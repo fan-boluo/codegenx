@@ -19,8 +19,14 @@
       @change="doTableChange"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.dataIndex === 'userAvatar'">
-          <a-image :src="record.userAvatar" :width="120" />
+        <template
+          v-if="
+            column.dataIndex === 'id' ||
+            column.dataIndex === 'userAccount' ||
+            column.dataIndex === 'userName'
+          "
+        >
+          {{ record[column.dataIndex] }}
         </template>
         <template v-else-if="column.dataIndex === 'userRole'">
           <a-tag v-if="record.userRole === 'admin'" color="blue">管理员</a-tag>
@@ -46,7 +52,6 @@ const columns = [
   { title: 'ID', dataIndex: 'id' },
   { title: '账号', dataIndex: 'userAccount' },
   { title: '用户名', dataIndex: 'userName' },
-  { title: '头像', dataIndex: 'userAvatar' },
   { title: '简介', dataIndex: 'userProfile' },
   { title: '用户角色', dataIndex: 'userRole' },
   { title: '创建时间', dataIndex: 'createTime' },
@@ -92,7 +97,7 @@ const doSearch = () => {
 
 const doDelete = async (id: number | undefined) => {
   if (!id) return
-  const res = await deleteUser({ id })
+  const res = await deleteUser({ user_id: id })
   if (res.data.code === 0) {
     message.success('删除成功')
     fetchData()
@@ -101,7 +106,9 @@ const doDelete = async (id: number | undefined) => {
   }
 }
 
-onMounted(() => { fetchData() })
+onMounted(() => {
+  fetchData()
+})
 </script>
 
 <style scoped>

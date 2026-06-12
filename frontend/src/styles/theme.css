@@ -2,12 +2,12 @@
 
 :root {
   /* 页面主背景 */
-  --bg-page: #F7F8FA;
+  --bg-page: #F4F5FB;
   /* 卡片/面板白底 */
-  --bg-surface: #FFFFFF;
+  --bg-surface: #FDFDFF;
   /* 次级浅灰 */
-  --bg-subtle: #F3F5F8;
-  --bg-hover: #EEF1F6;
+  --bg-subtle: #EDF0FA;
+  --bg-hover: #E2E8F7;
 
   /* 主体蓝 */
   --accent-primary: #3B82F6;

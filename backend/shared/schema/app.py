@@ -17,13 +17,13 @@ class AppAddRequest(CamelBaseModel):
 class AppUpdateRequest(CamelBaseModel):
     id: int
     app_name: str | None = Field(default=None, alias="appName")
+    init_prompt: str | None = Field(default=None, alias="initPrompt")
 
 
 class AppAdminUpdateRequest(CamelBaseModel):
     id: int
     app_name: str | None = Field(default=None, alias="appName")
-    cover: str | None = None
-    priority: int | None = None
+    init_prompt: str | None = Field(default=None, alias="initPrompt")
 
 
 class AppDeployRequest(CamelBaseModel):
@@ -76,7 +76,7 @@ class AppVO(LongIdModel, TimeModel):
     deployed_time: datetime | None = Field(default=None, alias="deployedTime")
     priority: int | None = None
     user_id: int | None = Field(default=None, alias="userId")
-    user: UserVO | None = None
+    user_name: str | None = Field(default=None, alias="userName")
     db_name: str | None = Field(default=None, alias="dbName")
 
 

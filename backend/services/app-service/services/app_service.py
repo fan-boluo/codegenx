@@ -138,6 +138,8 @@ class AppService:
         app = await self._get_owned_app(request.id, login_user)
         if request.app_name is not None:
             app.app_name = request.app_name
+        if request.init_prompt is not None:
+            app.init_prompt = request.init_prompt
         app.edit_time = datetime.utcnow()
         await self.db.commit()
         return True
@@ -147,10 +149,8 @@ class AppService:
         app = await self._get_existing_app(request.id)
         if request.app_name is not None:
             app.app_name = request.app_name
-        if request.cover is not None:
-            app.cover = request.cover
-        if request.priority is not None:
-            app.priority = request.priority
+        if request.init_prompt is not None:
+            app.init_prompt = request.init_prompt
         app.edit_time = datetime.utcnow()
         await self.db.commit()
         return True
@@ -449,6 +449,7 @@ class AppService:
                 "deployedTime": app.deployed_time,
                 "priority": app.priority,
                 "userId": app.user_id,
+                "userName": app.user_name,
                 "dbName": app.db_name,
                 "createTime": app.create_time,
                 "updateTime": app.update_time,

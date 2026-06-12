@@ -21,9 +21,6 @@
         </div>
       </div>
       <div class="activity-bar-bottom">
-        <div class="activity-icon" title="项目详情" @click="showAppDetail">
-          <QuestionCircleOutlined />
-        </div>
       </div>
     </div>
 
@@ -400,8 +397,6 @@
       </div>
     </div>
 
-    <AppDetailModal v-model:open="appDetailVisible" :app="appInfo" :show-actions="isOwner || isAdmin" @edit="editApp" @delete="deleteApp" />
-
     <!-- Create File Modal -->
     <a-modal v-model:open="createFileModalVisible" title="新建文件" :mask-closable="false">
       <a-input v-model:value="newItemName" placeholder="输入文件名，如 index.html" @keydown.enter="doCreateFile" />
@@ -446,7 +441,6 @@ import { deleteApp as deleteAppApi, getAppVoById } from '@/api/appController'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
-import AppDetailModal from '@/components/AppDetailModal.vue'
 import aiAvatar from '@/assets/aiAvatar.png'
 import { API_BASE_URL } from '@/config/env'
 import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
@@ -652,7 +646,6 @@ const visualEditor = new VisualEditor({
   },
 })
 
-const appDetailVisible = ref(false)
 const readOnlyTooltip = '无法在别人的项目下操作哦~'
 
 const sidePanelTab = ref<'data' | 'files'>('files')
@@ -1634,8 +1627,6 @@ const isOwner = computed(() => {
 })
 
 const canOperateApp = computed(() => isOwner.value)
-const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
-const showAppDetail = () => { appDetailVisible.value = true }
 
 // Task board state
 const tasks = ref<TaskInfo[]>([])
@@ -1795,16 +1786,6 @@ const stopGeneration = async () => {
 }
 
 const scrollToBottom = () => { if (messagesContainer.value) { messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight } }
-
-const editApp = () => { if (appInfo.value?.id) { router.push(`/app/edit/${appInfo.value.id}`) } }
-const deleteApp = async () => {
-  if (!appInfo.value?.id) return
-  try {
-    const res = await deleteAppApi({ id: appInfo.value.id })
-    if (res.data.code === 0) { message.success('删除成功'); appDetailVisible.value = false; router.push('/') }
-    else { message.error('删除失败：' + res.data.message) }
-  } catch (error) { console.error('删除失败：', error); message.error('删除失败') }
-}
 
 const toggleEditMode = () => {
   if (!canOperateApp.value) { message.warning(readOnlyTooltip); return }

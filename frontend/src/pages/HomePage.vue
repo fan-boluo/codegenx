@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, OnMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { ArrowRightOutlined, EditOutlined, MessageOutlined, PlusOutlined, RocketOutlined } from '@ant-design/icons-vue'
-import { addApp, listMyAppVoByPage } from '@/api/appController'
+import {
+  ArrowRightOutlined,
+  EditOutlined,
+  MessageOutlined,
+  PlusOutlined,
+  RocketOutlined,
+} from '@ant-design/icons-vue'
+import { addApp, listMyAppVoByPage, updateApp, getAppVoById } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { formatRelativeTime, formatTime } from '@/utils/time'
 
@@ -55,6 +61,15 @@ const createModalVisible = ref(false)
 const createForm = ref({ appName: '', dbName: '', initPrompt: '' })
 const isCreating = ref(false)
 const pendingPromptExample = ref('')
+// 弹窗相关
+const editModalOpen = ref(false)
+const currentApp = ref<API.AppVO>({})
+const formData = reactive({
+  appName: '',
+  initPrompt: '',
+})
+const formRef = ref()
+const submitting = ref(false)
 
 const openCreateChat = (prompt?: string) => {
   if (!isLoggedIn.value) {
@@ -114,15 +129,62 @@ const goToChat = (appId?: number) => {
   router.push(`/app/chat/${appId}`)
 }
 
-const goToEdit = (appId?: number) => {
+const goToEdit = async (appId?: number) => {
   if (!appId) return
-  router.push(`/app/edit/${appId}`)
+  try {
+    const res = await getAppVoById({ id: appId })
+    if (res.data.code === 0 && res.data.data) {
+      currentApp.value = res.data.data
+      formData.appName = res.data.data.appName || ''
+      formData.initPrompt = res.data.data.initPrompt || ''
+      editModalOpen.value = true
+    } else {
+      message.error('获取项目信息失败')
+    }
+  } catch (error) {
+    console.error('获取项目信息失败: ', error)
+    message.error('获取项目信息失败')
+  }
+}
+
+const handleSubmit = async () => {
+  if (!currentApp.value?.id) return
+  submitting.value = true
+  try {
+    const res = await updateApp({
+      id: currentApp.value.id,
+      // 下面的参数在截图中未显示，你可以根据实际补充
+    })
+    // 这里可以补充成功后的逻辑，比如关闭弹窗、提示成功等
+  } catch (error) {
+    console.error('修改失败: ', error)
+    message.error('修改失败')
+  } finally {
+    submitting.value = false
+  }
+}
+
+const handleEditCancel = () => {
+  editModalOpen.value = false
+  currentApp.value = {}
+  formData.appName = ''
+  formData.initPrompt = ''
 }
 
 watch(
   () => loginUserStore.loginUser.id,
-  () => { fetchMyApps() },
-  { immediate: true }
+  () => {
+    fetchMyApps()
+  },
+  { immediate: true },
+)
+
+watch(
+  () => loginUserStore.loginUser.id,
+  () => {
+    fetchMyApps()
+  },
+  { immediate: true },
 )
 </script>
 
@@ -194,15 +256,13 @@ watch(
       </div>
 
       <div class="app-grid">
-        <a-card v-for="(app, idx) in apps" :key="app.id" class="app-card" :bordered="false"
-          :style="{ animationDelay: `${idx * 60}ms` }">
-          <div class="cover-shell">
-            <img v-if="app.cover" :src="app.cover" :alt="app.appName" class="cover-image" />
-            <div v-else class="cover-fallback">
-              <RocketOutlined />
-            </div>
-          </div>
-
+        <a-card
+          v-for="(app, idx) in apps"
+          :key="app.id"
+          class="app-card"
+          :bordered="false"
+          :style="{ animationDelay: `${idx * 60}ms` }"
+        >
           <div class="app-body">
             <div class="app-heading">
               <h3 class="app-name">{{ app.appName || '未命名项目' }}</h3>
@@ -228,13 +288,77 @@ watch(
           </div>
         </a-card>
 
+        <!-- 编辑弹窗 -->
+        <a-modal
+          v-model:open="editModalOpen"
+          :title="`编辑项目 - ${currentApp?.appName}`"
+          width="800px"
+          @ok="handleEditOk"
+          @cancel="handleEditCancel"
+          :footer="null"
+        >
+          <div class="edit-form-container">
+            <a-descriptions :column="2" bordered style="margin-bottom: 24px">
+              <a-descriptions-item label="项目ID">{{ currentApp?.id }}</a-descriptions-item>
+              <a-descriptions-item label="创建者">
+                {{ currentApp?.userName || '未知用户' }}
+              </a-descriptions-item>
+              <a-descriptions-item label="创建时间">{{
+                formatTime(currentApp?.createTime)
+              }}</a-descriptions-item>
+              <a-descriptions-item label="更新时间">{{
+                formatTime(currentApp?.updateTime)
+              }}</a-descriptions-item>
+            </a-descriptions>
+
+            <a-form
+              :model="formData"
+              :rules="rules"
+              layout="vertical"
+              @finish="handleSubmit"
+              ref="formRef"
+            >
+              <a-form-item label="项目名称" name="appName">
+                <a-input
+                  v-model:value="formData.appName"
+                  placeholder="请输入项目名称"
+                  :maxlength="50"
+                  show-count
+                />
+              </a-form-item>
+
+              <a-form-item label="数据库" name="dbName">
+                <a-input :value="currentApp?.dbName" placeholder="数据库名称" disabled />
+              </a-form-item>
+
+              <a-form-item label="项目描述" name="initPrompt">
+                <a-textarea
+                  v-model:value="formData.initPrompt"
+                  placeholder="请介绍一下这个项目"
+                  :rows="4"
+                  :maxlength="1000"
+                  show-count
+                />
+              </a-form-item>
+
+              <a-form-item style="margin-bottom: 0">
+                <a-space>
+                  <a-button type="primary" html-type="submit" :loading="submitting"
+                    >保存修改</a-button
+                  >
+                  <a-button @click="handleEditCancel">关闭</a-button>
+                </a-space>
+              </a-form-item>
+            </a-form>
+          </div>
+        </a-modal>
+
         <a-card class="app-card add-app-card" :bordered="false" @click="openCreateChat()">
           <div class="add-app-content">
             <div class="add-app-icon">
               <PlusOutlined />
             </div>
             <h3 class="add-app-title">添加项目</h3>
-            <p class="add-app-description">新建一个项目，继续开始新的生成任务</p>
           </div>
         </a-card>
       </div>
@@ -261,7 +385,12 @@ watch(
         <a-form-item label="项目库">
           <a-input-group compact>
             <a-input
-              style="width: 60px; background: var(--bg-subtle); color: var(--text-muted); text-align: right;"
+              style="
+                width: 60px;
+                background: var(--bg-subtle);
+                color: var(--text-muted);
+                text-align: right;
+              "
               value="prj_"
               disabled
             />
@@ -304,7 +433,7 @@ watch(
   min-height: calc(100vh - 56px - 200px);
 }
 
-/* Welcome Card */
+/* Welcome Card  background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, transparent 70%);*/
 .welcome-card {
   text-align: center;
   padding: 80px 48px;
@@ -417,7 +546,7 @@ watch(
 /* App Grid */
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 20px;
 }
 
@@ -425,11 +554,15 @@ watch(
 .app-card {
   overflow: hidden;
   border-radius: var(--radius-card);
-  background: var(--bg-surface);
   border: 1px solid var(--border-light);
-  box-shadow: var(--shadow-sm);
+  /* 分层基础阴影：下层模糊大阴影制造浮空基底 */
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 2px 4px rgba(0, 0, 0, 0.04),
+    0 8px 16px rgba(22, 119, 255, 0.05);
   transition: all 0.25s ease;
   animation: fade-in-up 0.4s var(--ease-out) both;
+  background: #ffffff;
 }
 
 .app-card:hover {
@@ -438,10 +571,16 @@ watch(
   border-color: var(--accent-primary);
 }
 
+/* Override Ant Design card padding */
+.app-card :deep(.ant-card-body) {
+  padding: 12px;
+  background: transparent;
+}
+
 /* Add App Card */
 .add-app-card {
   cursor: pointer;
-  min-height: 380px;
+  min-height: 200px;
   border: 2px dashed var(--border-deep);
   background: var(--bg-page);
   transition: all 0.25s ease;
@@ -455,12 +594,12 @@ watch(
 
 .add-app-content {
   height: 100%;
-  min-height: 380px;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 12px;
   text-align: center;
 }
 
@@ -468,11 +607,11 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 60px;
-  height: 60px;
+  width: 48px;
+  height: 48px;
   border-radius: var(--radius-card);
   background: var(--accent-primary-light);
-  font-size: 26px;
+  font-size: 22px;
   color: var(--accent-primary);
   transition: all 0.25s ease;
 }
@@ -486,36 +625,6 @@ watch(
   font-size: 18px;
   font-weight: 600;
   color: var(--text-primary);
-}
-
-.add-app-description {
-  max-width: 220px;
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-}
-
-/* Cover Shell */
-.cover-shell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 180px;
-  background: var(--bg-subtle);
-  overflow: hidden;
-}
-
-.cover-image {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.cover-fallback {
-  font-size: 48px;
-  color: var(--text-muted);
-  opacity: 0.5;
 }
 
 /* App Body */

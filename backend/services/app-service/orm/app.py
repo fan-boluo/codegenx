@@ -26,6 +26,7 @@ class App(Base):
     deployed_time: Mapped[datetime | None] = mapped_column("deployedTime", DateTime, nullable=True)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     user_id: Mapped[int] = mapped_column("userId", BigInteger, nullable=False)
+    user_name: Mapped[str|None] = mapped_column("userName", String(20), nullable=False)
     edit_time: Mapped[datetime | None] = mapped_column("editTime", DateTime, nullable=True)
     create_time: Mapped[datetime] = mapped_column(
         "createTime",

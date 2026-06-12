@@ -5,7 +5,20 @@
     </div>
 
     <div class="edit-container">
-      <a-card title="基本信息" :loading="loading" class="edit-card">
+      <a-card title="项目信息" :loading="loading" class="edit-card">
+        <a-descriptions :column="2" bordered style="margin-bottom: 24px">
+          <a-descriptions-item label="项目ID">{{ appInfo.id }}</a-descriptions-item>
+          <a-descriptions-item label="创建者">
+            {{ appInfo.userName || '未知用户' }}
+          </a-descriptions-item>
+          <a-descriptions-item label="创建时间">{{
+            formatTime(appInfo.createTime)
+          }}</a-descriptions-item>
+          <a-descriptions-item label="更新时间">{{
+            formatTime(appInfo.updateTime)
+          }}</a-descriptions-item>
+        </a-descriptions>
+
         <a-form
           :model="formData"
           :rules="rules"
@@ -21,38 +34,20 @@
               show-count
             />
           </a-form-item>
-
-          <a-form-item v-if="isAdmin" label="项目封面" name="cover" extra="支持图片链接，建议尺寸：400x300">
-            <a-input v-model:value="formData.cover" placeholder="请输入封面图片链接" />
-            <div v-if="formData.cover" class="cover-preview">
-              <a-image
-                :src="formData.cover"
-                :width="200"
-                :height="150"
-                fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-              />
-            </div>
+          <a-form-item label="数据库" name="dbName">
+            <a-input :value="appInfo?.dbName" placeholder="数据库名称" disabled />
           </a-form-item>
 
-          <a-form-item v-if="isAdmin" label="优先级" name="priority" extra="设置为99表示精选项目">
-            <a-input-number v-model:value="formData.priority" :min="0" :max="99" style="width: 200px" />
-          </a-form-item>
-
-          <a-form-item label="初始提示词" name="initPrompt">
+          <a-form-item label="项目描述" name="initPrompt">
             <a-textarea
               v-model:value="formData.initPrompt"
-              placeholder="请输入初始提示词"
+              placeholder="请介绍一下这个项目"
               :rows="4"
               :maxlength="1000"
               show-count
               disabled
             />
             <div class="form-tip">初始提示词不可修改</div>
-          </a-form-item>
-
-          <a-form-item v-if="formData.deployKey" label="部署密钥" name="deployKey">
-            <a-input v-model:value="formData.deployKey" placeholder="部署密钥" disabled />
-            <div class="form-tip">部署密钥不可修改</div>
           </a-form-item>
 
           <a-form-item>
@@ -63,24 +58,6 @@
             </a-space>
           </a-form-item>
         </a-form>
-      </a-card>
-
-      <a-card title="项目信息" class="info-card" style="margin-top: 20px">
-        <a-descriptions :column="2" bordered>
-          <a-descriptions-item label="项目ID">{{ appInfo?.id }}</a-descriptions-item>
-          <a-descriptions-item label="创建者">
-            <UserInfo :user="appInfo?.user" size="small" />
-          </a-descriptions-item>
-          <a-descriptions-item label="创建时间">{{ formatTime(appInfo?.createTime) }}</a-descriptions-item>
-          <a-descriptions-item label="更新时间">{{ formatTime(appInfo?.updateTime) }}</a-descriptions-item>
-          <a-descriptions-item label="部署时间">
-            {{ appInfo?.deployedTime ? formatTime(appInfo.deployedTime) : '未部署' }}
-          </a-descriptions-item>
-          <a-descriptions-item label="访问链接">
-            <a-button v-if="appInfo?.deployKey" type="link" @click="openPreview" size="small">查看预览</a-button>
-            <span v-else>未部署</span>
-          </a-descriptions-item>
-        </a-descriptions>
       </a-card>
     </div>
   </div>
@@ -121,29 +98,41 @@ const rules = {
     { required: true, message: '请输入项目名称', trigger: 'blur' },
     { min: 1, max: 50, message: '项目名称长度在1-50个字符', trigger: 'blur' },
   ],
-  cover: [{ type: 'url', message: '请输入有效的URL', trigger: 'blur' }],
-  priority: [{ type: 'number', min: 0, max: 99, message: '优先级范围0-99', trigger: 'blur' }],
 }
 
 const fetchAppInfo = async () => {
   const id = route.params.id as string
-  if (!id) { message.error('项目ID不存在'); router.push('/'); return }
+  if (!id) {
+    message.error('项目ID不存在')
+    router.push('/')
+    return
+  }
   loading.value = true
   try {
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
       if (!isAdmin.value && appInfo.value.userId !== loginUserStore.loginUser.id) {
-        message.error('您没有权限编辑此项目'); router.push('/'); return
+        message.error('您没有权限编辑此项目')
+        router.push('/')
+        return
       }
       formData.appName = appInfo.value.appName || ''
       formData.cover = appInfo.value.cover || ''
       formData.priority = appInfo.value.priority || 0
       formData.initPrompt = appInfo.value.initPrompt || ''
       formData.deployKey = appInfo.value.deployKey || ''
-    } else { message.error('获取项目信息失败'); router.push('/') }
-  } catch (error) { console.error('获取项目信息失败：', error); message.error('获取项目信息失败'); router.push('/') }
-  finally { loading.value = false }
+    } else {
+      message.error('获取项目信息失败')
+      router.push('/')
+    }
+  } catch (error) {
+    console.error('获取项目信息失败：', error)
+    message.error('获取项目信息失败')
+    router.push('/')
+  } finally {
+    loading.value = false
+  }
 }
 
 const handleSubmit = async () => {
@@ -155,16 +144,27 @@ const handleSubmit = async () => {
       res = await updateAppByAdmin({
         id: appInfo.value.id,
         appName: formData.appName,
-        cover: formData.cover,
-        priority: formData.priority,
+        initPrompt: formData.initPrompt,
       })
     } else {
-      res = await updateApp({ id: appInfo.value.id, appName: formData.appName })
+      res = await updateApp({
+        id: appInfo.value.id,
+        appName: formData.appName,
+        initPrompt: formData.initPrompt,
+      })
     }
-    if (res.data.code === 0) { message.success('修改成功'); await fetchAppInfo() }
-    else { message.error('修改失败：' + res.data.message) }
-  } catch (error) { console.error('修改失败：', error); message.error('修改失败') }
-  finally { submitting.value = false }
+    if (res.data.code === 0) {
+      message.success('修改成功')
+      await fetchAppInfo()
+    } else {
+      message.error('修改失败：' + res.data.message)
+    }
+  } catch (error) {
+    console.error('修改失败：', error)
+    message.error('修改失败')
+  } finally {
+    submitting.value = false
+  }
 }
 
 const resetForm = () => {
@@ -176,10 +176,21 @@ const resetForm = () => {
   formRef.value?.clearValidate()
 }
 
-const goToChat = () => { if (appInfo.value?.id) { router.push(`/app/chat/${appInfo.value.id}`) } }
-const openPreview = () => { if (appInfo.value?.deployKey) { const url = getStaticPreviewUrl(appInfo.value.deployKey); window.open(url, '_blank') } }
+const goToChat = () => {
+  if (appInfo.value?.id) {
+    router.push(`/app/chat/${appInfo.value.id}`)
+  }
+}
+const openPreview = () => {
+  if (appInfo.value?.deployKey) {
+    const url = getStaticPreviewUrl(appInfo.value.deployKey)
+    window.open(url, '_blank')
+  }
+}
 
-onMounted(() => { fetchAppInfo() })
+onMounted(() => {
+  fetchAppInfo()
+})
 </script>
 
 <style scoped>
