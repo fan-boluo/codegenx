@@ -129,6 +129,7 @@
             </div>
           </div>
           <div class="file-tab-bar-right">
+            运行环境：
             <a-select
               v-model:value="selectedPythonEnv"
               size="small"

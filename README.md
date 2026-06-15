@@ -1,7 +1,7 @@
 # AI 数据分析平台
 
 AI 驱动数据应用快速交付平台，支持自然语言生成代码、数据分析、可视化报告，面向数据分析师。
-
+![img_1.png](img_1.png)
 ## 技术架构
 
 ```
@@ -19,9 +19,8 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
     │ gRPC     │ HTTP     │ HTTP     │ HTTP
 ┌───▼────┐ ┌──▼──────┐ ┌─▼──────┐ ┌─▼──────────────┐
 │ User   │ │ App     │ │ AI     │ │ Infrastructure │
-│ Service│ │ Service │ │ Service│ │                │
-│ gRPC   │ │ FastAPI │ │FastAPI │ │ MySQL · Redis  │
-│ :50051 │ │ :8004   │ │ :8002  │ │ Nacos · Prometheus│
+│ Service│ │ Service │ │ Service│ │ MySQL · Redis  │
+│ gRPC   │ │ FastAPI │ │FastAPI │ │ Nacos · Prometheus│
 └────────┘ └─────────┘ └────────┘ └────────────────┘
                                   
 ```
@@ -112,7 +111,7 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
 - 普通用户（`user`）项目隔离
 - IP 黑名单管理
 
-## Agent 核心技术架构
+## Agent 技术架构总览
 基于事件触发的AgentRuntime
 ```
                         ┌─────────────────┐
@@ -195,19 +194,6 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
 ```
 CodeGenX/
 ├── frontend/                     # Vue 3 前端
-│   └── src/
-│       ├── api/                  # API 接口层
-│       ├── components/           # 通用组件
-│       ├── composables/          # 组合式函数
-│       ├── config/               # 环境配置
-│       ├── layouts/              # 布局组件
-│       ├── pages/                # 页面
-│       │   ├── admin/            # 管理后台
-│       │   ├── app/              # 项目工作台
-│       │   └── user/             # 登录/注册
-│       ├── router/               # 路由配置
-│       ├── stores/               # Pinia 状态
-│       └── utils/                # 工具函数
 ├── backend/
 │   ├── api-gateway/              # API 网关
 │   │   ├── api/                  # 显式路由
@@ -219,31 +205,17 @@ CodeGenX/
 │   │   ├── user-service/         # 用户服务 (gRPC)
 │   │   ├── app-service/          # 应用服务
 │   │   └── ai-service/           # AI 服务
-│   │       ├── bot/
-│   │       │   ├── agent/        # Agent 运行时
-│   │       │   ├── tools/        # 工具集 (14+)
-│   │       │   ├── memory/       # 多级记忆
-│   │       │   ├── llm/          # LLM 客户端
-│   │       │   ├── compact/      # 上下文压缩
-│   │       │   ├── skill/        # 技能系统 (8)
-│   │       │   ├── task/         # 任务面板
-│   │       │   ├── hook/         # 生命周期钩子
-│   │       │   └── session/      # 会话管理
+│   │       ├── bot/              # 核心智能体
 │   │       └── monitor/          # 监控采集
 │   ├── shared/                   # 共享库
-│   │   ├── config/               # 配置
-│   │   ├── schema/               # Pydantic 模型
-│   │   ├── models/               # SQLAlchemy 模型
-│   │   └── utils/                # 工具函数
 │   ├── infra/                    # 基础设施
 │   │   ├── mysql/                # MySQL 会话
 │   │   ├── redis/                # Redis 客户端
 │   │   ├── nacos/                # Nacos 注册中心
-│   │   ├── qdrant/               # 向量数据库
 │   │   ├── nginx/                # Nginx 配置
 │   │   ├── k8s/                  # Kubernetes 部署
 │   │   └── monitoring/           # Prometheus 配置
-│   ├── config.json               # Agent LLM 配置
+│   ├── config.json               # Agent LLM 配置    # TODO 这三个合并一下
 │   ├── routes.yaml               # 动态路由规则
 │   └── .env                      # 环境变量
 ├── docker-compose.yml            # Docker 编排
@@ -264,7 +236,8 @@ CodeGenX/
 - Redis 7
 - Nacos 2.0+
 
-### 1. 后端启动
+### 手动
+#### 1. 后端启动
 
 ```bash
 # 安装依赖
@@ -282,7 +255,7 @@ startup.bat
 startup.bat user ai app gateway
 ```
 
-### 2. 前端启动
+#### 2. 前端启动
 
 ```bash
 cd frontend
@@ -290,7 +263,7 @@ pnpm install
 pnpm dev
 ```
 
-### 3. 停止服务
+#### 3. 停止服务
 
 ```bash
 shutdown.bat
