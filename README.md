@@ -236,6 +236,13 @@ CodeGenX/
 - Redis 7
 - Nacos 2.0+
 
+> 启动myql  redis  nacos Prometheus
+并修改配置文件中的参数为实际参数 ：backeng/routes.yaml,.env
+
+> 修改backend/config.json 选择默认使用的模型，并设置agents列表中的参数defaults=True,填写你需要的provider
+并在下面的providers列表中补充url及密钥
+
+
 ### 手动
 #### 1. 后端启动
 

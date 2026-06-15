@@ -5,36 +5,32 @@
 	  "token":"token_01",
 	  "name":"main",
       "defaults": true,
-      "workspace": "~/.bot/workspace",
-      "model": "dashscope-qwen/qwen3.5-plus",
+      "workspace": "~/.bot",
+      "model": "dashscope-qwen/qwen3.7-plus",
       "provider": "dashscope",
       "contextMaxTokens": 8192,
-      "context_max_history_turns": 5,
+      "contextMaxHistoryTurns": 5,
       "contextSummaryMaxLength": 150,
       "temperature": 0.1,
       "maxToolIterations": 40,
-      "reasoningEffort": null
-    },
-	{
-	  "id":"02",
-      "token":"token_02",
-	  "name":"search",
-      "defaults": true,
-      "workspace": "~/.bot/workspace",
-      "model": "dashscope-qwen/qwen3.5-plus",
-      "provider": "dashscope",
-      "contextMaxTokens": 8192,
-      "context_max_history_turns": 5,
-      "contextSummaryMaxLength": 150,
-      "temperature": 0.1,
-      "maxToolIterations": 40,
-      "reasoningEffort": null
+      "reasoningEffort": null,
+      "maxSameToolCalls": 3,
+      "maxContinuationAttempts": 3,
+      "maxCompactAttempts":  2,
+      "maxTransportAttempts":  3,
+      "transportBackoffBaseSeconds":  1.0,
+      "transportBackoffMaxSeconds":  8.0,
+      "maxSteps": 10,
+      "maxSessions": 1000,
+      "sessionIdleTimeoutSeconds": 1800,
+      "sessionCleanupIntervalSeconds": 300
+
     }
   ],
   "providers": {
     "custom": {
       "apiKey": "",
-      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiBase": "",
       "extraHeaders": null
     },
     "dashscope": {
@@ -65,8 +61,9 @@
   },
   "embedding": {
     "apiKey": "",
-    "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "modelName": "text-embedding-v4"
+    "apiBase": "",
+    "modelName": "",
+    "dimensions": 512
   },
   "gateway": {
     "host": "0.0.0.0",
@@ -77,24 +74,33 @@
     }
   },
   "tools": {
-    "websearch": {
-      "proxy": null,
-      "search": {
-        "provider": "brave",
-        "apiKey": "",
-        "baseUrl": "",
-        "maxResults": 5
-      }
-    },
-    "kbSearch": {
-      "kbName": "report"
-    },
-    "dbSearch": {
-      "dbName": ""
-    }
+    "excluded": ["bash"]
   },
   "memory": {
-    "search": {},
-    "store": {}
+    "search": {
+      "searchTopK": 10,
+      "searchScoreThreshold": 0.55,
+      "shortLookbackDays": 7,
+      "hybridVectorWeight": 0.7,
+      "longTermWeight": 0.7,
+      "mergeResultSimilarity": 0.8
+    },
+    "store": {
+      "ttlDays": 10,
+      "shortDuplicatedScoreThreshold": 0.90,
+      "longMatchesScoreThreshold": 0.7,
+      "longMatchesTopK": 3,
+      "longDirectWriteImportanceThreshold": 0.79
+    }
+  },
+  "monitor": {
+    "llmLast5AvgLatency": 10,
+    "llmInvokeLatency": 60,
+    "TokenUsagePercent": 0.90,
+    "ToolContinueFailCount": 3,
+    "TurnMax": 20
+  },
+  "compact": {
+    "maxToolResultTokens": 3000
   }
 }
