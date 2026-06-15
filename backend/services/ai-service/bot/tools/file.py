@@ -201,7 +201,13 @@ class ReadFileTool(BaseTool):
             params: dict,
             signal: asyncio.Event | None = None,
     ) -> ToolResult:
-        path = params["path"]
+        path = params.get("path", "")
+        if not path:
+            return ToolResult(
+                success=False,
+                message="缺少 path 参数。请提供要读取的文件路径，如 news_data/news.sohunews.010806.txt。可使用 list_directory 查看可用文件。",
+                render=f"{self.name} 执行失败: 缺少 path 参数",
+            )
         offset = params.get("offset")
         limit = params.get("limit")
 
@@ -388,8 +394,20 @@ class WriteFileTool(BaseTool):
             params: dict,
             signal: asyncio.Event | None = None,
     ) -> ToolResult:
-        path = params["path"]
-        content = params["content"]
+        path = params.get("path", "")
+        content = params.get("content", "")
+        if not path:
+            return ToolResult(
+                success=False,
+                message="缺少 path 参数。请提供要写入的文件路径，如 xml_parser.py。",
+                render=f"{self.name} 执行失败: 缺少 path 参数",
+            )
+        if not content:
+            return ToolResult(
+                success=False,
+                message="缺少 content 参数。请提供要写入的文件内容。",
+                render=f"{self.name} 执行失败: 缺少 content 参数",
+            )
         # 解析
         absolute_path = resolve_read_path(path, params.get("app_id", "main"))
         log.debug(f"解析后的完整写入路径为:{absolute_path}")
