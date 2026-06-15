@@ -567,6 +567,16 @@ class AgentRuntime(LLMRecoveryMixin):
                 session_state.last_tool_signature = signature
                 session_state.consecutive_same_tool_calls = 1
             if session_state.consecutive_same_tool_calls >= self.max_same_tool_calls:
+                tc_name = tool_call.get('name', 'unknown')
+                tc_args = tool_call.get('arguments', {}) or {}
+                arg_path = (tc_args.get('path') or '').strip() if isinstance(tc_args, dict) else ''
+                arg_content = (tc_args.get('content') or '').strip() if isinstance(tc_args, dict) else ''
+                if tc_name in ('write_file', 'read_file', 'edit_file') and (not arg_path or (tc_name == 'write_file' and not arg_content)):
+                    raise RuntimeError(
+                        f"模型连续 {session_state.consecutive_same_tool_calls} 次调用 {tc_name} "
+                        f"但未提供有效参数(path={repr(arg_path)}, content_len={len(arg_content)})。"
+                        f"可能是上下文过长导致大模型参数丢失，建议新建会话重试。"
+                    )
                 raise RuntimeError(
                     f"Agent repeated the same tool call "
                     f"{session_state.consecutive_same_tool_calls} times: "
@@ -597,6 +607,49 @@ class AgentRuntime(LLMRecoveryMixin):
                 messages = pre_result.get("messages", "")
                 tool_message["content"] = f" PreToolUse message :{messages}"
                 session_state.context_manager.add_tool_message(tool_message)
+
+            # 文件工具参数校验：path 为空时跳过执行，注入纠正提示
+            _tool_name = tool_call.get("name", "")
+            _tool_args = tool_call.get("arguments", {}) or {}
+            if _tool_name in ("write_file", "read_file", "edit_file", "delete_file"):
+                _path = (_tool_args.get("path") or "").strip() if isinstance(_tool_args, dict) else ""
+                _content = (_tool_args.get("content") or "").strip() if isinstance(_tool_args, dict) else ""
+                if not _path:
+                    tool_message['content'] = (
+                        f"❌ {_tool_name} 调用失败: path 参数为空。\n"
+                        f"必须提供有效的文件路径，例如: path=\"train_model.py\"\n"
+                        f"如果需要了解目录结构，请先用 list_directory 查看。"
+                    )
+                    tool_message['state'] = "failure"
+                    tool_message['render'] = f"{_tool_name} 执行失败: path 为空"
+                    session_state.context_manager.add_tool_message(tool_message)
+                    await self._publish_runtime_event(
+                        session_state,
+                        AgentEvent(
+                            event_type=AgentEventType.TOOL_EXECUTION_END,
+                            data=tool_message,
+                            state=AgentState.RUNNING,
+                        ),
+                    )
+                    continue
+                if _tool_name == "write_file" and not _content:
+                    tool_message['content'] = (
+                        f"❌ write_file 调用失败: content 参数为空。\n"
+                        f"write_file 需要同时提供 path 和 content 两个参数。\n"
+                        f"请将完整的文件源代码填入 content 参数后重新调用 write_file。"
+                    )
+                    tool_message['state'] = "failure"
+                    tool_message['render'] = f"write_file 执行失败: content 为空"
+                    session_state.context_manager.add_tool_message(tool_message)
+                    await self._publish_runtime_event(
+                        session_state,
+                        AgentEvent(
+                            event_type=AgentEventType.TOOL_EXECUTION_END,
+                            data=tool_message,
+                            state=AgentState.RUNNING,
+                        ),
+                    )
+                    continue
             await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
