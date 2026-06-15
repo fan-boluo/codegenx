@@ -703,10 +703,14 @@ class AgentRuntime(LLMRecoveryMixin):
             }
             # 附加结构化 task_data 供前端任务面板消费
             if tool_name in ("task_create", "task_update") and render_raw:
-                task = tc.get('content') or ""
-                if task:
-                    event.data["task_data"] = task
-                    event.data["description"] = task.get("subject", tc.get("name", ""))
+                content_raw = tc.get('content') or ""
+                if content_raw:
+                    event.data["task_data"] = content_raw
+                    try:
+                        task = ast.literal_eval(content_raw) if isinstance(content_raw, str) else content_raw
+                        event.data["description"] = task.get("subject", tc.get("name", ""))
+                    except Exception:
+                        event.data["description"] = tc.get("name", "")
 
 
     # def _render_tool_front(self,tc:dict):
