@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from bot.tools.base import BaseTool, ToolResult
+from bot.tools.file import resolve_read_path
 from shared.config.log_config import log
 
 # 可根据文件扩展名检查的文件类型
@@ -108,10 +109,14 @@ class CodeCheckTool(BaseTool):
         params: dict,
         signal: asyncio.Event | None = None,
     ) -> ToolResult:
-        path_str: str = params["path"]
-        file_path = Path(path_str).expanduser()
-        if not file_path.is_absolute():
-            file_path = Path.cwd() / file_path
+        path_str: str = (params.get("path") or "").strip()
+        if not path_str:
+            return ToolResult(
+                success=False,
+                message="缺少 path 参数。请提供要检查的 Python 文件路径。",
+                render=f"{self.name} 执行失败: 缺少 path 参数",
+            )
+        file_path = resolve_read_path(path_str, params.get("app_id", "main"))
         file_path = file_path.resolve()
 
         if signal and signal.is_set():

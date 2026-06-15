@@ -49,7 +49,7 @@ class ToolExecutor:
         """
         tool_name = tool_call.get("name")
         tool_input = dict(tool_call.get("arguments", {}) or {})
-        app_id = getattr(session_state, "app_id", "main") if session_state is not None else "main"
+        app_id = str(session_state.request.app_id) if session_state is not None and session_state.request is not None else "main"
         user_id = getattr(session_state, "user_id", "") if session_state is not None else ""
         session_id = getattr(session_state, "session_id", "") if session_state is not None else ""
         turn_id = getattr(session_state, "request_id", "") if session_state is not None else ""
@@ -64,7 +64,7 @@ class ToolExecutor:
                 user_id or session_id or "anonymous",
             )
 
-        if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory"}:
+        if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory", "code_check", "find", "grep"}:
             tool_input.setdefault("app_id", app_id)
 
         if tool_name in {"write_short_term", "write_long_term"}:
