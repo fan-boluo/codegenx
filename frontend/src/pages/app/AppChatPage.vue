@@ -1580,15 +1580,13 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
     finishStream(); return
   }
   if (eventType === 'Error') {
-    const errorText = typeof eventData === 'string' ? eventData : eventData?.message || JSON.stringify(eventData)
     failAllRunningToolSteps()
     const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
     if (targetMessage) {
-      targetMessage.content = `执行错误，请稍后重试\n> ${errorText}`
+      targetMessage.content = '执行出错，请稍后重试'
       targetMessage.loading = false
     }
-    appendOutput('stderr', errorText)
-    message.error('执行错误，请稍后重试'); finishStream(); return
+    message.error('执行出错，请稍后重试'); finishStream(); return
   }
   if (eventType === 'Log_Chunk' || eventType === 'Terminal_Output') {
     const text = typeof eventData === 'string' ? eventData : eventData?.text || JSON.stringify(eventData)
