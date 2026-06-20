@@ -1,11 +1,20 @@
+# ============ API Gateway ============
 FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.txt
+# Install deps
+COPY backend/api-gateway/requirements.txt ./api-gateway/requirements.txt
+RUN pip install --no-cache-dir -r api-gateway/requirements.txt
 
-COPY app.py ./
+# Copy shared library (needed by all services)
+COPY backend/shared/ ./shared/
+COPY backend/infra/ ./infra/
 
-EXPOSE 8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Copy gateway code
+COPY backend/api-gateway/ ./api-gateway/
+
+WORKDIR /app/api-gateway
+EXPOSE 8456
+
+CMD ["python", "run.py", "--env", "prod", "--host", "0.0.0.0", "--port", "8456"]
