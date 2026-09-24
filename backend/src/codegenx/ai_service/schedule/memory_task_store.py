@@ -3,7 +3,7 @@
 
 对应表（DDL 见 init/memory_schema.sql，由部署方手动执行，本模块不建表）：
   memory_task            离线任务队列
-  memory_watermark       会话消息消费水位 (file_name, line_no)
+  memory_watermark       会话消息消费水位（chat_message.seq，会话内单调递增）
   memory_sync_checkpoint 双数据源同步检查点 (app_id, scope) → last_entry_id
 
 状态机：pending → running → done
@@ -211,40 +211,34 @@ class MemoryTaskStore:
 
     # === 水位（memory_watermark 表）===
 
-    async def get_watermark(self, session_id: str) -> tuple[str, int]:
-        """读取会话消费水位，返回 (file_name, line_no)；无记录返回 ("", 0)。"""
+    async def get_watermark(self, session_id: str) -> int:
+        """读取会话消费水位（已消费的最大 chat_message.seq）；无记录返回 0。"""
         async with session_maker() as session:
             row = (
                 await session.execute(
-                    text(
-                        "SELECT last_file_name, last_line_no FROM memory_watermark "
-                        "WHERE session_id = :s"
-                    ),
+                    text("SELECT last_seq FROM memory_watermark WHERE session_id = :s"),
                     {"s": session_id},
                 )
             ).first()
-        if row is None:
-            return "", 0
-        return str(row[0] or ""), int(row[1] or 0)
+        return int(row[0] or 0) if row else 0
 
     async def advance_watermark(
-        self, session_id: str, app_id: str, user_id: str, file_name: str, line_no: int
+        self, session_id: str, app_id: str, user_id: str, last_seq: int
     ) -> None:
         """推进水位（upsert）。只在提取成功后调用，保证崩溃可续提。"""
         async with session_maker() as session:
             await session.execute(
                 text(
                     "INSERT INTO memory_watermark "
-                    "(session_id, app_id, user_id, last_file_name, last_line_no) "
-                    "VALUES (:s, :a, :u, :f, :l) "
-                    "ON DUPLICATE KEY UPDATE last_file_name = :f, last_line_no = :l"
+                    "(session_id, app_id, user_id, last_seq) "
+                    "VALUES (:s, :a, :u, :l) "
+                    "ON DUPLICATE KEY UPDATE last_seq = :l"
                 ),
                 {
                     "s": session_id,
                     "a": str(app_id),
                     "u": str(user_id or ""),
-                    "f": file_name,
-                    "l": int(line_no),
+                    "l": int(last_seq),
                 },
             )
             await session.commit()

@@ -3,7 +3,7 @@
 
 职责（设计文档 §5.2 / §6）：
 1. 从 memory_task 表领取到期任务，按类型分发执行：
-   - warm_extract:   水位增量读对话 → 小模型提取候选记忆 → 判重/仲裁 → 双写 → 推进水位
+   - warm_extract:   水位增量读对话（chat_message 表）→ 小模型提取候选记忆 → 判重/仲裁 → 双写 → 推进水位
    - consolidate:    每日跨会话整理（近似去重合并）
    - decay_archive:  30 天未访问软删除 / 90 天归档（jsonl→zip + Qdrant 物理删除）
    - sync_check:     json 真相源 → Qdrant 对账补写（检查点增量）
@@ -41,7 +41,6 @@ from codegenx.ai_service.schedule.memory_task_store import (
     TASK_DECAY_ARCHIVE,
     TASK_SYNC_CHECK,
 )
-from codegenx.ai_service.session.manager import SessionManager
 
 # 单次提取消费的消息量上限（防止单任务过大拖垮小模型）
 _MAX_MESSAGES_PER_EXTRACT = 80
@@ -179,7 +178,7 @@ class MemoryScheduler:
     async def _do_warm_extract(self, task: dict) -> None:
         """warm 层增量提取：水位 → 完整轮次 → 小模型提取 → 判重仲裁双写 → 推进水位。
 
-        只消费「以 assistant 收尾的完整轮次」：assistant 消息在 turn 结束后才落盘，
+        只消费「以 assistant 收尾的完整轮次」：assistant 消息在 turn 结束后才入库，
         半截对话留在水位之后，等下个任务与后续轮次合并提取。
         """
         app_id = str(task.get("app_id") or "")
@@ -189,29 +188,30 @@ class MemoryScheduler:
             log.warning("[warm_extract] 任务缺少 app_id/session_id，跳过: #{}", task["id"])
             return
 
-        # 1. 水位增量读取（对话 jsonl 文件为源；路径按 用户/项目 两级定位）
-        file_name, line_no = await self.tasks.get_watermark(session_id)
-        records = SessionManager(user_id, app_id, session_id).read_messages_since(file_name, line_no)
+        # 1. 水位增量读取（chat_message 表为源，按 seq 递增）
+        from codegenx.ai_service.chat_message import get_chat_message_store
+        last_seq = await self.tasks.get_watermark(session_id)
+        records = await get_chat_message_store().read_since(session_id, after_seq=last_seq)
         if not records:
             return
 
         # 2. 截到「以 assistant 收尾」的完整前缀；超过单次上限的留待下次
-        consumed: list[tuple[str, int, dict]] = []
+        consumed: list[tuple[int, dict]] = []
         for i, rec in enumerate(records):
-            if rec[2].get("role") == "assistant":
+            if rec[1].get("role") == "assistant":
                 consumed = records[: i + 1]
         if not consumed:
             return  # 末尾没有完整轮次
         if len(consumed) > _MAX_MESSAGES_PER_EXTRACT:
             consumed = consumed[-_MAX_MESSAGES_PER_EXTRACT:]
             # 截断后必须仍以 assistant 收尾，否则本轮只读不推进
-            while consumed and consumed[-1][2].get("role") != "assistant":
+            while consumed and consumed[-1][1].get("role") != "assistant":
                 consumed.pop()
             if not consumed:
                 return
 
         # 3. 小模型提取候选记忆
-        turns_text = _render_messages([m for _, _, m in consumed])
+        turns_text = _render_messages([m for _, m in consumed])
         raw = await self._invoke_llm(
             messages=[
                 {"role": "system", "content": MEMORY_EXTRACT_SYSTEM_PROMPT},
@@ -221,15 +221,14 @@ class MemoryScheduler:
         )
         candidates = parse_extracted_memories(raw)
 
-        # 4. 判重/仲裁 + 双写（jsonl 事实源先行）
+        # 4. 判重/仲裁 + 双写（json 事实源先行）
         if candidates:
             written = await write_memories(user_id, app_id, session_id, candidates, self._invoke_llm)
             if written:
                 log.info("[warm_extract] 会话 {} 写入 {} 条记忆", session_id, written)
 
-        # 5. 推进水位到消费到的最后一行；LLM 失败已抛异常走重试，水位不动
-        last_file, last_line, _ = consumed[-1]
-        await self.tasks.advance_watermark(session_id, app_id, user_id, last_file, last_line)
+        # 5. 推进水位到消费到的最后一条 seq；LLM 失败已抛异常走重试，水位不动
+        await self.tasks.advance_watermark(session_id, app_id, user_id, consumed[-1][0])
 
     async def _do_consolidate(self, task: dict) -> None:
         """每日跨会话整理：全 app 近似去重合并（idle 时段运行，不耗 LLM）。"""

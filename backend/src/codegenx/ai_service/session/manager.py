@@ -12,8 +12,6 @@ from shared.constants import get_current_session_dir, get_session_dir
 
 PROJECT_DIR = Path(__file__).parent.parent
 
-MAX_FILE_BYTES = 1 * 1024 * 1024
-_CHAT_HISTORY_PREFIX = "chat_history_"
 _TURN_SNAPSHOT_PREFIX = "last_chat_snapshot_"
 _SESSION_INDEX_FILE = "session_index.json"
 
@@ -31,12 +29,6 @@ class SessionManager:
     def _turn_snapshot_file(self, turn_id: str) -> Path:
         return self.session_dir / f"turn_{turn_id}_snapshot.json"
 
-    def _chat_history_file(self, index: int = -1) -> Path:
-        """index=-1 → chat_history_{sid}.jsonl, index>=0 → chat_history_{sid}_{index}.jsonl"""
-        if index >= 0:
-            return self.session_dir / f"{_CHAT_HISTORY_PREFIX}{self.session_id}_{index}.jsonl"
-        return self.session_dir / f"{_CHAT_HISTORY_PREFIX}{self.session_id}.jsonl"
-
     def _turn_chat_message_snapshot_file(self) -> Path:
         return self.session_dir / f"{_TURN_SNAPSHOT_PREFIX}{self.session_id}.jsonl"
 
@@ -45,54 +37,6 @@ class SessionManager:
 
     def _memory_log_file(self) -> Path:
         return self.session_dir / f"memory_log_{self.session_id}.jsonl"
-
-    # ── 记忆系统：水位增量读取 ─────────────────────────────────────────────────
-
-    def _chat_history_files_ordered(self) -> list[Path]:
-        """按写入顺序列出本会话全部聊天文件：base 先于 _0，_0 先于 _1 …"""
-        pattern = f"{_CHAT_HISTORY_PREFIX}{self.session_id}"
-        base = self.session_dir / f"{pattern}.jsonl"
-        indexed: list[tuple[int, Path]] = []
-        for path in self.session_dir.glob(f"{pattern}_*.jsonl"):
-            suffix = path.stem[len(pattern) + 1:]
-            if suffix.isdigit():
-                indexed.append((int(suffix), path))
-        indexed.sort()
-        result = [base] if base.exists() else []
-        result.extend(p for _, p in indexed)
-        return result
-
-    def read_messages_since(self, file_name: str = "", line_no: int = 0) -> list[tuple[str, int, dict]]:
-        """从水位 (file_name, line_no) 之后增量读取聊天消息（供记忆提取消费）。
-
-        返回 [(file_name, line_no, message), ...] 按写入顺序；
-        line_no 从 1 计；file_name 为空表示从头读。
-        解析失败的行跳过（坏行不阻断水位推进）。
-        """
-        result: list[tuple[str, int, dict]] = []
-        passed_watermark = file_name == ""
-        for path in self._chat_history_files_ordered():
-            if not passed_watermark:
-                if path.name != file_name:
-                    continue
-                passed_watermark = True  # 命中水位文件，从下一行开始
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    for current_no, line in enumerate(f, start=1):
-                        if path.name == file_name and current_no <= line_no:
-                            continue
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            msg = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if isinstance(msg, dict):
-                            result.append((path.name, current_no, msg))
-            except OSError as exc:
-                log.warning("聊天文件读取失败 {}:{}", path, exc)
-        return result
 
     async def save_turn_chat_message_snapshot(self,turn_chat_message: list[dict[str, Any]]) -> str:
         """保留最后一轮的chat_message，给会话重新打开时，直接从此chat_message直接继续输入给大模型"""
@@ -120,58 +64,6 @@ class SessionManager:
                 chat_message = []
         log.debug("从上一轮快照加载聊天历史上下文：{} 条",len(chat_message))
         return chat_message
-
-    async def _get_latest_write_file(self,  line_bytes: int) -> Path:
-        """
-        获取当前要写入的最新文件：
-        - 检查最后一个文件是否够大, 不够就新建下一个数字文件
-        """
-        index = -1
-
-        # 循环找能放下本条消息的文件
-        while True:
-            current_file = self._chat_history_file(index)
-            current_size = current_file.stat().st_size if current_file.exists() else 0
-            # 能放下 → 用这个
-            if current_size + line_bytes <= MAX_FILE_BYTES:
-                return current_file
-            # 放不下 → 下一个编号
-            index += 1
-
-    async def append_chat_history_message(self, message: dict[str, Any], user_id: str) -> None:
-        """追加单条聊天记录，自动滚动到新文件"""
-
-        # 1. 简化 assistant tool_calls（只保留 arguments key）
-        if message.get("role") == "assistant" and "tool_calls" in message:
-            tool_calls = message["tool_calls"]
-            if isinstance(tool_calls, list):
-                for call in tool_calls:
-                    if call.get("type") == "function" and "function" in call:
-                        func = call["function"]
-                        arguments_str = func.get("arguments", "")
-                        if arguments_str:
-                            try:
-                                args_dict = json.loads(arguments_str)
-                                simplified_args = {k: None for k in args_dict}
-                                func["arguments"] = json.dumps(simplified_args, ensure_ascii=False)
-                            except json.JSONDecodeError:
-                                pass
-
-        # 2. 加入公共字段
-        message["user_id"] = user_id
-        message["create_time"] = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        serialized = json.dumps(message, ensure_ascii=False) + "\n"
-        line_bytes = len(serialized.encode("utf-8"))
-
-        async with self._lock:
-            # 获取当前应该写入的最新文件
-            file_path = await self._get_latest_write_file( line_bytes)
-
-            # 写入文件
-            with open(file_path, "a", encoding="utf-8") as f:
-                f.write(serialized)
-
-
 
     async def append_tool_log(self,  entry: dict[str, Any]) -> None:
         """追加一条工具调用记录到 tool_log_{session_id}.jsonl。"""

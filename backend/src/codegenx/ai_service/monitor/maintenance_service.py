@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from threading import Lock
 
 from sqlalchemy import text
@@ -12,10 +11,8 @@ from db.mysql.session import session_maker
 from codegenx.ai_service.monitor.alert_evaluator import get_alert_streak_tracker
 from codegenx.ai_service.monitor.monitor_query_service import MonitorQueryService, get_monitor_query_service
 from shared import log
-from shared.constants import DATA_ROOT_DIR
 from codegenx.ai_service.monitor.schema.monitor import MonitorCleanupSummary, MonitorCleanupTableResult
 
-CHAT_HISTORY_FILE_GLOB = "chat_history_*.jsonl"
 CHAT_HISTORY_RETENTION_DAYS = 3
 _CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS = 86400  # 24 hours
 
@@ -44,31 +41,20 @@ class MonitorMaintenanceService:
             ("monitor_alerts", "triggered_at"),
         ]
 
-    # ── chat history file cleanup ─────────────────────────────────────────
+    # ── chat message DB cleanup ───────────────────────────────────────────
 
-    def cleanup_chat_history_files(self, retention_days: int = CHAT_HISTORY_RETENTION_DAYS) -> int:
-        """Delete chat_history_*.jsonl files whose mtime exceeds retention_days.
-        Returns the number of deleted files."""
-        now = datetime.now(UTC).replace(tzinfo=None)
-        cutoff = now - timedelta(days=retention_days)
-        runtime_root = DATA_ROOT_DIR
-        if not runtime_root.exists():
+    async def cleanup_chat_messages(self, retention_days: int = CHAT_HISTORY_RETENTION_DAYS) -> int:
+        """Delete chat_message rows older than retention_days. Returns deleted rows."""
+        from codegenx.ai_service.chat_message import get_chat_message_store
+
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=retention_days)
+        try:
+            deleted = await get_chat_message_store().delete_before(cutoff)
+        except Exception as exc:
+            log.warning("cleanup_chat_messages failed: {}", exc)
             return 0
-
-        deleted = 0
-        # 用户/项目 两级目录：.data/{userId}/{appId}/session/chat_history_*.jsonl
-        history_glob = f"*/*/session/{CHAT_HISTORY_FILE_GLOB}"
-        for history_file in runtime_root.glob(history_glob):
-            try:
-                mtime = datetime.fromtimestamp(history_file.stat().st_mtime, tz=UTC).replace(tzinfo=None)
-                if mtime < cutoff:
-                    history_file.unlink()
-                    deleted += 1
-            except Exception:
-                log.warning("cleanup_chat_history_files: skip file={}", history_file)
-
         if deleted:
-            log.info("cleanup_chat_history_files: removed {} expired history files (retention={}d)", deleted, retention_days)
+            log.info("cleanup_chat_messages: removed {} expired rows (retention={}d)", deleted, retention_days)
         return deleted
 
     # ── periodic maintenance entry-point ──────────────────────────────────
@@ -175,19 +161,19 @@ async def _periodic_maintenance_loop(*, interval_seconds: int) -> None:
             await asyncio.sleep(interval_seconds)
             now = datetime.now(UTC)
 
-            # 1) Chat history file cleanup (once per day)
+            # 1) Chat message cleanup (once per day)
             if _last_chat_history_cleanup is None or \
                (now - _last_chat_history_cleanup).total_seconds() >= _CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS:
-                file_deleted = service.cleanup_chat_history_files()
+                chat_deleted = await service.cleanup_chat_messages()
                 _last_chat_history_cleanup = now
             else:
-                file_deleted = 0
+                chat_deleted = 0
 
             # 2) DB history retention cleanup
             result = await service.cleanup_history(retention_days=7, dry_run=False)
             log.info(
-                "Periodic maintenance: chat_history_files_deleted={} DB_cleanup_status={} DB_deletedRows={}",
-                file_deleted, result.status, result.deleted_rows,
+                "Periodic maintenance: chat_messages_deleted={} DB_cleanup_status={} DB_deletedRows={}",
+                chat_deleted, result.status, result.deleted_rows,
             )
 
             # 3) Alert streak stale-entry cleanup

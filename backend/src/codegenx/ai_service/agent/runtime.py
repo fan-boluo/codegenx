@@ -546,10 +546,14 @@ class AgentRuntime(LLMRecoveryMixin):
                 for tc in tool_calls
             ]
         session_state.context_manager.add_assistant_message(assistant_message)
-        if session_state.session_manager is not None:
-            await session_state.session_manager.append_chat_history_message(
-                assistant_message,session_state.user_id
+        # assistant 消息入库（MySQL chat_message 表；失败不阻断对话）
+        try:
+            from codegenx.ai_service.chat_message import get_chat_message_store
+            await get_chat_message_store().append_message(
+                session_state.user_id, str(session_state.app_id), session_state.session_id, assistant_message
             )
+        except Exception as exc:
+            log.warning("assistant 消息入库失败（不影响对话）: {}", exc)
 
         turn_state.requires_followup = bool(tool_calls)
         for tool_call in tool_calls:
@@ -713,22 +717,24 @@ class AgentRuntime(LLMRecoveryMixin):
 
 
     async def _record_chat_history(self, session_state: RuntimeSessionState, event: AgentEvent) -> None:
-        """将工具执行结果写入 chat_history JSONL，供前端展示完整对话过程。"""
-        sm = session_state.session_manager
-        if sm is None:
-            return
+        """将工具执行结果写入 chat_message 表，供前端展示完整对话过程。"""
         if event.event_type == AgentEventType.TOOL_EXECUTION_END:
             tc = event.data if isinstance(event.data, dict) else {}
-            await sm.append_chat_history_message(
-
-                {
-                "role": "tool",
-                "tool_call_id": tc.get("tool_id", ""),
-                "name": tc.get("tool_name", ""),
-                "content": str(tc.get("description", "")),
-            },
-                session_state.user_id
-            )
+            try:
+                from codegenx.ai_service.chat_message import get_chat_message_store
+                await get_chat_message_store().append_message(
+                    session_state.user_id,
+                    str(session_state.app_id),
+                    session_state.session_id,
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("tool_id", ""),
+                        "name": tc.get("tool_name", ""),
+                        "content": str(tc.get("description", "")),
+                    },
+                )
+            except Exception as exc:
+                log.warning("tool 消息入库失败（不影响对话）: {}", exc)
 
     def _sanitize_event_data(self, event: AgentEvent) -> None:
         """过滤敏感数据，工具事件只描述正在做什么，不传输原始内容。"""

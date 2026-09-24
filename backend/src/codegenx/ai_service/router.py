@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import json as json_lib
-
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -18,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.ai_service.session.manager import SessionManager
+from codegenx.ai_service.chat_message import get_chat_message_store
 from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import validate_prompt_safety
 from codegenx.ai_service.monitor.monitor_query_service import get_monitor_query_service
 from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
@@ -26,7 +25,6 @@ from codegenx.gateway.middleware.auth import require_login, require_role
 from codegenx.gateway.middleware.jwt_auth import JWTUser
 from db.mysql.session import get_db_session
 from shared import log
-from shared.constants import get_current_session_dir
 from codegenx.user_service.user_enums import UserRole
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
@@ -155,28 +153,15 @@ async def get_session_messages(
     login_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """加载指定 session 的最近 N 条消息（仅限项目成员，读取自己目录）。"""
+    """加载指定 session 的最近 N 条消息（仅限项目成员，按用户隔离查询）。"""
     await require_participant_by_id(db, app_id, login_user)
-    session_dir = get_current_session_dir(str(login_user.user_id), str(app_id), session_id)
-    if not session_dir.exists():
-        raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "会话不存在")
-
-    messages: list[dict] = []
-
-    # 从 chat_history JSONL 读取
-    history_file = session_dir / f"chat_history_{session_id}.jsonl"
     try:
-        if history_file.exists():
-            lines = history_file.read_text(encoding="utf-8").splitlines()
-            for line in lines[-limit:]:
-                try:
-                    msg = json_lib.loads(line.strip())
-                    if isinstance(msg, dict):
-                        messages.append(msg)
-                except Exception:
-                    continue
+        messages = await get_chat_message_store().get_recent(
+            user_id=login_user.user_id, session_id=session_id, limit=limit
+        )
     except Exception as exc:
         log.warning("读取会话消息失败 session={}/{} err={}", app_id, session_id, exc)
+        raise BusinessException(ErrorCode.SYSTEM_ERROR, "读取会话消息失败") from exc
 
     return success(messages)
 

@@ -43,8 +43,14 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
     # 加载上次聊天时的历史记录到内存
     session.context_manager.chat_messages = await session_manager.get_turn_chat_message_snapshot() or []
     user_dict = {"role": "user", "content": req.message}
-    # 添加到聊天文件中
-    await session.session_manager.append_chat_history_message(user_dict, session.user_id)
+    # 聊天消息入库（MySQL chat_message 表；失败不阻断对话）
+    try:
+        from codegenx.ai_service.chat_message import get_chat_message_store
+        await get_chat_message_store().append_message(
+            session.user_id, str(req.app_id), session.session_id, user_dict
+        )
+    except Exception as exc:
+        log.warning("user 消息入库失败（不影响对话）: {}", exc)
 
     # 更新会话索引，供快速列出历史会话
     await session_manager.upsert_session_index(req.message)

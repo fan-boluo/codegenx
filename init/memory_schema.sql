@@ -33,15 +33,18 @@ CREATE TABLE IF NOT EXISTS memory_task (
 
 -- ------------------------------------------------------------
 -- 会话消息消费水位
--- 记忆提取按会话增量消费 jsonl 对话文件，崩溃后从水位续提。
--- 对话文件无全局 rowid，水位用 (file_name, line_no) 定位。
+-- 记忆提取按会话增量消费 chat_message 表（MySQL），崩溃后从水位续提。
+-- 水位 = 已消费到的最大 seq（会话内单调递增，含）。
+-- 存量库迁移（旧版按 jsonl 文件 (file_name, line_no) 定位）：
+--   ALTER TABLE memory_watermark
+--     ADD COLUMN last_seq BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '已消费到的最大 seq（含）' AFTER user_id,
+--     DROP COLUMN last_file_name, DROP COLUMN last_line_no;
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS memory_watermark (
     session_id    VARCHAR(64) PRIMARY KEY COMMENT '会话id',
     app_id        VARCHAR(64) NOT NULL DEFAULT '' COMMENT '应用id',
     user_id       VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户id',
-    last_file_name VARCHAR(128) NOT NULL DEFAULT '' COMMENT '已消费到的对话文件名（chat_history_*.jsonl）',
-    last_line_no  INT         NOT NULL DEFAULT 0 COMMENT '已消费到的行号（含）',
+    last_seq      BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '已消费到的最大 seq（chat_message.seq，含）',
     updated_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
 ) COMMENT '记忆提取会话消费水位' COLLATE = utf8mb4_unicode_ci;
 
