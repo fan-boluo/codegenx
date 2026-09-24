@@ -1,11 +1,12 @@
 """
 记忆门面 —— 每轮组装 hot + warm 两层注入（供 SessionContext.build_system_prompt 调用）。
 
-分层（设计文档 §3）：
-  hot  hot_store.format_hot_prompt  核心约束，始终注入（≤2K token）
-  warm retriever.search_warm        话题记忆，按当前 query 混合召回 + 重排（≤8K token）
+分层（设计方案 v2.1 §1.1/§5.5）：
+  hot  hot_store.format_hot_prompt  核心约束，每轮全量注入（MySQL，≤hot_token_budget）
+  warm retriever.search_warm        情景记忆，按 query 召回 + 应用层重排（≤warm_token_budget）
+  冲突消解规则注入尾部（P0-12）：hot > warm > 用户历史，用户当前指令最高
 
-写入不在这里：条件触发的提取走 schedule/ 任务（阶段3），本类只读。
+写入不在这里：条件触发的提取走 schedule/ 离线任务，本类只读。
 """
 from __future__ import annotations
 
@@ -15,6 +16,14 @@ from shared import log
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.memory.hot_store import format_hot_prompt
 from codegenx.ai_service.memory.retriever import search_warm, format_warm_entries_prompt
+
+# 冲突消解规则（P0-12，§5.5）：跨层 hot 优先，不按时间推翻硬约束
+MEMORY_USAGE_RULES = """\
+# 记忆冲突处理规则
+- 核心约束（hot）与历史经验（warm）冲突时，一律以核心约束为准
+- 同一层级内出现冲突时，以时间更新的记忆为准
+- 若发现记忆与用户当前明确指令冲突，以用户当前指令为准\
+"""
 
 
 @dataclass
@@ -26,7 +35,7 @@ class MemoryManager:
     user_id: str = ""
 
     async def load(self, query: str = "") -> str:
-        """组装当前轮的记忆注入：hot（常驻）+ warm（按 query 召回）。
+        """组装当前轮的记忆注入：hot（常驻）+ warm（按 query 召回）+ 冲突规则。
 
         Args:
             query: 用户本轮输入，空则跳过 warm 召回。
@@ -36,8 +45,12 @@ class MemoryManager:
 
         parts: list[str] = []
 
-        # ── hot 层：核心约束，每轮注入 ─────────────────────────────────────────
-        hot_prompt = format_hot_prompt(self.user_id, self.app_id)
+        # ── hot 层：核心约束，每轮注入（加载失败内部已降级为空）────────────────
+        try:
+            hot_prompt = await format_hot_prompt(self.app_id, self.user_id)
+        except Exception as exc:  # noqa: BLE001 — 记忆加载不得阻塞对话（§9 原则 1）
+            log.error("hot 层注入异常:{}", exc)
+            hot_prompt = ""
         if hot_prompt:
             parts.append(hot_prompt)
 
@@ -45,12 +58,16 @@ class MemoryManager:
         warm_entries: list = []
         if (query or "").strip():
             try:
-                warm_entries = await search_warm(self.user_id, self.app_id, query)
+                warm_entries = await search_warm(self.app_id, self.user_id, query)
             except Exception as exc:  # noqa: BLE001 — 记忆检索失败不阻断对话
                 log.error("warm 记忆检索异常:{}", exc)
                 warm_entries = []
             if warm_entries:
                 parts.append(format_warm_entries_prompt(warm_entries))
+
+        # ── 冲突消解规则（有记忆注入才附带）────────────────────────────────────
+        if parts:
+            parts.append(MEMORY_USAGE_RULES)
 
         # 监控埋点：本轮记忆命中条数
         if warm_entries:

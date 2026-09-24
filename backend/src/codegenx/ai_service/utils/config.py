@@ -167,6 +167,10 @@ class MemorySearchConfig(Base):
         default=30,
         validation_alias=AliasChoices("timeDecayHalfLifeDays", "time_decay_half_life_days"),
     )  # 时间衰减半衰期：0.5^(age_days/half_life)
+    hot_token_budget: int = Field(
+        default=2500,
+        validation_alias=AliasChoices("hotTokenBudget", "hot_token_budget"),
+    )  # hot 层注入 token 预算（§5.4 B1 建议值，需按上下文压测调整）
     warm_token_budget: int = Field(
         default=8192,
         validation_alias=AliasChoices("warmTokenBudget", "warm_token_budget"),
@@ -187,8 +191,12 @@ class MemoryFlushConfig(Base):
     archive_days: int = Field(
         default=90,
         validation_alias=AliasChoices("archiveDays", "archive_days"),
-    )  # 归档天数（jsonl→zip + Qdrant 物理删除）
-    # 写入判重阈值：相似度 ≥ 重复跳过；[匹配下限, 重复) 交 LLM 仲裁
+    )  # 归档天数（导出 + Qdrant 物理删除；软删后再满 archive_days-decay_days 天）
+    hot_max_entries: int = Field(
+        default=80,
+        validation_alias=AliasChoices("hotMaxEntries", "hot_max_entries"),
+    )  # hot 层写入期条数硬上限（§5.4：达限拒绝写入转投 consolidate）
+    # v1 写入判重阈值：v2 已移除写入时 LLM 判重，字段暂留避免旧配置文件报错
     shortDuplicatedScoreThreshold: float = Field(default=0.90)
     longMatchesScoreThreshold: float = Field(default=0.7)
     longMatchesTopK: int = Field(default=3)

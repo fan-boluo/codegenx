@@ -2,13 +2,15 @@
 记忆离线任务队列 + 消费水位 + 同步检查点 —— MySQL DAO（async SQLAlchemy）。
 
 对应表（DDL 见 init/memory_schema.sql，由部署方手动执行，本模块不建表）：
-  memory_task            离线任务队列
+  memory_task            离线任务队列（v2.1 增 idempotency_key 幂等 + produced_count 审计）
   memory_watermark       会话消息消费水位（chat_message.seq，会话内单调递增）
-  memory_sync_checkpoint 双数据源同步检查点 (app_id, scope) → last_entry_id
+  memory_sync_checkpoint 双数据源对账断点（v2.1 语义：仅断点续跑，不作正确性保证）
 
 状态机：pending → running → done
                 └→ 失败：retry_count+1，按退避(1m/5m/30m)回 pending；超限 → dead
-语义：at-least-once。任务失败重跑可能重复写记忆，由写入侧判重（writer 相似度门槛）兜底。
+语义：at-least-once。任务失败重跑可能重复写记忆：
+  hot  由 uk_slot upsert 天然幂等（同槽位覆盖）
+  warm 由 memory_task 幂等键/at-least-once + 后续 conflict_detect（P1）兜底
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ TASK_WARM_EXTRACT = "warm_extract"
 TASK_CONSOLIDATE = "consolidate"
 TASK_DECAY_ARCHIVE = "decay_archive"
 TASK_SYNC_CHECK = "sync_check"
+TASK_COMPLIANCE_DELETE = "compliance_delete"
 
 # 失败退避序列（秒）：第 n 次失败后等待 backoffs[n-1] 再重试
 RETRY_BACKOFFS = (60.0, 300.0, 1800.0)
@@ -47,9 +50,15 @@ class MemoryTaskStore:
         payload: dict | None = None,
         next_run_at: float = 0.0,
         dedup: bool = False,
+        idempotency_key: str | None = None,
     ) -> int | None:
-        """登记一个离线任务，返回任务 id；dedup=True 时同类型同会话已有
-        pending/running 任务则跳过（聊天在途高频触发靠它防任务爆炸）。"""
+        """登记一个离线任务，返回任务 id。
+
+        - dedup=True：同类型同会话已有 pending/running 任务则跳过
+          （聊天在途高频触发靠它防任务爆炸）
+        - idempotency_key：uk_idempotency 唯一约束兜底（合规删除等
+          强幂等场景）；键冲突返回 None
+        """
         async with session_maker() as session:
             if dedup:
                 row = (
@@ -67,11 +76,12 @@ class MemoryTaskStore:
             cur = await session.execute(
                 text(
                     "INSERT INTO memory_task "
-                    "(task_type, app_id, user_id, session_id, status, payload, next_run_at) "
-                    "VALUES (:t, :a, :u, :s, 'pending', :p, :n)"
+                    "(task_type, idempotency_key, app_id, user_id, session_id, status, payload, next_run_at) "
+                    "VALUES (:t, :ik, :a, :u, :s, 'pending', :p, :n)"
                 ),
                 {
                     "t": task_type,
+                    "ik": idempotency_key,
                     "a": str(app_id),
                     "u": str(user_id or ""),
                     "s": session_id,
@@ -123,11 +133,15 @@ class MemoryTaskStore:
             t["payload"] = self._parse_payload(t.get("payload"))
         return tasks
 
-    async def mark_done(self, task_id: int) -> None:
+    async def mark_done(self, task_id: int, produced_count: int = 0) -> None:
+        """完成（produced_count 回填产出记忆条数，批次审计用）。"""
         async with session_maker() as session:
             await session.execute(
-                text("UPDATE memory_task SET status = 'done', last_error = NULL WHERE id = :i"),
-                {"i": task_id},
+                text(
+                    "UPDATE memory_task SET status = 'done', produced_count = :pc, last_error = NULL "
+                    "WHERE id = :i"
+                ),
+                {"i": task_id, "pc": int(produced_count)},
             )
             await session.commit()
 

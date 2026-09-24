@@ -1,12 +1,13 @@
 """
-记忆条目数据模型 —— json 事实源的统一结构。
+记忆条目数据模型 —— MySQL agent_memory 真源（设计方案 v2.1）的行结构与常量。
 
-一条记忆（MemoryEntry）同时落两处：
-  - json/jsonl 文件（事实源，负责持久与审计）
-  - Qdrant warm_memories collection（检索层，只读加速，可随时重建）
+一条记忆的落点（v2.1 起真源为 MySQL，json 文件降级为只读迁移源/导出视图）：
+  - MySQL agent_memory（唯一真源，hot/warm 同表分层，memory_layer 区分）
+  - Qdrant agent_memory_warm（仅 warm 层检索索引，payload 只存指针不存正文，
+    point id = agent_memory.id BIGINT 自增）
 
-ULID 作为主键：48bit 毫秒时间戳 + 80bit 随机，字典序即时间序，
-增量扫描（watermark 推进）依赖该性质按 id 比较。
+ULID（memory_id 业务主键）：48bit 毫秒时间戳 + 80bit 随机，字典序即时间序，
+仅用于排序/断点比较；向量库点位不再用它（Qdrant 只收无符号整数/UUID）。
 """
 from __future__ import annotations
 
@@ -14,25 +15,70 @@ import json
 import secrets
 import threading
 import time
-import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 
-# ── 记忆状态 ──────────────────────────────────────────────────────────────────
-STATUS_ACTIVE = "active"      # 正常可检索
-STATUS_INVALID = "invalid"    # 软删除（冲突被覆盖 / 30 天未访问）
-STATUS_ARCHIVED = "archived"  # 已归档（json 移入 zip，Qdrant 物理删除）
+# ── 分层（agent_memory.memory_layer）──────────────────────────────────────────
+LAYER_HOT = 1   # 结构化语义记忆：每轮全量注入，不进向量库，无时间衰减
+LAYER_WARM = 2  # 情景记忆：append-only，进 Qdrant 召回，参与时间衰减
 
-# ── 记忆类型与权重（rerank 的类型因子）───────────────────────────────────────
-MEMORY_TYPE_WEIGHTS: dict[str, float] = {
-    "user_correction": 1.0,     # 用户纠正：最高优先
-    "user_preference": 0.8,     # 用户偏好
-    "project_background": 0.6,  # 项目背景
-    "resource_path": 0.5,       # 资源路径
+# ── 状态（agent_memory.status）────────────────────────────────────────────────
+STATUS_ACTIVE = 1      # 正常生效
+STATUS_SUPERSEDED = 2  # 被 uk_slot 同槽位新记录取代（hot 专属语义）
+STATUS_REVOKED = 3     # 撤销（提炼出错/幻觉/用户要求/合规删除-软删）
+STATUS_ARCHIVED = 4    # 衰减软删（30 天未命中）；归档（90 天）后 Qdrant 物理删除
+
+# ── 来源（agent_memory.source_type）──────────────────────────────────────────
+SOURCE_USER = 1      # 用户明说（可进 hot 层）
+SOURCE_INFERRED = 2  # 模型推断：confidence 必须 <0.70，且不得进 hot 层（设计 §4.3）
+SOURCE_MANUAL = 3    # 人工录入/系统迁移
+
+
+# ── 内置记忆类型 ────────────────────────────────────────────────────────────────
+# 与 init/memory_schema.sql 的 memory_type_dict 种子数据一致；运行时调参以字典表为
+# 准（P2 接入在线读取），此处常量供校验/打分零成本使用。
+# weight：warm=召回类型权重（占 0.1 那一路）；hot=裁剪优先级。
+# half_life_d：衰减半衰期（天），None=不衰减（hot 层一律不衰减）。
+BUILTIN_MEMORY_TYPES: dict[str, dict] = {
+    # hot 层（确定性全量生效，不进向量库）
+    "hard_constraint":    {"layer": LAYER_HOT,  "weight": 1.0, "half_life_d": None},
+    "system_rule":        {"layer": LAYER_HOT,  "weight": 1.0, "half_life_d": None},
+    "user_preference":    {"layer": LAYER_HOT,  "weight": 0.9, "half_life_d": None},
+    "identity_fact":      {"layer": LAYER_HOT,  "weight": 0.8, "half_life_d": None},
+    "external_resource":  {"layer": LAYER_HOT,  "weight": 0.7, "half_life_d": None},
+    # warm 层（情景记忆，append-only）
+    "user_correction":    {"layer": LAYER_WARM, "weight": 1.0, "half_life_d": 60},
+    "task_experience":    {"layer": LAYER_WARM, "weight": 0.8, "half_life_d": 90},
+    "project_background": {"layer": LAYER_WARM, "weight": 0.6, "half_life_d": 30},
+    "interaction_habit":  {"layer": LAYER_WARM, "weight": 0.5, "half_life_d": 30},
 }
+
+# hot 层裁剪优先级（溢出兜底排序用，设计 §5.4）
+HOT_TYPE_PRIORITY: dict[str, float] = {
+    t: m["weight"] for t, m in BUILTIN_MEMORY_TYPES.items() if m["layer"] == LAYER_HOT
+}
+
+DEFAULT_TYPE_WEIGHT = 0.3      # 字典外类型的兜底权重
+DEFAULT_HALF_LIFE_DAYS = 30
+
+
+def layer_of(memory_type: str) -> int | None:
+    """类型 → 分层；未知类型返回 None（由调用方决定拒绝或兜底）。"""
+    meta = BUILTIN_MEMORY_TYPES.get(memory_type)
+    return meta["layer"] if meta else None
+
+
+def type_weight(memory_type: str) -> float:
+    return BUILTIN_MEMORY_TYPES.get(memory_type, {}).get("weight", DEFAULT_TYPE_WEIGHT)
+
+
+def half_life_of(memory_type: str) -> int:
+    """召回衰减半衰期（天）；未配置/None 一律 30。"""
+    v = BUILTIN_MEMORY_TYPES.get(memory_type, {}).get("half_life_d")
+    return int(v) if v else DEFAULT_HALF_LIFE_DAYS
 
 
 def _now_iso() -> str:
-    """UTC ISO-8601 带时区，秒级精度即可（展示与生命周期判断用）。"""
+    """UTC ISO-8601 带时区，秒级精度（展示与生命周期判断用）。"""
     return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
 
 
@@ -46,7 +92,7 @@ def estimate_text_tokens(text: str) -> int:
 # ── ULID ─────────────────────────────────────────────────────────────────────
 _B32_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32
 
-# 同毫秒单调递增：保证「追加顺序 = ULID 字典序」，增量扫描（id 比较）的前提
+# 同毫秒单调递增：保证「生成顺序 = ULID 字典序」，对账断点比较的前提
 _ulid_lock = threading.Lock()
 _ulid_last_value = 0
 
@@ -69,76 +115,122 @@ def new_ulid(ts_ms: int | None = None) -> str:
     return "".join(reversed(chars))
 
 
-_B32_INDEX = {ch: i for i, ch in enumerate(_B32_ALPHABET)}
-
-
-def ulid_to_uuid(ulid: str) -> str:
-    """ULID（128bit）→ UUID 字符串，确定性可逆映射。
-
-    Qdrant 点位 ID 只接受无符号整数或 UUID，json 侧的 ULID 主键
-    在向量库边界统一转成 UUID（payload 里仍保留原始 ULID）。
-    """
-    value = 0
-    for ch in ulid:
-        value = (value << 5) | _B32_INDEX[ch]
-    return str(uuid.UUID(int=value))
-
+# ── 行结构 ────────────────────────────────────────────────────────────────────
 
 @dataclass
 class MemoryEntry:
-    """一条跨会话记忆。字段与 init/memory_schema.sql 的检索 payload 对齐。"""
-    id: str = field(default_factory=new_ulid)
-    layer: str = "warm"                     # hot / warm（hot 也用同结构存 hot.json）
-    topic: str = ""                         # 话题标签，召回展示用
-    memory_type: str = "project_background" # MEMORY_TYPE_WEIGHTS 的 key
-    content: str = ""                       # 记忆正文（一句话事实）
-    status: str = STATUS_ACTIVE
-    source_session_id: str = ""
-    # 兼容旧 embedding 调用方的 user 维度（当前单租户部署留空）
+    """agent_memory 一行（v2.1）。写入侧构造后交 memory_store 落库；
+    读取侧由 DB 行经 from_row 还原。"""
+    id: int = 0                            # agent_memory.id（自增，Qdrant point id）
+    memory_id: str = field(default_factory=new_ulid)
+    app_id: str = ""
     user_id: str = ""
+
+    memory_layer: int = LAYER_WARM
+    memory_type: str = "project_background"
+    subject: str = "self"
+    slot_key: str = ""                     # hot=属性名（预定义/规整化）；warm=memory_id
+    active_slot: int | None = 1            # active 时=1，失效置 NULL（uk_slot 依赖）
+
+    summary: str = ""                      # 注入 prompt 的一句话摘要
+    content: str = ""                      # 记忆原文（content 列存 {"text","topic"} JSON）
+    topic: str = ""                        # 话题标签（存 content JSON 内，展示用）
+    token_cost: int = 0                    # 注入占用 token，写入时算好
+
+    source_type: int = SOURCE_USER
+    confidence: float = 1.00               # 模型推断必须 <0.70 且不进 hot
+    status: int = STATUS_ACTIVE
+    superseded_by: str = ""                # 被哪条 memory_id 取代
+
+    session_id: str = ""                   # 来源会话
+    source_msg_ids: list[str] = field(default_factory=list)  # 溯源（合规级联删除依赖）
+    task_id: int | None = None             # 产生本条的 memory_task.id
+
+    hit_count: int = 0
+    last_hit_at: str = ""                  # ISO；空=未命中过（衰减用 COALESCE 回退 created_at）
+    vector_synced: bool = False            # True=已同步 Qdrant（warm 层）
+
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
-    last_accessed_at: str = field(default_factory=_now_iso)
-    access_count: int = 0
-    invalid_at: str = ""                    # 置为 invalid/archived 的时间
-    invalid_reason: str = ""
 
-    # ── 序列化 ────────────────────────────────────────────────────────────────
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "MemoryEntry":
-        known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in data.items() if k in known})
-
-    def to_json_line(self) -> str:
-        return json.dumps(self.to_dict(), ensure_ascii=False)
-
-    @classmethod
-    def from_json_line(cls, line: str) -> "MemoryEntry | None":
-        line = line.strip()
-        if not line:
-            return None
-        try:
-            return cls.from_dict(json.loads(line))
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return None
-
-    # ── 派生属性 ──────────────────────────────────────────────────────────────
+    # ── 派生 ──────────────────────────────────────────────────────────────────
 
     @property
     def type_weight(self) -> float:
-        return MEMORY_TYPE_WEIGHTS.get(self.memory_type, 0.3)
+        return type_weight(self.memory_type)
 
-    def touch(self) -> None:
-        """召回命中后更新访问信息（jsonl 回写由 warm_store 缓冲处理）。"""
-        self.access_count += 1
-        self.last_accessed_at = _now_iso()
+    def content_json(self) -> str:
+        """content 列的存储格式（JSON 类型，存对象而非裸字符串）。"""
+        return json.dumps({"text": self.content, "topic": self.topic}, ensure_ascii=False)
 
-    def mark_invalid(self, reason: str) -> None:
-        self.status = STATUS_INVALID
-        self.invalid_at = _now_iso()
-        self.invalid_reason = reason
-        self.updated_at = _now_iso()
+    def to_row_dict(self) -> dict:
+        """全字段字典（归档导出/审计用，字段均 JSON 可序列化）。"""
+        return asdict(self)
+
+    def inject_text(self) -> str:
+        """注入 prompt 的正文：优先 summary，缺省回退原文。"""
+        return self.summary or self.content
+
+    # ── DB 行还原 ─────────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_row(cls, row: dict) -> "MemoryEntry":
+        """SQLAlchemy mappings() 行 → MemoryEntry。坏 content JSON 容错为原文。"""
+        content_raw = row.get("content")
+        text, topic = "", ""
+        if isinstance(content_raw, (str, bytes)):
+            try:
+                parsed = json.loads(content_raw)
+                if isinstance(parsed, dict):
+                    text = str(parsed.get("text", "") or "")
+                    topic = str(parsed.get("topic", "") or "")
+                else:
+                    text = str(parsed or "")
+            except (json.JSONDecodeError, TypeError):
+                text = str(content_raw)
+        msgs = row.get("source_msg_ids")
+        if isinstance(msgs, (str, bytes)):
+            try:
+                loaded = json.loads(msgs)
+                msgs = loaded if isinstance(loaded, list) else []
+            except (json.JSONDecodeError, TypeError):
+                msgs = []
+        synced_at = row.get("vector_synced_at")
+        return cls(
+            id=int(row.get("id") or 0),
+            memory_id=str(row.get("memory_id") or ""),
+            app_id=str(row.get("app_id") or ""),
+            user_id=str(row.get("user_id") or ""),
+            memory_layer=int(row.get("memory_layer") or LAYER_WARM),
+            memory_type=str(row.get("memory_type") or ""),
+            subject=str(row.get("subject") or "self"),
+            slot_key=str(row.get("slot_key") or ""),
+            summary=str(row.get("summary") or ""),
+            content=text,
+            topic=topic,
+            token_cost=int(row.get("token_cost") or 0),
+            source_type=int(row.get("source_type") or SOURCE_USER),
+            confidence=float(row.get("confidence") or 1.0),
+            status=int(row.get("status") or STATUS_ACTIVE),
+            superseded_by=str(row.get("superseded_by") or ""),
+            session_id=str(row.get("session_id") or ""),
+            source_msg_ids=[str(m) for m in (msgs or [])],
+            task_id=row.get("task_id"),
+            hit_count=int(row.get("hit_count") or 0),
+            last_hit_at=_dt_iso(row.get("last_hit_at")),
+            vector_synced=synced_at is not None,
+            created_at=_dt_iso(row.get("created_at")) or _now_iso(),
+            updated_at=_dt_iso(row.get("updated_at")) or _now_iso(),
+        )
+
+
+def _dt_iso(value) -> str:
+    """DB datetime → ISO 字符串；NULL → 空串。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return value.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    except AttributeError:
+        return str(value)

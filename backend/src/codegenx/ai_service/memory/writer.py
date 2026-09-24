@@ -1,34 +1,60 @@
 """
-warm 层写入器 —— 条件触发的记忆落库（json 事实源优先，Qdrant 跟进）。
+记忆写入器 —— 提炼候选 → 准入校验 → 分层落库（设计方案 v2.1 §4）。
 
-单条候选记忆的写入决策（设计文档 §5.2）：
-  1. 向量检索最相似的旧记忆（top longMatchesTopK）
-  2. 相似度 ≥ shortDuplicatedScoreThreshold(0.90) → 判重复，跳过
-  3. 相似度 ∈ [longMatchesScoreThreshold(0.70), 0.90) → LLM 仲裁
-     DUPLICATE 跳过 / UPDATE 合并改写 / CONFLICT 新胜旧失效 / KEEP_BOTH 都留
-  4. 相似度 < 0.70 → 视为无匹配，直接写入
+写入语义（相对 v1 的关键简化，§4.4/§4.5）：
+  hot  → uk_slot 确定性 upsert（同槽位旧记录自动 superseded），零 LLM 判重
+  warm → append-only，不判重（重复反馈是晋升 hot 的依据，幂等由 memory_task 保证）
+写入时同步的向量检索 + LLM 仲裁链路已整体移除——矛盾检测降级为每日异步
+conflict_detect（P1）。
 
-写入顺序：先写 jsonl（事实源），再 upsert Qdrant（失败留给 sync_check 修复，
-不回滚 —— json 侧成立即写入成功）。
+写入顺序：先 MySQL（真源）成立即写入成功；warm 向量层批量跟进，失败时
+vector_synced_at 保持 NULL，由每日 sync_check 对账补写，不回滚。
 """
 from __future__ import annotations
 
+import re
 from typing import Awaitable, Callable
 
 from shared import log
 from codegenx.ai_service.utils.config import config
-from codegenx.ai_service.memory.models import MemoryEntry, MEMORY_TYPE_WEIGHTS
-from codegenx.ai_service.memory.embedding import get_embedding_client
-from codegenx.ai_service.memory.vector_store import search_by_vector, upsert_entries, mark_status
-from codegenx.ai_service.memory.warm_store import get_warm_store
-from codegenx.ai_service.memory.prompts import (
-    MEMORY_ADJUDICATE_SYSTEM_PROMPT,
-    format_adjudicate_user_prompt,
-    parse_adjudication,
+from codegenx.ai_service.memory.models import (
+    MemoryEntry,
+    LAYER_HOT,
+    SOURCE_INFERRED,
+    BUILTIN_MEMORY_TYPES,
+    layer_of,
+    estimate_text_tokens,
 )
+from codegenx.ai_service.memory.memory_store import (
+    append_warm,
+    upsert_hot_slot,
+    mark_vector_synced,
+)
+from codegenx.ai_service.memory.embedding import get_embedding_client
+from codegenx.ai_service.memory.vector_store import upsert_points
 
-# LLM 调用签名：由调用方注入（离线任务走 scheduler 的受控小模型通道）
+# LLM 调用签名：v2 写入链路不再使用 LLM（判重已移除），参数保留以对齐
+# scheduler 调用形态，conflict_detect（P1）复用同一约定。
 LlmInvoke = Callable[..., Awaitable[str]]
+
+# 敏感信息拦截（§4.3：prompt 与入库校验两处拦截，此为第二处）。
+# 银行卡位段取 16-19：13 位段与毫秒时间戳撞车，误杀正常记忆，从宽处理。
+_SENSITIVE_PATTERNS: list[tuple[str, str]] = [
+    (r"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)\s*[:=]\s*\S+", "凭据赋值"),
+    (r"sk-[A-Za-z0-9]{16,}", "API密钥"),
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "私钥块"),
+    (r"\b\d{17}[\dXx]\b", "身份证号"),
+    (r"\b1[3-9]\d{9}\b", "手机号"),
+    (r"\b\d{16,19}\b", "银行卡号"),
+]
+
+
+def match_sensitive(text: str) -> str | None:
+    """命中返回敏感类别名，未命中返回 None。"""
+    for pattern, label in _SENSITIVE_PATTERNS:
+        if re.search(pattern, text or ""):
+            return label
+    return None
 
 
 async def write_memories(
@@ -36,137 +62,102 @@ async def write_memories(
     app_id: str,
     session_id: str,
     candidates: list[dict],
-    llm_invoke: LlmInvoke,
+    llm_invoke=None,
 ) -> int:
-    """批量写入候选记忆，返回实际落库条数。单条失败跳过，不阻断整批。"""
+    """批量写入候选记忆，返回实际落库条数。单条失败跳过，不阻断整批。
+
+    Args:
+        llm_invoke: 兼容 scheduler 签名保留，v2 写入链路不使用。
+    """
     if not candidates:
         return 0
     store_cfg = config.memory.store
-    written = 0
-    pending_upsert: list[tuple[MemoryEntry, list[float]]] = []
+    hot_max = int(getattr(store_cfg, "hot_max_entries", 80) or 80)
 
+    written = 0
+    warm_entries: list[MemoryEntry] = []
     for cand in candidates:
         try:
-            count = await _write_one(
-                user_id=user_id,
-                app_id=app_id,
-                session_id=session_id,
-                candidate=cand,
-                llm_invoke=llm_invoke,
-                top_k=int(store_cfg.longMatchesTopK or 3),
-                dup_threshold=float(store_cfg.shortDuplicatedScoreThreshold or 0.90),
-                match_threshold=float(store_cfg.longMatchesScoreThreshold or 0.7),
-                pending_upsert=pending_upsert,
-            )
-            written += count
+            entry = _build_entry(user_id, app_id, session_id, cand)
+            if entry is None:
+                continue
+            if entry.memory_layer == LAYER_HOT:
+                new_id = await upsert_hot_slot(
+                    app_id, user_id, entry,
+                    hot_max_entries=hot_max,
+                    # 达硬上限转投 consolidate（P0-13），DAO 不反向依赖 scheduler
+                    consolidate_enqueuer=_enqueue_consolidate,
+                )
+                if not new_id:
+                    continue  # 硬上限拒绝（已 ERROR 日志 + 转投任务）
+                written += 1
+            else:
+                new_id = await append_warm(app_id, user_id, entry)
+                entry.id = new_id
+                warm_entries.append(entry)
+                written += 1
         except Exception as exc:  # noqa: BLE001 — 单条失败不阻断整批
             log.error("记忆写入单条失败（跳过）: {} | {}", exc, str(cand)[:120])
 
-    # jsonl 已全部落盘，向量层批量跟进（失败不回滚，sync_check 会对账补写）
-    if pending_upsert:
+    # warm 向量层批量跟进（批量 embedding + 批量 upsert，禁止逐条；失败留 sync_check）
+    if warm_entries:
         try:
-            await upsert_entries(
-                [e for e, _ in pending_upsert],
-                user_id,
-                app_id,
-                [v for _, v in pending_upsert],
+            vectors = await get_embedding_client().embed_texts(
+                [e.inject_text() for e in warm_entries]
             )
+            await upsert_points(warm_entries, vectors)
+            await mark_vector_synced([e.id for e in warm_entries])
         except Exception as exc:  # noqa: BLE001
-            log.warning("warm 向量层批量 upsert 失败（留待 sync_check 修复）:{}", exc)
+            log.warning("warm 向量批量同步失败（vector_synced_at 留 NULL，待 sync_check 修复）:{}", exc)
 
     return written
 
 
-async def _write_one(
-    user_id: str,
-    app_id: str,
-    session_id: str,
-    candidate: dict,
-    llm_invoke: LlmInvoke,
-    top_k: int,
-    dup_threshold: float,
-    match_threshold: float,
-    pending_upsert: list[tuple[MemoryEntry, list[float]]],
-) -> int:
-    content = str(candidate.get("content", "") or "").strip()
+def _build_entry(user_id: str, app_id: str, session_id: str, cand: dict) -> MemoryEntry | None:
+    """单条候选 → MemoryEntry；准入校验不过返回 None（原因已日志）。"""
+    content = str(cand.get("content", "") or "").strip()
     if not content:
-        return 0
-    memory_type = str(candidate.get("memory_type", "") or "").strip()
-    if memory_type not in MEMORY_TYPE_WEIGHTS:
-        memory_type = "project_background"  # 非法类型兜底为权重最低档
-    topic = str(candidate.get("topic", "") or "").strip()
+        return None
+    memory_type = str(cand.get("memory_type", "") or "").strip()
+    if memory_type not in BUILTIN_MEMORY_TYPES:
+        log.warning("未知记忆类型，拒绝写入（宁缺毋滥）: {}", memory_type)
+        return None
 
-    # ── 1. 相似检索 ────────────────────────────────────────────────────────────
-    matches: list[tuple[MemoryEntry, float]] = []
-    query_vector: list[float] = []
-    try:
-        query_vector = await get_embedding_client().embed_query(content)
-        matches = await search_by_vector(user_id, app_id, query_vector, limit=top_k)
-    except Exception as exc:  # noqa: BLE001 — 检索失败按无匹配处理（写入仍继续）
-        log.warning("写入前相似检索失败（按无匹配处理）:{}", exc)
+    hit = match_sensitive(content)
+    if hit:
+        # §10.1 memory.write.rejected_sensitive（指标埋点为 P1-12，先日志计数）
+        log.warning("候选记忆含敏感信息({}),拦截: {}", hit, content[:40])
+        return None
 
-    best_score = matches[0][1] if matches else 0.0
+    source_type = int(cand.get("source_type") or SOURCE_INFERRED)
+    confidence = float(cand.get("confidence") or 0.6)
+    layer = layer_of(memory_type)
 
-    # ── 2/3/4. 决策 ───────────────────────────────────────────────────────────
-    supersede_ids: list[str] = []
-    final_content = content
+    # §4.3：模型推断不得进 hot 层（hot 只收用户明说/人工录入）
+    if layer == LAYER_HOT and source_type == SOURCE_INFERRED:
+        log.warning("模型推断的 hot 类候选被拒（推断不得进 hot 层）: {}", memory_type)
+        return None
 
-    if matches and best_score >= dup_threshold:
-        log.debug("记忆判重复（score={:.2f}），跳过:{}", best_score, content[:50])
-        return 0
-
-    if matches and best_score >= match_threshold:
-        adjudication = await _adjudicate(
-            llm_invoke, content,
-            [(e.id, e.content) for e, _ in matches],
-        )
-        action = adjudication["action"]
-        if action == "DUPLICATE":
-            return 0
-        if action == "UPDATE":
-            final_content = adjudication["content"] or content
-            supersede_ids = [matches[0][0].id]  # 只改写最相似的一条
-        elif action == "CONFLICT":
-            supersede_ids = [matches[0][0].id]
-        # KEEP_BOTH → 直接落新条
-
-    # ── 落库：jsonl（事实源）先行 ───────────────────────────────────────────────
-    entry = MemoryEntry(
-        layer="warm",
-        topic=topic,
+    return MemoryEntry(
+        app_id=str(app_id),
+        user_id=str(user_id),
         memory_type=memory_type,
-        content=final_content,
-        source_session_id=session_id,
+        subject="self",  # P0 固定主体；多主体（项目/某人）随 P2 需求放开
+        slot_key=str(cand.get("slot_key", "") or "").strip()[:64],
+        summary=content[:500],
+        content=content,
+        topic=str(cand.get("topic", "") or "").strip()[:32],
+        token_cost=estimate_text_tokens(content) + 4,
+        source_type=source_type,
+        confidence=round(min(max(confidence, 0.0), 1.0), 2),
+        session_id=str(session_id or ""),
     )
-    get_warm_store(user_id, app_id).append(entry)
-
-    # 旧记忆失效：jsonl 侧重写 + Qdrant 状态同步（后者失败留 sync_check）
-    if supersede_ids:
-        get_warm_store(user_id, app_id).mark_invalid(supersede_ids, f"superseded:{entry.id}")
-        try:
-            await mark_status(supersede_ids, "invalid")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("旧记忆 Qdrant 失效同步失败（留待 sync_check）:{}", exc)
-
-    pending_upsert.append((entry, query_vector))
-    return 1
 
 
-async def _adjudicate(
-    llm_invoke: LlmInvoke,
-    new_content: str,
-    matches: list[tuple[str, str]],
-) -> dict:
-    """LLM 仲裁新记忆与相似旧记忆的关系；失败按 KEEP_BOTH 保守处理。"""
-    try:
-        raw = await llm_invoke(
-            messages=[
-                {"role": "system", "content": MEMORY_ADJUDICATE_SYSTEM_PROMPT},
-                {"role": "user", "content": format_adjudicate_user_prompt(new_content, matches)},
-            ],
-            max_tokens=512,
-        )
-        return parse_adjudication(raw)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("记忆仲裁 LLM 调用失败（按 KEEP_BOTH）:{}", exc)
-        return {"action": "KEEP_BOTH", "content": ""}
+async def _enqueue_consolidate() -> None:
+    """hot 硬上限触发时转投整理任务（延迟导入避免循环依赖）。"""
+    from codegenx.ai_service.schedule.memory_task_store import (
+        get_memory_task_store,
+        TASK_CONSOLIDATE,
+    )
+    await get_memory_task_store().enqueue(TASK_CONSOLIDATE, app_id="*")
