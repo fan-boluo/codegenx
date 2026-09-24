@@ -1,4 +1,4 @@
-"""应用服务路由：应用 CRUD + 生成代码文件管理 + 脚本执行。
+"""应用服务路由：应用 CRUD + 成员管理 + 生成代码文件管理 + 脚本执行。
 
 由原 app-service/app.py 提取（去 Nacos 注册 / TraceId 中间件 / auth_proxy 文件路径加载），
 认证直接复用网关 auth 依赖。
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path as _Path
 import shutil
-from typing import Any
 
 from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -22,7 +21,16 @@ from shared import log
 from codegenx.user_service.user_enums import UserRole
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
-from codegenx.app_service.schema.app import AppAddRequest, AppAdminUpdateRequest, AppQueryRequest, AppUpdateRequest, AppVO
+from codegenx.app_service.schema.app import (
+    AppAddRequest,
+    AppAdminUpdateRequest,
+    AppMemberAddRequest,
+    AppMemberRemoveRequest,
+    AppMemberVO,
+    AppQueryRequest,
+    AppUpdateRequest,
+    AppVO,
+)
 from shared.schema.common import BaseResponse, DeleteRequest, PageData
 from shared.utils.result_utils import success
 
@@ -38,11 +46,6 @@ def _cleanup_temp_archive(zip_path: _Path) -> None:
         log.exception("cleanup temp archive failed")
 
 
-def _preview_text(text: str, limit: int = 80) -> str:
-    compact = " ".join(text.split())
-    return compact[:limit]
-
-
 def _system_error(exc: Exception) -> BusinessException:
     return BusinessException(ErrorCode.SYSTEM_ERROR, str(exc))
 
@@ -56,11 +59,10 @@ async def add_app(
 ) -> BaseResponse[int]:
     trace_id = getattr(http_request.state, "trace_id", None)
     log.info(
-        "app-service add app request traceId={} userId={} promptLen={} preview={}",
+        "app-service add app request traceId={} userId={} appName={}",
         trace_id,
         current_user.user_id,
-        len(payload.init_prompt),
-        _preview_text(payload.init_prompt),
+        payload.app_name,
     )
     try:
         app_id = await AppService(db).create_app(payload, current_user, trace_id=trace_id)
@@ -195,20 +197,6 @@ async def list_my_apps(
         raise _system_error(exc) from exc
 
 
-@router.post("/good/list/page/vo", response_model=BaseResponse[PageData[AppVO]])
-async def list_good_apps(
-    request: AppQueryRequest,
-    db: AsyncSession = Depends(get_db_session),
-) -> BaseResponse[PageData[AppVO]]:
-    try:
-        return success(await AppService(db).list_good_app_vo_by_page(request))
-    except BusinessException:
-        raise
-    except Exception as exc:
-        log.exception("list good apps failed")
-        raise _system_error(exc) from exc
-
-
 @router.post("/admin/list/page/vo", response_model=BaseResponse[PageData[AppVO]])
 async def list_all_apps_for_admin(
     request: AppQueryRequest,
@@ -222,6 +210,57 @@ async def list_all_apps_for_admin(
     except Exception as exc:
         log.exception("admin list apps failed")
         raise _system_error(exc) from exc
+
+
+# ---------------------- 项目成员管理 ----------------------
+
+
+@router.get("/member/list/{app_id}", response_model=BaseResponse[list[AppMemberVO]])
+async def list_app_members(
+    app_id: int,
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[list[AppMemberVO]]:
+    try:
+        return success(await AppService(db).list_members(app_id, current_user))
+    except BusinessException:
+        raise
+    except Exception as exc:
+        log.exception("list app members failed appId={}", app_id)
+        raise _system_error(exc) from exc
+
+
+@router.post("/member/add", response_model=BaseResponse[bool])
+async def add_app_member(
+    request: AppMemberAddRequest,
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        return success(await AppService(db).add_member(request, current_user))
+    except BusinessException:
+        raise
+    except Exception as exc:
+        log.exception("add app member failed appId={} account={}", request.app_id, request.user_account)
+        raise _system_error(exc) from exc
+
+
+@router.post("/member/remove", response_model=BaseResponse[bool])
+async def remove_app_member(
+    request: AppMemberRemoveRequest,
+    current_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+) -> BaseResponse[bool]:
+    try:
+        return success(await AppService(db).remove_member(request, current_user))
+    except BusinessException:
+        raise
+    except Exception as exc:
+        log.exception("remove app member failed appId={} userId={}", request.app_id, request.user_id)
+        raise _system_error(exc) from exc
+
+
+# ---------------------- 文件管理（成员各自目录隔离） ----------------------
 
 
 @router.get("/download/{app_id}")
@@ -278,7 +317,7 @@ async def get_app_code_file(
 async def save_app_code_file(
     app_id: int,
     path: str = Query(...),
-    payload: dict[str, Any] = Body(...),
+    payload: dict[str, object] = Body(...),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[bool]:
@@ -384,7 +423,7 @@ async def rename_app_code_node(
 @router.post("/code/run/{app_id}")
 async def run_app_code_script(
     app_id: int,
-    payload: dict[str, Any] = Body(...),
+    payload: dict[str, object] = Body(...),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ):

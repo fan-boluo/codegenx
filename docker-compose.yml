@@ -1,76 +1,142 @@
-version: '3.9'
+version: "3.9"
 
+# ============================================================
+# CodeGenX - Docker Compose 部署编排
+# ============================================================
 services:
-  nginx:
-    image: nginx:stable
-    ports:
-      - '80:80'
-    volumes:
-      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - api-gateway
-
-  api-gateway:
-    build: ./api-gateway
-    ports:
-      - '8000:8000'
-    env_file:
-      - .env
-    depends_on:
-      - user-service
-      - ai-service
-      - app-service
-      - mysql
-      - redis
-
-  user-service:
-    build: ./services/user-service
-    ports:
-      - '8001:8001'
-    env_file:
-      - .env
-
-  ai-service:
-    build: services/ai-service
-    ports:
-      - '8002:8002'
-    env_file:
-      - .env
-
-  chat-service:
-    build: ./services/app-service
-    ports:
-      - '8005:8005'
-    env_file:
-      - .env
-
+  # ── 基础设施 ──────────────────────────────────────────
   mysql:
     image: mysql:8.0
+    container_name: codegenx-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: codegenx
-      MYSQL_USER: codegenx_user
-      MYSQL_PASSWORD: codegenx_pass
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-boluo123}
+      MYSQL_DATABASE: ${MYSQL_DB:-codegenx}
+    ports:
+      - "3306:3306"
     volumes:
-      - mysql-data:/var/lib/mysql
+      - mysql_data:/var/lib/mysql
+      - ./backend/create_table.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-boluo123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - codegenx-net
 
   redis:
     image: redis:7-alpine
+    container_name: codegenx-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-boluo123}
     ports:
-      - '6379:6379'
-
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - '9090:9090'
+      - "6379:6379"
     volumes:
-      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-boluo123}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - codegenx-net
+
+  nacos:
+    image: nacos/nacos-server:v2.3.1
+    container_name: codegenx-nacos
+    restart: unless-stopped
+    environment:
+      - MODE=standalone
+      - NACOS_AUTH_ENABLE=true
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    volumes:
+      - nacos_data:/home/nacos/data
+    networks:
+      - codegenx-net
+
+  # ── 微服务 ──────────────────────────────────────────
+  user-service:
+    build:
+      context: .
+      dockerfile: backend/services/user-service/Dockerfile
+    container_name: codegenx-user-service
+    restart: unless-stopped
+    env_file:
+      - backend/.env
     depends_on:
-      - api-gateway
+      mysql:
+        condition: service_healthy
+      nacos:
+        condition: service_started
+    ports:
+      - "50051:50051"
+    networks:
+      - codegenx-net
+
+  app-service:
+    build:
+      context: .
+      dockerfile: backend/services/app-service/Dockerfile
+    container_name: codegenx-app-service
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      nacos:
+        condition: service_started
+    ports:
+      - "8004:8004"
+    networks:
+      - codegenx-net
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: backend/services/ai-service/Dockerfile
+    container_name: codegenx-ai-service
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_started
+    ports:
+      - "8002:8002"
+    networks:
+      - codegenx-net
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: backend/api-gateway/Dockerfile
+    container_name: codegenx-api-gateway
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    depends_on:
       - user-service
-      - ai-service
       - app-service
+      - ai-service
+      - redis
+    ports:
+      - "8456:8456"
+    networks:
+      - codegenx-net
 
 volumes:
-  mysql-data:
+  mysql_data:
+  redis_data:
+  nacos_data:
+
+networks:
+  codegenx-net:
+    driver: bridge

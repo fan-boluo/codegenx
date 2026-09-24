@@ -50,6 +50,7 @@ class SubagentTaskTool(BaseTool):
         subagent_context = SubagentContext(
             prompt=str(params.get("prompt", "") or "").strip(),
             app_id=str(params.get("app_id", "main") or "main"),
+            user_id=str(params.get("user_id", "") or ""),
             description=str(params.get("description", "") or ""),
             max_turns=int(params.get("max_turns", 15) or 15),
             allowed_tools=list(allowed_tools) if isinstance(allowed_tools, list) else None,

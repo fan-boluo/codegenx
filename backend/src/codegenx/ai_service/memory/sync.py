@@ -21,25 +21,25 @@ from codegenx.ai_service.memory.vector_store import (
 )
 from codegenx.ai_service.memory.warm_store import get_warm_store
 from codegenx.ai_service.schedule.memory_task_store import get_memory_task_store
-from codegenx.ai_service.memory.lifecycle import list_app_ids
+from codegenx.ai_service.memory.lifecycle import list_user_app_pairs
 
 
 async def reconcile_all_apps(llm_invoke=None) -> None:
     """全 app 对账（llm_invoke 参数保留以对齐 scheduler 签名，当前规则处理不耗 LLM）。"""
-    for app_id in list_app_ids():
+    for user_id, app_id in list_user_app_pairs():
         try:
-            fixed = await reconcile_app(app_id)
+            fixed = await reconcile_app(user_id, app_id)
             if fixed:
-                log.info("[sync_check] app {} 补写/修正 {} 个点位", app_id, fixed)
+                log.info("[sync_check] app {}/{} 补写/修正 {} 个点位", user_id, app_id, fixed)
         except Exception as exc:  # noqa: BLE001 — 单 app 失败不阻断
-            log.error("[sync_check] app {} 对账异常: {}", app_id, exc)
+            log.error("[sync_check] app {}/{} 对账异常: {}", user_id, app_id, exc)
 
 
-async def reconcile_app(app_id: str) -> int:
+async def reconcile_app(user_id: str, app_id: str) -> int:
     """单 app 增量对账：检查点之后的变化同步到 Qdrant，返回处理条数。"""
     tasks = get_memory_task_store()
-    store = get_warm_store(app_id)
-    checkpoint = await tasks.get_checkpoint(app_id, "warm")
+    store = get_warm_store(user_id, app_id)
+    checkpoint = await tasks.get_checkpoint(app_id, "warm", user_id=user_id)
     entries = store.scan_entries(after_id=checkpoint, status=None)
     if not entries:
         return 0
@@ -50,7 +50,7 @@ async def reconcile_app(app_id: str) -> int:
 
     if to_upsert:
         vectors = await get_embedding_client().embed_texts([e.content for e in to_upsert])
-        await upsert_entries(to_upsert, app_id, vectors)
+        await upsert_entries(to_upsert, user_id, app_id, vectors)
         fixed += len(to_upsert)
 
     if to_invalidate:
@@ -59,5 +59,5 @@ async def reconcile_app(app_id: str) -> int:
         fixed += len(to_invalidate)
 
     # 检查点推进到最后一条（扫描序 = ULID 序）
-    await tasks.advance_checkpoint(app_id, "warm", entries[-1].id)
+    await tasks.advance_checkpoint(app_id, "warm", entries[-1].id, user_id=user_id)
     return fixed

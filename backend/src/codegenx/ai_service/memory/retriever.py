@@ -81,7 +81,7 @@ def rerank(
     return [(entry, score) for score, entry in scored]
 
 
-async def search_warm(app_id: str, query: str) -> list[MemoryEntry]:
+async def search_warm(user_id: str, app_id: str, query: str) -> list[MemoryEntry]:
     """混合召回主入口：召回 → 去重 → 重排 → token 窗口 → 访问登记。"""
     search_cfg = config.memory.search
     if not search_cfg.enabled or not (query or "").strip():
@@ -99,6 +99,7 @@ async def search_warm(app_id: str, query: str) -> list[MemoryEntry]:
             log.warning("warm 向量通道 embedding 失败，仅用关键词通道:{}", exc)
             return []
         return await search_by_vector(
+            user_id=user_id,
             app_id=app_id,
             query_vector=query_vector,
             limit=search_cfg.top_k,
@@ -107,6 +108,7 @@ async def search_warm(app_id: str, query: str) -> list[MemoryEntry]:
 
     async def _keyword_channel() -> list[MemoryEntry]:
         return await scroll_by_keyword(
+            user_id=user_id,
             app_id=app_id,
             keyword=keyword_query,
             limit=search_cfg.keyword_top_k,
@@ -140,7 +142,7 @@ async def search_warm(app_id: str, query: str) -> list[MemoryEntry]:
 
     # ── 访问登记（缓冲写 jsonl + 异步 touch Qdrant，均尽力而为） ────────────────
     if selected:
-        get_warm_store(app_id).record_access([e.id for e in selected])
+        get_warm_store(user_id, app_id).record_access([e.id for e in selected])
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         try:
             await touch_access([e.id for e in selected], now_iso)

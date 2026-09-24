@@ -55,15 +55,17 @@ def _payload_indexes() -> list[tuple[str, models.PayloadSchemaType | models.Text
     ]
 
 
-def entry_to_payload(entry: MemoryEntry, app_id: str) -> dict:
+def entry_to_payload(entry: MemoryEntry, user_id: str, app_id: str) -> dict:
     payload = entry.to_dict()
+    payload["user_id"] = user_id
     payload["app_id"] = app_id
     return payload
 
 
-def _active_filter(app_id: str) -> models.Filter:
+def _active_filter(user_id: str, app_id: str) -> models.Filter:
     return models.Filter(
         must=[
+            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
             models.FieldCondition(key="app_id", match=models.MatchValue(value=app_id)),
             models.FieldCondition(key="status", match=models.MatchValue(value="active")),
         ]
@@ -81,7 +83,7 @@ async def ensure_warm_collection() -> None:
     )
 
 
-async def upsert_entries(entries: list[MemoryEntry], app_id: str, vectors: list[list[float]]) -> None:
+async def upsert_entries(entries: list[MemoryEntry], user_id: str, app_id: str, vectors: list[list[float]]) -> None:
     """条目与向量一一对应写入。"""
     if not entries:
         return
@@ -89,7 +91,7 @@ async def upsert_entries(entries: list[MemoryEntry], app_id: str, vectors: list[
         models.PointStruct(
             id=_to_point_id(entry.id),
             vector=vector,
-            payload=entry_to_payload(entry, app_id),
+            payload=entry_to_payload(entry, user_id, app_id),
         )
         for entry, vector in zip(entries, vectors)
     ]
@@ -103,6 +105,7 @@ async def upsert_entries(entries: list[MemoryEntry], app_id: str, vectors: list[
 
 
 async def search_by_vector(
+    user_id: str,
     app_id: str,
     query_vector: list[float],
     limit: int = 10,
@@ -115,7 +118,7 @@ async def search_by_vector(
             client.query_points,
             collection_name=WARM_COLLECTION,
             query=query_vector,
-            query_filter=_active_filter(app_id),
+            query_filter=_active_filter(user_id, app_id),
             limit=limit,
             score_threshold=score_threshold or 0.0,
             with_payload=True,
@@ -132,6 +135,7 @@ async def search_by_vector(
 
 
 async def scroll_by_keyword(
+    user_id: str,
     app_id: str,
     keyword: str,
     limit: int = 10,
@@ -142,6 +146,7 @@ async def scroll_by_keyword(
     client = get_qdrant_client_manager().client
     flt = models.Filter(
         must=[
+            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
             models.FieldCondition(key="app_id", match=models.MatchValue(value=app_id)),
             models.FieldCondition(key="status", match=models.MatchValue(value="active")),
             models.FieldCondition(key="content", match=models.MatchText(text=keyword)),
@@ -208,14 +213,14 @@ async def delete_points(ids: list[str]) -> None:
     )
 
 
-async def count_active(app_id: str) -> int:
-    """对账用：当前 app 的 active 点位数。"""
+async def count_active(user_id: str, app_id: str) -> int:
+    """对账用：当前用户/app 的 active 点位数。"""
     client = get_qdrant_client_manager().client
     try:
         info = await asyncio.to_thread(
             client.count,
             collection_name=WARM_COLLECTION,
-            count_filter=_active_filter(app_id),
+            count_filter=_active_filter(user_id, app_id),
             exact=True,
         )
         return info.count

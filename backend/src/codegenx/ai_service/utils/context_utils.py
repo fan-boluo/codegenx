@@ -22,8 +22,8 @@ def rough_tokens(messages: list[dict]) -> int:
     return total // 4
 
 
-def ensure_app_workdir(app_id: str | int) -> Path:
-    workdir = get_code_dir(app_id)
+def ensure_app_workdir(user_id: str | int, app_id: str | int) -> Path:
+    workdir = get_code_dir(user_id, app_id)
     workdir.mkdir(parents=True, exist_ok=True)
     if workdir.exists():
         print(workdir, "已创建")
@@ -39,6 +39,6 @@ def ensure_context_workdir(context: Any) -> Path:
         workdir = Path(existing)
         workdir.mkdir(parents=True, exist_ok=True)
     else:
-        workdir = ensure_app_workdir(getattr(context, "app_id", "main"))
+        workdir = ensure_app_workdir(getattr(context, "user_id", "") or "main", getattr(context, "app_id", "main"))
         setattr(context, "workdir", str(workdir))
     return workdir

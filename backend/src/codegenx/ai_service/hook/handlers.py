@@ -26,15 +26,16 @@ async def on_session_start(session: RuntimeSessionState, **kwargs):
     if req is None:
         log.warning("on_session_start: request is None, skipping")
         return
-    session_manager = SessionManager(str(req.app_id),session.session_id)
+    session_manager = SessionManager(session.user_id, str(req.app_id), session.session_id)
     session.session_manager = session_manager
 
-    task_manager = TaskManager(app_id=session.app_id, session_id=session.session_id)
+    task_manager = TaskManager(app_id=session.app_id, session_id=session.session_id, user_id=session.user_id)
     session.task_manager = task_manager
 
     session.context_manager = SessionContext(
         session_id=session.session_id,
         app_id=session.app_id,
+        user_id=session.user_id,
         db_name=session.db_name,
         task_manager=task_manager,
     )

@@ -91,10 +91,10 @@ class SessionRecorder:
      记忆检索日志
      """
 
-    def __init__(self, app_id: str = "main", /, **data: Any):
+    def __init__(self, app_id: str = "main", user_id: str = "main", /, **data: Any):
         super().__init__(**data)
         self.app_id = _sanitize_app_id(app_id)
-        self.session_dir = get_session_dir(self.app_id)
+        self.session_dir = get_session_dir(user_id or "main", self.app_id)
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, Session] = {}
         self._lock = threading.Lock()

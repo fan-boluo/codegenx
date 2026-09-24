@@ -22,6 +22,8 @@ class SessionContext:
 
     session_id: str = ""
     app_id: str = ""
+    # 会话归属用户，决定 .data/{userId}/{appId} 两级路径
+    user_id: str = ""
     db_name: str | None = None
     task_manager: TaskManager | None = None
     memory: MemoryManager = field(init=False)
@@ -42,9 +44,9 @@ class SessionContext:
     chat_messages:list[dict[str, Any]] = field(init=False)
 
     def __post_init__(self) -> None:
-        self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id)
-        self.task = self.task_manager or TaskManager(app_id=self.app_id, session_id=self.session_id)
-        self._session_summary = SessionSummaryService(session_id=self.session_id,app_id=self.app_id)
+        self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id,user_id=self.user_id)
+        self.task = self.task_manager or TaskManager(app_id=self.app_id, session_id=self.session_id, user_id=self.user_id)
+        self._session_summary = SessionSummaryService(session_id=self.session_id,app_id=self.app_id,user_id=self.user_id)
         self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_summary,llm_fn=AsyncLLMClient().invoke)
         self.system_prompt = ""
         # 构建初始化的聊天记录，on_session_start从snapshot加载进行初始化
@@ -54,7 +56,7 @@ class SessionContext:
         """
         每个session要构建的
         """
-        await self.assembler.build_workspace(self.app_id, db_name=self.db_name)
+        await self.assembler.build_workspace(self.user_id, self.app_id, db_name=self.db_name)
 
         self.assembler.memory_prompt = await self.memory.load(query)
         self.assembler.skill_prompt = await self.skill_loader.build_skill()
@@ -109,7 +111,7 @@ class SessionContext:
 
         data =  output.data or ""
         log.debug("大的输出持久化：{}",len(data))
-        return persist_large_output(tool_call=tool_call, output=data,app_id=self.app_id,session_id=self.session_id)
+        return persist_large_output(tool_call=tool_call, output=data,user_id=self.user_id,app_id=self.app_id,session_id=self.session_id)
 
     async def compact_after_step(self):
         """每个 step 后：仅做 token 检查 + full compaction，不触发 session_memory extraction。"""

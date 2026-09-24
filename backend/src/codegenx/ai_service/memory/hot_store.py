@@ -23,9 +23,9 @@ from codegenx.ai_service.memory.paths import get_hot_store_path
 HOT_TOKEN_BUDGET = 2000  # hot 层注入上限（设计文档 §5.4）
 
 
-def load_hot_entries(app_id: str, path: Path | None = None) -> list[MemoryEntry]:
+def load_hot_entries(user_id: str, app_id: str, path: Path | None = None) -> list[MemoryEntry]:
     """读取 hot.json 全部 active 条目（文件小，直接全量）。"""
-    path = path or get_hot_store_path(app_id)
+    path = path or get_hot_store_path(user_id, app_id)
     if not path.exists():
         return []
     try:
@@ -41,9 +41,9 @@ def load_hot_entries(app_id: str, path: Path | None = None) -> list[MemoryEntry]
     return entries
 
 
-def save_hot_entries(app_id: str, entries: list[MemoryEntry], path: Path | None = None) -> None:
+def save_hot_entries(user_id: str, app_id: str, entries: list[MemoryEntry], path: Path | None = None) -> None:
     """整写 hot.json（调用方持有完整列表，本地小文件无并发热点）。"""
-    path = path or get_hot_store_path(app_id)
+    path = path or get_hot_store_path(user_id, app_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(
@@ -54,6 +54,7 @@ def save_hot_entries(app_id: str, entries: list[MemoryEntry], path: Path | None 
 
 
 def add_hot_rule(
+    user_id: str,
     app_id: str,
     content: str,
     memory_type: str = "user_preference",
@@ -61,7 +62,7 @@ def add_hot_rule(
     source_session_id: str = "",
 ) -> MemoryEntry:
     """追加一条 hot 规则并落盘（超过预算时截掉最旧的条目）。"""
-    entries = load_hot_entries(app_id)
+    entries = load_hot_entries(user_id, app_id)
     entry = MemoryEntry(
         layer="hot",
         topic=topic,
@@ -76,7 +77,7 @@ def add_hot_rule(
         dropped = entries.pop(0)
         log.info("hot 层超预算，截断最旧条目:{}", dropped.id)
 
-    save_hot_entries(app_id, entries)
+    save_hot_entries(user_id, app_id, entries)
     return entry
 
 
@@ -84,9 +85,9 @@ def _entries_text(entries: list[MemoryEntry]) -> str:
     return "\n".join(e.content for e in entries)
 
 
-def format_hot_prompt(app_id: str, path: Path | None = None) -> str:
+def format_hot_prompt(user_id: str, app_id: str, path: Path | None = None) -> str:
     """hot 层注入格式（每轮都注入，保持极简）。"""
-    entries = load_hot_entries(app_id, path)
+    entries = load_hot_entries(user_id, app_id, path)
     if not entries:
         return ""
     lines = ["# 核心约束（长期有效，优先级最高）"]

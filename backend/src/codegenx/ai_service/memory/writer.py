@@ -32,6 +32,7 @@ LlmInvoke = Callable[..., Awaitable[str]]
 
 
 async def write_memories(
+    user_id: str,
     app_id: str,
     session_id: str,
     candidates: list[dict],
@@ -47,6 +48,7 @@ async def write_memories(
     for cand in candidates:
         try:
             count = await _write_one(
+                user_id=user_id,
                 app_id=app_id,
                 session_id=session_id,
                 candidate=cand,
@@ -65,6 +67,7 @@ async def write_memories(
         try:
             await upsert_entries(
                 [e for e, _ in pending_upsert],
+                user_id,
                 app_id,
                 [v for _, v in pending_upsert],
             )
@@ -75,6 +78,7 @@ async def write_memories(
 
 
 async def _write_one(
+    user_id: str,
     app_id: str,
     session_id: str,
     candidate: dict,
@@ -97,7 +101,7 @@ async def _write_one(
     query_vector: list[float] = []
     try:
         query_vector = await get_embedding_client().embed_query(content)
-        matches = await search_by_vector(app_id, query_vector, limit=top_k)
+        matches = await search_by_vector(user_id, app_id, query_vector, limit=top_k)
     except Exception as exc:  # noqa: BLE001 — 检索失败按无匹配处理（写入仍继续）
         log.warning("写入前相似检索失败（按无匹配处理）:{}", exc)
 
@@ -134,11 +138,11 @@ async def _write_one(
         content=final_content,
         source_session_id=session_id,
     )
-    get_warm_store(app_id).append(entry)
+    get_warm_store(user_id, app_id).append(entry)
 
     # 旧记忆失效：jsonl 侧重写 + Qdrant 状态同步（后者失败留 sync_check）
     if supersede_ids:
-        get_warm_store(app_id).mark_invalid(supersede_ids, f"superseded:{entry.id}")
+        get_warm_store(user_id, app_id).mark_invalid(supersede_ids, f"superseded:{entry.id}")
         try:
             await mark_status(supersede_ids, "invalid")
         except Exception as exc:  # noqa: BLE001

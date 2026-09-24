@@ -20,6 +20,7 @@ DEFAULT_CHILD_EXCLUDED_TOOLS = {"subagent", "compact"}
 class SubagentContext:
     prompt: str
     app_id: str = "main"
+    user_id: str = ""
     description: str = ""
     max_turns: int = 15
     allowed_tools: list[str] | None = None
@@ -43,7 +44,7 @@ class SubagentRunner:
         tools_handler = ToolRegistry()
         tools_handler.tools = subagent_context.get_tools(tools_handler)
 
-        app_code_dir = get_code_dir(subagent_context.app_id)
+        app_code_dir = get_code_dir(subagent_context.user_id or "main", subagent_context.app_id)
         app_code_dir.mkdir(parents=True, exist_ok=True)
 
         runtime = AgentRuntime(
@@ -53,7 +54,7 @@ class SubagentRunner:
 
         request = AiServiceGenerateRequest(
             appId=int(subagent_context.app_id) if str(subagent_context.app_id).isdigit() else 0,
-            userId="",
+            userId=str(subagent_context.user_id or ""),
             sessionId=subagent_context.parent_session_id or f"subagent-session-{uuid4().hex[:8]}",
             traceId=subagent_context.trace_id or uuid4().hex,
             requestId=subagent_context.parent_turn_id or f"subagent-request-{uuid4().hex[:8]}",

@@ -24,27 +24,32 @@ create table if not exists user
     INDEX idx_userName (userName)
 ) comment '用户' collate = utf8mb4_unicode_ci;
 
--- 应用表
+-- 应用表（项目）
 create table if not exists app
 (
     id           bigint auto_increment comment 'id' primary key,
     appName      varchar(128)                           not null comment '应用名称',
-    cover        varchar(1024)                          null comment '应用封面',
-    initPrompt   varchar(4096)                          not null comment '应用初始化的 prompt',
-    codeGenType  varchar(64)                            not null comment '代码生成类型（枚举）',
-    deployKey    varchar(128)                           null comment '部署标识',
-    deployedTime datetime                           null comment '部署时间',
-    priority     int          default 0                 not null comment '优先级',
-    userId       bigint                                 not null comment '创建用户id',
-    editTime     datetime                               null comment '编辑时间',
+    dbName       varchar(128)                           null comment '项目关联的数据库名（一个项目一个库）',
+    owner       bigint                                 not null comment '创建用户id（项目属主）',
     createTime   datetime     default CURRENT_TIMESTAMP not null comment '创建时间',
     updateTime   datetime     default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
     isDelete     tinyint      default 0                 not null comment '是否删除',
-    UNIQUE KEY uk_deployKey (deployKey), -- 确保部署标识唯一
     INDEX idx_appName (appName),         -- 提升基于应用名称的查询性能
-    INDEX idx_userId (userId)            -- 提升基于用户 ID 的查询性能
+    INDEX idx_owner (owner)            -- 提升基于用户 ID 的查询性能
 ) comment '应用' collate = utf8mb4_unicode_ci;
 
+-- 项目成员表（用户-项目多对多权限关系；项目属主即 app.owner，不在此表存 owner 记录）
+create table if not exists app_member
+(
+    id         bigint auto_increment comment 'id' primary key,
+    appId      bigint                                not null comment '项目id',
+    userId     bigint                                not null comment '成员用户id',
+    createTime datetime    default CURRENT_TIMESTAMP not null comment '创建时间',
+    updateTime datetime    default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
+    isDelete   tinyint     default 0                 not null comment '是否删除',
+    UNIQUE KEY uk_app_user (appId, userId), -- 一个用户在一个项目中只有一条成员记录
+    INDEX idx_userId (userId)               -- 加速查询"我参与的项目列表"
+) comment '项目成员' collate = utf8mb4_unicode_ci;
 
 CREATE TABLE `spans` (
   `id` bigint NOT NULL AUTO_INCREMENT,

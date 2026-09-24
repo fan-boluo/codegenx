@@ -19,10 +19,12 @@ _SESSION_INDEX_FILE = "session_index.json"
 
 class SessionManager:
 
-    def __init__(self, app_id: str,session_id:str):
+    def __init__(self, user_id: str, app_id: str, session_id: str):
+        # 会话文件落在 .data/{userId}/{appId}/session/{sessionId}，按用户隔离
+        self.user_id = user_id
         self.app_id = app_id
         self.session_id = session_id
-        self.session_dir = get_current_session_dir(self.app_id,session_id)
+        self.session_dir = get_current_session_dir(self.user_id, self.app_id, session_id)
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
 
@@ -196,7 +198,7 @@ class SessionManager:
 
     async def upsert_session_index(self, first_message: str) -> None:
         """将当前 session 写入 session_index.json，用于快速列出会话历史。"""
-        index_file = get_session_dir(self.app_id) / _SESSION_INDEX_FILE
+        index_file = get_session_dir(self.user_id, self.app_id) / _SESSION_INDEX_FILE
         async with self._lock:
             entries: list[dict] = []
             if index_file.exists():
@@ -229,9 +231,9 @@ class SessionManager:
                 json.dump(entries, f, ensure_ascii=False, indent=2)
 
     @staticmethod
-    def read_session_index(app_id: str) -> list[dict]:
+    def read_session_index(user_id: str, app_id: str) -> list[dict]:
         """读取 session 索引列表，按时间倒序。"""
-        index_file = get_session_dir(app_id) / _SESSION_INDEX_FILE
+        index_file = get_session_dir(user_id, app_id) / _SESSION_INDEX_FILE
         if not index_file.exists():
             return []
         try:

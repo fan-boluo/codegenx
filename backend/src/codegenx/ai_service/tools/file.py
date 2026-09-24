@@ -85,10 +85,10 @@ def _generate_diff(old_content: str, new_content: str) -> str:
     new_lines = new_content.splitlines(keepends=True)
     diff = list(difflib.unified_diff(old_lines, new_lines, fromfile="original", tofile="modified", n=3))
     return "".join(diff)
-def resolve_read_path(path: str, app_id: str | int = "main"):
+def resolve_read_path(path: str, app_id: str | int = "main", user_id: str | int = ""):
     expanded = Path(path).expanduser()
     if not expanded.is_absolute():
-        expanded = get_code_dir(app_id) / expanded
+        expanded = get_code_dir(user_id or "main", app_id) / expanded
     resolved = expanded.resolve()
 
     return resolved
@@ -212,7 +212,7 @@ class ReadFileTool(BaseTool):
         limit = params.get("limit")
 
         # Resolve path with macOS compatibility
-        absolute_path = resolve_read_path(path, params.get("app_id", "main"))
+        absolute_path = resolve_read_path(path, params.get("app_id", "main"), params.get("user_id", "") or "")
 
         # Enforce fs.workspaceOnly if configured
         check_path(absolute_path)
@@ -409,7 +409,7 @@ class WriteFileTool(BaseTool):
                 render=f"{self.name} 执行失败: 缺少 content 参数",
             )
         # 解析
-        absolute_path = resolve_read_path(path, params.get("app_id", "main"))
+        absolute_path = resolve_read_path(path, params.get("app_id", "main"), params.get("user_id", "") or "")
         log.debug(f"解析后的完整写入路径为:{absolute_path}")
         # 创建父目录
         parant_path = absolute_path.parent
@@ -518,7 +518,7 @@ class EditFileTool(BaseTool):
         new_text = params["new_text"]
         position = params.get("position", "replace")
 
-        absolute_path = resolve_read_path(path, params.get("app_id", "main"))
+        absolute_path = resolve_read_path(path, params.get("app_id", "main"), params.get("user_id", "") or "")
         check_path(absolute_path)
 
         if signal and signal.is_set():
@@ -672,7 +672,7 @@ class ListDirectoryTool(BaseTool):
         depth = params.get("depth", 1)
         glob_filter = params.get("glob")
 
-        absolute_path = resolve_read_path(path, params.get("app_id", "main"))
+        absolute_path = resolve_read_path(path, params.get("app_id", "main"), params.get("user_id", "") or "")
 
         if signal and signal.is_set():
             raise asyncio.CancelledError("Operation aborted")
@@ -816,10 +816,10 @@ class DeleteFileTool(BaseTool):
         path = params["path"]
         recursive = params.get("recursive", False)
 
-        absolute_path = resolve_read_path(path, params.get("app_id", "main"))
+        absolute_path = resolve_read_path(path, params.get("app_id", "main"), params.get("user_id", "") or "")
 
         # Enforce workspace boundary: reject paths outside the project workspace
-        workspace_root = get_code_dir(params.get("app_id", "main")).resolve()
+        workspace_root = get_code_dir(params.get("user_id", "") or "main", params.get("app_id", "main")).resolve()
         try:
             absolute_path.resolve().relative_to(workspace_root)
         except ValueError:

@@ -14,13 +14,17 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.ai_service.session.manager import SessionManager
 from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import validate_prompt_safety
 from codegenx.ai_service.monitor.monitor_query_service import get_monitor_query_service
 from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
+from codegenx.app_service.services.access import require_participant_by_id
 from codegenx.gateway.middleware.auth import require_login, require_role
+from codegenx.gateway.middleware.jwt_auth import JWTUser
+from db.mysql.session import get_db_session
 from shared import log
 from shared.constants import get_current_session_dir
 from codegenx.user_service.user_enums import UserRole
@@ -124,9 +128,15 @@ async def stop_code_stream(request: AiServiceStopRequest):
 
 
 @chat_router.get("/sessions/{app_id}")
-async def list_sessions(app_id: int, limit: int = Query(default=5, ge=1, le=20)):
-    """列出 app 下最近的 session，从 session_index.json 直接读取（无目录扫描）。"""
-    entries = SessionManager.read_session_index(str(app_id))
+async def list_sessions(
+    app_id: int,
+    limit: int = Query(default=5, ge=1, le=20),
+    login_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """列出「当前用户 + app」下最近的 session（会话按用户隔离）。"""
+    await require_participant_by_id(db, app_id, login_user)
+    entries = SessionManager.read_session_index(str(login_user.user_id), str(app_id))
     return success([
         SessionListItem(
             session_id=e.get("session_id", ""),
@@ -142,9 +152,12 @@ async def get_session_messages(
     app_id: int,
     session_id: str,
     limit: int = Query(default=50, ge=1, le=200),
+    login_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
 ):
-    """加载指定 session 的最近 N 条消息。"""
-    session_dir = get_current_session_dir(app_id, session_id)
+    """加载指定 session 的最近 N 条消息（仅限项目成员，读取自己目录）。"""
+    await require_participant_by_id(db, app_id, login_user)
+    session_dir = get_current_session_dir(str(login_user.user_id), str(app_id), session_id)
     if not session_dir.exists():
         raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "会话不存在")
 
@@ -169,8 +182,14 @@ async def get_session_messages(
 
 
 @chat_router.get("/sessions/{app_id}/{session_id}/alive")
-async def check_session_alive(app_id: int, session_id: str):
-    """检查 session 在内存池中是否活跃。"""
+async def check_session_alive(
+    app_id: int,
+    session_id: str,
+    login_user: JWTUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """检查 session 在内存池中是否活跃（仅限项目成员）。"""
+    await require_participant_by_id(db, app_id, login_user)
     alive = await agent_service._get_runtime().session_pool.exists(session_id)
     return success({"alive": alive})
 

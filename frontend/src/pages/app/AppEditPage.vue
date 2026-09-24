@@ -9,7 +9,7 @@
         <a-descriptions :column="2" bordered style="margin-bottom: 24px">
           <a-descriptions-item label="项目ID">{{ appInfo.id }}</a-descriptions-item>
           <a-descriptions-item label="创建者">
-            {{ appInfo.userName || '未知用户' }}
+            {{ appInfo.owner ? `用户 ${appInfo.owner}` : '未知用户' }}
           </a-descriptions-item>
           <a-descriptions-item label="创建时间">{{
             formatTime(appInfo.createTime)
@@ -38,18 +38,6 @@
             <a-input :value="appInfo?.dbName" placeholder="数据库名称" disabled />
           </a-form-item>
 
-          <a-form-item label="项目描述" name="initPrompt">
-            <a-textarea
-              v-model:value="formData.initPrompt"
-              placeholder="请介绍一下这个项目"
-              :rows="4"
-              :maxlength="1000"
-              show-count
-              disabled
-            />
-            <div class="form-tip">初始提示词不可修改</div>
-          </a-form-item>
-
           <a-form-item>
             <a-space>
               <a-button type="primary" html-type="submit" :loading="submitting">保存修改</a-button>
@@ -70,8 +58,6 @@ import { message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { getAppVoById, updateApp, updateAppByAdmin } from '@/api/appController'
 import { formatTime } from '@/utils/time'
-import UserInfo from '@/components/UserInfo.vue'
-import { getStaticPreviewUrl } from '@/config/env'
 import type { FormInstance } from 'ant-design-vue'
 
 const route = useRoute()
@@ -85,10 +71,6 @@ const formRef = ref<FormInstance>()
 
 const formData = reactive({
   appName: '',
-  cover: '',
-  priority: 0,
-  initPrompt: '',
-  deployKey: '',
 })
 
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
@@ -112,16 +94,12 @@ const fetchAppInfo = async () => {
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
-      if (!isAdmin.value && appInfo.value.userId !== loginUserStore.loginUser.id) {
+      if (!isAdmin.value && appInfo.value.owner !== loginUserStore.loginUser.id) {
         message.error('您没有权限编辑此项目')
         router.push('/')
         return
       }
       formData.appName = appInfo.value.appName || ''
-      formData.cover = appInfo.value.cover || ''
-      formData.priority = appInfo.value.priority || 0
-      formData.initPrompt = appInfo.value.initPrompt || ''
-      formData.deployKey = appInfo.value.deployKey || ''
     } else {
       message.error('获取项目信息失败')
       router.push('/')
@@ -144,13 +122,11 @@ const handleSubmit = async () => {
       res = await updateAppByAdmin({
         id: appInfo.value.id,
         appName: formData.appName,
-        initPrompt: formData.initPrompt,
       })
     } else {
       res = await updateApp({
         id: appInfo.value.id,
         appName: formData.appName,
-        initPrompt: formData.initPrompt,
       })
     }
     if (res.data.code === 0) {
@@ -170,8 +146,6 @@ const handleSubmit = async () => {
 const resetForm = () => {
   if (appInfo.value) {
     formData.appName = appInfo.value.appName || ''
-    formData.cover = appInfo.value.cover || ''
-    formData.priority = appInfo.value.priority || 0
   }
   formRef.value?.clearValidate()
 }
@@ -179,12 +153,6 @@ const resetForm = () => {
 const goToChat = () => {
   if (appInfo.value?.id) {
     router.push(`/app/chat/${appInfo.value.id}`)
-  }
-}
-const openPreview = () => {
-  if (appInfo.value?.deployKey) {
-    const url = getStaticPreviewUrl(appInfo.value.deployKey)
-    window.open(url, '_blank')
   }
 }
 
@@ -217,14 +185,6 @@ onMounted(() => {
   border: 1px solid var(--border-light);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-sm);
-}
-
-.cover-preview {
-  margin-top: 12px;
-  padding: 12px;
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--bg-subtle);
 }
 
 .form-tip {
