@@ -161,6 +161,116 @@ async def search_warm(app_id: str, user_id: str, query: str) -> list[MemoryEntry
     return selected
 
 
+async def debug_recall(app_id: str, user_id: str, query: str) -> dict:
+    """模拟检索（P2-7 ④ 排查工具，§10.3）：给定 query 输出双路原始召回 + 逐因子明细。
+
+    与 search_warm 同构但有三点不同：不登记命中（模拟不污染 hit 统计）、
+    输出中间分（Qdrant 原始分 / sim_norm / decay / type_weight / final_score）、
+    报告「Qdrant 有而 MySQL 无」的幽灵点（对账金矿）。
+    """
+    cfg = config.memory.search
+    trace: dict = {
+        "query": query,
+        "enabled": cfg.enabled,
+        "weights": {
+            "vector": cfg.rerank_vector_weight,
+            "time": cfg.rerank_time_weight,
+            "type": cfg.rerank_type_weight,
+        },
+        "budget": cfg.warm_token_budget,
+    }
+    if not cfg.enabled or not (query or "").strip():
+        trace["aborted"] = "disabled" if not cfg.enabled else "empty_query"
+        return trace
+
+    # ── 向量通道（原始分） ──────────────────────────────────────────────────────
+    semantic: dict[int, float] = {}
+    try:
+        query_vector = await get_embedding_client().embed_query(query)
+        for pid, score in await search_by_vector(
+            app_id=app_id,
+            user_id=user_id,
+            query_vector=query_vector,
+            limit=int(getattr(cfg, "recall_top_n", 0) or cfg.top_k or 24),
+            score_threshold=cfg.score_threshold,
+        ):
+            semantic[pid] = score
+    except Exception as exc:  # noqa: BLE001 — 模拟工具照实记录降级
+        metrics.inc_degrade("qdrant")
+        trace["vector_error"] = f"{type(exc).__name__}: {exc}"
+    trace["vector_hits"] = [
+        {"agent_memory_id": pid, "raw_score": round(s, 4)}
+        for pid, s in sorted(semantic.items(), key=lambda kv: -kv[1])
+    ]
+
+    # ── 关键词通道 ─────────────────────────────────────────────────────────────
+    keyword_query = build_keyword_query(query)
+    trace["keyword_query"] = keyword_query
+    keyword_entries: list[MemoryEntry] = []
+    if keyword_query:
+        try:
+            keyword_entries = await search_summary_keyword(
+                app_id=app_id, user_id=user_id, keyword=keyword_query, limit=cfg.keyword_top_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            trace["keyword_error"] = f"{type(exc).__name__}: {exc}"
+    trace["keyword_hits"] = [e.memory_id for e in keyword_entries]
+
+    # ── 合并去重 + 回表复检 ────────────────────────────────────────────────────
+    merged: dict[int, tuple[MemoryEntry, float]] = {
+        e.id: (e, _KEYWORD_FALLBACK_SCORE) for e in keyword_entries
+    }
+    source_of: dict[int, str] = {e.id: "keyword" for e in keyword_entries}
+    vector_ids = [pid for pid in semantic if pid not in merged]
+    if vector_ids:
+        try:
+            found = await get_active_by_ids(app_id, user_id, vector_ids)
+            found_ids = set()
+            for e in found:
+                found_ids.add(e.id)
+                if e.id not in merged:
+                    merged[e.id] = (e, semantic.get(e.id, 0.0))
+                source_of[e.id] = "both" if source_of.get(e.id) == "keyword" else "vector"
+            trace["ghost_point_ids"] = [pid for pid in vector_ids if pid not in found_ids]
+        except Exception as exc:  # noqa: BLE001
+            trace["fetch_error"] = f"{type(exc).__name__}: {exc}"
+    if not merged:
+        trace["candidates"] = []
+        return trace
+
+    # ── 逐因子明细 + token 窗口（与 search_warm 同一算法） ─────────────────────
+    ranked = rerank(list(merged.values()))
+    now = datetime.now(timezone.utc)
+    budget = cfg.warm_token_budget
+    used = 0
+    candidates: list[dict] = []
+    for entry, final in ranked:
+        semantic_in = merged[entry.id][1]
+        sim_norm = max(0.0, min(1.0, (semantic_in + 1) / 2))
+        decay = _time_decay(entry, now)
+        cost = entry.token_cost or (estimate_text_tokens(entry.inject_text()) + 8)
+        fits = used + cost <= budget
+        if fits:
+            used += cost
+        candidates.append({
+            "memory_id": entry.memory_id,
+            "agent_memory_id": entry.id,
+            "memory_type": entry.memory_type,
+            "summary": entry.summary[:80],
+            "channel": source_of.get(entry.id, "vector"),
+            "semantic_raw": round(semantic_in, 4),
+            "sim_norm": round(sim_norm, 4),
+            "decay": round(decay, 4),
+            "type_weight": entry.type_weight,
+            "final_score": round(final, 4),
+            "token_cost": cost,
+            "selected": fits,
+        })
+    trace["candidates"] = candidates
+    trace["used_tokens"] = used
+    return trace
+
+
 def format_warm_entries_prompt(entries: list[MemoryEntry]) -> str:
     """warm 层注入格式：按话题分组展示，控制重复感。"""
     if not entries:

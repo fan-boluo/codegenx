@@ -4098,3 +4098,5 @@ sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (2003, "Can't co
 20260924 22:00:23 - MainProcess | MainThread | store._parse_content:229 - WARNING -超长消息 blob 读取失败（返回占位）: C:\Users\aa\.claude\jobs\1b96987c\_blob_test.json.gone | [Errno 2] No such file or directory: 'C:\\Users\\aa\\.claude\\jobs\\1b96987c\\_blob_test.json.gone'
 20260924 22:00:34 - MainProcess | MainThread | store._parse_content:219 - WARNING -chat_message.content 解析失败，跳过该行
 20260924 22:00:34 - MainProcess | MainThread | store._parse_content:229 - WARNING -超长消息 blob 读取失败（返回占位）: C:\Users\aa\.claude\jobs\1b96987c\_blob_test.json.gone | [Errno 2] No such file or directory: 'C:\\Users\\aa\\.claude\\jobs\\1b96987c\\_blob_test.json.gone'
+20260924 22:47:32 - MainProcess | MainThread | store._parse_content:249 - WARNING -chat_message.content 解析失败，跳过该行
+20260924 22:47:32 - MainProcess | MainThread | store._parse_content:259 - WARNING -超长消息 blob 读取失败（返回占位）: C:\Users\aa\.claude\jobs\1b96987c\_blob_test.json.gone | [Errno 2] No such file or directory: 'C:\\Users\\aa\\.claude\\jobs\\1b96987c\\_blob_test.json.gone'

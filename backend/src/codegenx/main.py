@@ -22,6 +22,7 @@ from codegenx.ai_service.router import (
     monitor_router,
     get_agent_service,
 )
+from codegenx.ai_service.memory.admin import memory_admin_router
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.app_service.router import router as app_router
 from codegenx.gateway.api.blacklist import router as blacklist_router
@@ -147,6 +148,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix=settings.app_base_path)
     app.include_router(blacklist_router, prefix=settings.app_base_path)
     app.include_router(monitor_router, prefix=settings.app_base_path)
+    app.include_router(memory_admin_router, prefix=settings.app_base_path)
     # Prometheus 指标无 /api 前缀
     app.include_router(metrics_router)
 

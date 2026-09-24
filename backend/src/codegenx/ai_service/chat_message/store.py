@@ -108,7 +108,7 @@ class ChatMessageStore:
         供记忆提取增量消费；解析失败的行跳过（坏行不阻断水位推进）。
         """
         sql = (
-            "SELECT seq, content FROM chat_message "
+            "SELECT seq, message_uid, content FROM chat_message "
             "WHERE session_id = :s AND seq > :a ORDER BY seq ASC"
         )
         params: dict = {"s": session_id, "a": int(after_seq)}
@@ -118,10 +118,40 @@ class ChatMessageStore:
         async with session_maker() as session:
             rows = (await session.execute(text(sql), params)).all()
         result: list[tuple[int, dict]] = []
-        for seq, content in rows:
+        for seq, message_uid, content in rows:
             message = _parse_content(content)
             if message is not None:
+                if message_uid:  # P2-7：溯源字段（写入 agent_memory.source_msg_ids）
+                    message["message_uid"] = str(message_uid)
                 result.append((int(seq), message))
+        return result
+
+    async def get_by_uids(self, message_uids: list[str], limit: int = 200) -> list[dict]:
+        """按 message_uid 批量取原始消息（P2-7 ② 记忆溯源反查；uk_message_uid 点查）。"""
+        if not message_uids:
+            return []
+        async with session_maker() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT message_uid, session_id, seq, role, content, created_at "
+                        "FROM chat_message WHERE message_uid IN :uids "
+                        "ORDER BY session_id, seq ASC LIMIT :l"
+                    ),
+                    {"uids": tuple(message_uids[:500]), "l": int(limit)},
+                )
+            ).all()
+        result: list[dict] = []
+        for uid, sid, seq, role, content, created_at in rows:
+            message = _parse_content(content) or {}
+            result.append({
+                "message_uid": str(uid),
+                "session_id": str(sid or ""),
+                "seq": int(seq or 0),
+                "role": str(role or message.get("role") or ""),
+                "content": message.get("content"),
+                "create_time": created_at.isoformat() if isinstance(created_at, datetime) else str(created_at or ""),
+            })
         return result
 
     async def get_recent(
