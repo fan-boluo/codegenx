@@ -14,4 +14,4 @@ learn-claudecode/
 /.claude/
 /.data/
 /.vite/
-/backend/services/ai-service/.claude/
+/backend/.claude/

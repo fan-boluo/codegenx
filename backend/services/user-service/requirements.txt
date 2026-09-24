@@ -1,6 +1,0 @@
-# User Service (gRPC)
-grpcio>=1.65.0
-protobuf>=5.27.0
-sqlalchemy[asyncio]>=2.0.30
-aiomysql>=0.2.0
-greenlet>=3.0.0

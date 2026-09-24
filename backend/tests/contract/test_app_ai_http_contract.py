@@ -1,15 +1,6 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
-
-
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
-GATEWAY_ROOT = BACKEND_ROOT / "api-gateway"
-for candidate in (str(GATEWAY_ROOT), str(BACKEND_ROOT)):
-    if candidate not in sys.path:
-        sys.path.insert(0, candidate)
 
 from shared.schema.ai_service import AiServiceErrorPayload, AiServiceGenerateRequest, AiServiceStreamMeta
 from shared.schema.common import BaseResponse
@@ -21,7 +12,6 @@ class AppAiHttpContractTest(unittest.TestCase):
             appId=123,
             userId="u-123",
             message="继续完善页脚",
-            codeGenType="vue_project",
             traceId="trace-2",
             requestId="req-2",
             sessionId="session-2",
@@ -29,12 +19,14 @@ class AppAiHttpContractTest(unittest.TestCase):
         dumped = request.model_dump(by_alias=True, exclude_none=True)
         self.assertEqual(dumped["appId"], 123)
         self.assertEqual(dumped["userId"], "u-123")
-        self.assertEqual(dumped["codeGenType"], "vue_project")
         self.assertEqual(dumped["traceId"], "trace-2")
         self.assertEqual(dumped["requestId"], "req-2")
         self.assertEqual(dumped["sessionId"], "session-2")
+        # 未显式传入时使用 schema 默认值
+        self.assertEqual(dumped["clientVersion"], "ai-service")
+        self.assertEqual(dumped["metadata"], {})
 
-    def test_generate_request_omits_codegen_type_when_not_provided(self) -> None:
+    def test_generate_request_fills_defaults_when_not_provided(self) -> None:
         request = AiServiceGenerateRequest(
             appId=456,
             message="直接让 agent 决定",
@@ -47,10 +39,13 @@ class AppAiHttpContractTest(unittest.TestCase):
             dumped,
             {
                 "appId": 456,
+                "userId": "userx",
                 "message": "直接让 agent 决定",
+                "sessionId": "session-4",
                 "traceId": "trace-4",
                 "requestId": "req-4",
-                "sessionId": "session-4",
+                "clientVersion": "ai-service",
+                "metadata": {},
             },
         )
 

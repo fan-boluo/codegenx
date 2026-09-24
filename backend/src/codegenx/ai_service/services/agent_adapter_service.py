@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+from collections.abc import AsyncGenerator
+
+from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
+
+from codegenx.ai_service.agent.runtime import AgentRuntime
+from db.mysql.session import shutdown_mysql_engine
+from db.redis.redis_client import redis_client
+from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
+from shared import log
+
+
+class AgentAdapterService:
+    def __init__(self) -> None:
+        self._runtime: AgentRuntime | None = None
+        self._startup_lock = asyncio.Lock()
+        self._started = False
+        self._telemetry_started = False
+
+    def _get_runtime(self) -> AgentRuntime:
+        runtime = self._runtime
+        if runtime is None:
+            runtime = AgentRuntime()
+            self._runtime = runtime
+        return runtime
+
+    async def startup(self) -> None:
+        async with self._startup_lock:
+            if self._started:
+                return
+            # TODO 后台任务在哪里启动，现在有的是健康检查和session poll
+            runtime = self._get_runtime()
+            # runtime.start 启动runtime需要的任务
+            await runtime.start()
+            log.info("启动runtime完毕")
+
+            # 启动定时维护任务（DB 清理 + alert streak 清理）
+            await get_monitor_maintenance_service().start_periodic_maintenance()
+
+            self._started = True
+
+    async def shutdown(self) -> None:
+        async with self._startup_lock:
+            # 停止定时维护任务
+            await get_monitor_maintenance_service().stop_periodic_maintenance()
+
+            if self._runtime is not None:
+                with suppress(Exception):
+                    await self._runtime.stop()
+                self._runtime = None
+            # 关闭本服务的实例
+            with suppress(Exception):
+                await redis_client.aclose()
+
+            with suppress(Exception):
+                await shutdown_mysql_engine()
+
+            self._started = False
+
+    async def stream_message(
+        self,
+        request: AiServiceGenerateRequest
+    ) -> AsyncGenerator[str, None]:
+        runtime = self._get_runtime()
+        async for event in runtime.submit_request(request):
+            log.info("stream message {}", event.model_dump_json())
+            yield event.model_dump_json() + "\n"
+
+    async def stop_session(
+        self,
+        *,
+        app_id: int,
+        user_id: str | None = None,
+        session_id: str,
+        trace_id: str,
+        request_id: str,
+        reason: str | None = None,
+        grace_seconds: float | None = None,
+    ) -> dict[str, object]:
+        runtime = self._runtime
+        if runtime is None:
+            return {
+                "accepted": False,
+                "sessionId": session_id,
+                "stoppedRequestCount": 0,
+                "droppedRequestCount": 0,
+                "activeRequestIds": [],
+                "droppedRequestIds": [],
+                "activeTurnIds": [],
+            }
+        return await runtime.stop_request(
+            session_id=session_id,
+            request_id=request_id,
+            reason=str(reason or "user-stop"),
+            grace_seconds=grace_seconds,
+        )
