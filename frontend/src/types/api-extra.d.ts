@@ -1,16 +1,11 @@
 declare namespace API {
   type AppVO = {
     id?: number
-    userId?: number | string
+    owner?: number | string
     appName?: string
-    cover?: string
-    initPrompt?: string
-    priority?: number
-    deployKey?: string
-    deployedTime?: string
+    dbName?: string
     createTime?: string
     updateTime?: string
-    user?: UserVO
   }
 
   type AppQueryRequest = {
@@ -19,17 +14,7 @@ declare namespace API {
     sortField?: string
     sortOrder?: string
     id?: number
-    userId?: number
     appName?: string
-    priority?: number
-  }
-
-  type AppChatRequest = {
-    appId: number
-    message: string
-    sessionId?: string
-    requestId?: string
-    stream?: boolean
   }
 
   type UserSummaryStatsVO = {

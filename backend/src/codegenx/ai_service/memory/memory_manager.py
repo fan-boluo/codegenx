@@ -23,6 +23,7 @@ class MemoryManager:
 
     session_id: str = ""
     app_id: str = ""
+    user_id: str = ""
 
     async def load(self, query: str = "") -> str:
         """组装当前轮的记忆注入：hot（常驻）+ warm（按 query 召回）。
@@ -36,7 +37,7 @@ class MemoryManager:
         parts: list[str] = []
 
         # ── hot 层：核心约束，每轮注入 ─────────────────────────────────────────
-        hot_prompt = format_hot_prompt(self.app_id)
+        hot_prompt = format_hot_prompt(self.user_id, self.app_id)
         if hot_prompt:
             parts.append(hot_prompt)
 
@@ -44,7 +45,7 @@ class MemoryManager:
         warm_entries: list = []
         if (query or "").strip():
             try:
-                warm_entries = await search_warm(self.app_id, query)
+                warm_entries = await search_warm(self.user_id, self.app_id, query)
             except Exception as exc:  # noqa: BLE001 — 记忆检索失败不阻断对话
                 log.error("warm 记忆检索异常:{}", exc)
                 warm_entries = []

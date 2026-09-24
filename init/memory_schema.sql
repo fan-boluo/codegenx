@@ -53,8 +53,9 @@ CREATE TABLE IF NOT EXISTS memory_watermark (
 CREATE TABLE IF NOT EXISTS memory_sync_checkpoint (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     app_id        VARCHAR(64) NOT NULL COMMENT '应用id',
+    user_id       VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户id（记忆按 用户/项目 两级隔离）',
     scope         VARCHAR(32) NOT NULL COMMENT '同步范围：warm',
     last_entry_id VARCHAR(64) NOT NULL DEFAULT '' COMMENT '已同步到向量库的最大记忆id（ULID，单调可比）',
     updated_at    DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY uk_app_scope (app_id, scope)
+    UNIQUE KEY uk_user_app_scope (user_id, app_id, scope)
 ) COMMENT '记忆双数据源同步检查点' COLLATE = utf8mb4_unicode_ci;

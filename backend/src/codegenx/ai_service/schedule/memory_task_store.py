@@ -251,30 +251,30 @@ class MemoryTaskStore:
 
     # === 同步检查点（memory_sync_checkpoint 表）===
 
-    async def get_checkpoint(self, app_id: str, scope: str = "warm") -> str:
+    async def get_checkpoint(self, app_id: str, scope: str = "warm", user_id: str = "") -> str:
         """读取已同步到 Qdrant 的最大记忆 id；无记录返回空串。"""
         async with session_maker() as session:
             row = (
                 await session.execute(
                     text(
                         "SELECT last_entry_id FROM memory_sync_checkpoint "
-                        "WHERE app_id = :a AND scope = :sc"
+                        "WHERE app_id = :a AND scope = :sc AND user_id = :u"
                     ),
-                    {"a": str(app_id), "sc": scope},
+                    {"a": str(app_id), "sc": scope, "u": str(user_id or "")},
                 )
             ).first()
         return str(row[0] or "") if row else ""
 
-    async def advance_checkpoint(self, app_id: str, scope: str, last_entry_id: str) -> None:
+    async def advance_checkpoint(self, app_id: str, scope: str, last_entry_id: str, user_id: str = "") -> None:
         """推进同步检查点（upsert）。"""
         async with session_maker() as session:
             await session.execute(
                 text(
-                    "INSERT INTO memory_sync_checkpoint (app_id, scope, last_entry_id) "
-                    "VALUES (:a, :sc, :e) "
+                    "INSERT INTO memory_sync_checkpoint (user_id, app_id, scope, last_entry_id) "
+                    "VALUES (:u, :a, :sc, :e) "
                     "ON DUPLICATE KEY UPDATE last_entry_id = :e"
                 ),
-                {"a": str(app_id), "sc": scope, "e": last_entry_id},
+                {"u": str(user_id or ""), "a": str(app_id), "sc": scope, "e": last_entry_id},
             )
             await session.commit()
 

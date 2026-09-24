@@ -189,9 +189,9 @@ class MemoryScheduler:
             log.warning("[warm_extract] 任务缺少 app_id/session_id，跳过: #{}", task["id"])
             return
 
-        # 1. 水位增量读取（对话 jsonl 文件为源）
+        # 1. 水位增量读取（对话 jsonl 文件为源；路径按 用户/项目 两级定位）
         file_name, line_no = await self.tasks.get_watermark(session_id)
-        records = SessionManager(app_id, session_id).read_messages_since(file_name, line_no)
+        records = SessionManager(user_id, app_id, session_id).read_messages_since(file_name, line_no)
         if not records:
             return
 
@@ -223,7 +223,7 @@ class MemoryScheduler:
 
         # 4. 判重/仲裁 + 双写（jsonl 事实源先行）
         if candidates:
-            written = await write_memories(app_id, session_id, candidates, self._invoke_llm)
+            written = await write_memories(user_id, app_id, session_id, candidates, self._invoke_llm)
             if written:
                 log.info("[warm_extract] 会话 {} 写入 {} 条记忆", session_id, written)
 

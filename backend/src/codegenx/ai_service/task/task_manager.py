@@ -44,8 +44,9 @@ class TaskManager:
     same board transparently.
     """
 
-    def __init__(self, app_id: str, session_id: str = "") -> None:
-        self._tasks_dir: Path = get_current_session_dir(app_id, session_id) / ".tasks"
+    def __init__(self, app_id: str, session_id: str = "", user_id: str = "") -> None:
+        # 任务看板随会话目录按 用户/项目 两级隔离
+        self._tasks_dir: Path = get_current_session_dir(user_id, app_id, session_id) / ".tasks"
         self._tasks_dir.mkdir(parents=True, exist_ok=True)
         self._counter_file: Path = self._tasks_dir / "_counter.json"
 

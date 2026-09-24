@@ -1,25 +1,19 @@
 declare namespace API {
-  type AppChatRequest = {
-    appId: number
-    message: string
-    sessionId?: string
-    requestId?: string
-    traceId?: string
-  }
-
   type AppVO = {
     id?: number | null
     appName?: string | null
-    cover?: string | null
-    initPrompt?: string | null
-    codeGenType?: string | null
-    deployKey?: string | null
-    deployedTime?: string | null
-    priority?: number | null
-    userId?: number | null
+    owner?: number | null
     dbName?: string | null
     createTime?: string | null
     updateTime?: string | null
+  }
+
+  type AppMemberVO = {
+    appId?: number | null
+    userId?: number | null
+    userName?: string | null
+    userAccount?: string | null
+    createTime?: string | null
   }
 
   type BaseResponseBool_ = {
@@ -96,6 +90,10 @@ declare namespace API {
     id: number
   }
 
+  type listAppMembersApiAppMemberListAppIdGetParams = {
+    app_id: number
+  }
+
   type getAppVoByAdminApiAppAdminGetVoGetParams = {
     id: number
   }
@@ -145,16 +143,6 @@ declare namespace API {
     totalRow: number
     /** Optimizecountquery */
     optimizeCountQuery?: boolean
-  }
-
-  type serveStaticResourceApiAppStaticDeployKeyGetParams = {
-    deploy_key: string
-    resource_path?: string
-  }
-
-  type serveStaticResourceApiAppStaticDeployKeyResourcePathGetParams = {
-    deploy_key: string
-    resource_path: string
   }
 
   type UserAddRequest = {

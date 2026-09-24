@@ -51,9 +51,11 @@ class ToolExecutor:
 
         if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory", "code_check", "find", "grep"}:
             tool_input.setdefault("app_id", app_id)
+            tool_input.setdefault("user_id", user_id)
 
         if tool_name == "subagent":
             tool_input.setdefault("app_id", app_id)
+            tool_input.setdefault("user_id", user_id)
             tool_input.setdefault("trace_id", trace_id)
             tool_input.setdefault("plan_summary", "")
             tool_input.setdefault("parent_session_id", session_id)
@@ -85,7 +87,7 @@ class ToolExecutor:
         #     return {"error": error_message}
 
         # 2. 安全检查 (安全边界前置)
-        error_msg = self._perform_safety_checks(tool_name, tool_input, safe_paths)
+        error_msg = self._perform_safety_checks(tool_name, tool_input, safe_paths, user_id=user_id)
         if error_msg:
             log.warning(f"Safety check failed for tool '{tool_name}': {error_msg}")
             return {"error": f"拒绝执行: {error_msg}"}
@@ -131,7 +133,7 @@ class ToolExecutor:
                 return resolved
         return list(safe_paths) if safe_paths else []
 
-    def _perform_safety_checks(self, tool_name: str, tool_input: Dict[str, Any], safe_paths: List[Path]) -> Optional[str]:
+    def _perform_safety_checks(self, tool_name: str, tool_input: Dict[str, Any], safe_paths: List[Path], user_id: str = "") -> Optional[str]:
         """
         检查所有有关路径的参数，判断是否在 safe_path 内。
         并对 Bash 命令进行基本的敏感策略处理（示例）。
@@ -148,7 +150,7 @@ class ToolExecutor:
                 if not isinstance(value, str):
                     continue
                 try:
-                    target_path = self._resolve_candidate_path(value, tool_input.get("app_id", "main"))
+                    target_path = self._resolve_candidate_path(value, tool_input.get("app_id", "main"), user_id)
                     if not self._is_safe_path(target_path, safe_paths):
                          return f"越界访问：目标路径 '{target_path}' 不在 safe_path 允许范围内"
                 except Exception as e:
@@ -175,8 +177,8 @@ class ToolExecutor:
                 pass
         return False
 
-    def _resolve_candidate_path(self, value: str, app_id: str | int) -> Path:
+    def _resolve_candidate_path(self, value: str, app_id: str | int, user_id: str | int = "") -> Path:
         candidate = Path(value).expanduser()
         if not candidate.is_absolute():
-            candidate = get_code_dir(app_id) / candidate
+            candidate = get_code_dir(user_id or "main", app_id) / candidate
         return candidate.resolve()

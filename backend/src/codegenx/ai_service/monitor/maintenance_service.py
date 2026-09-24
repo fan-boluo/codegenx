@@ -12,7 +12,7 @@ from db.mysql.session import session_maker
 from codegenx.ai_service.monitor.alert_evaluator import get_alert_streak_tracker
 from codegenx.ai_service.monitor.monitor_query_service import MonitorQueryService, get_monitor_query_service
 from shared import log
-from shared.constants import get_session_dir
+from shared.constants import DATA_ROOT_DIR
 from codegenx.ai_service.monitor.schema.monitor import MonitorCleanupSummary, MonitorCleanupTableResult
 
 CHAT_HISTORY_FILE_GLOB = "chat_history_*.jsonl"
@@ -51,12 +51,13 @@ class MonitorMaintenanceService:
         Returns the number of deleted files."""
         now = datetime.now(UTC).replace(tzinfo=None)
         cutoff = now - timedelta(days=retention_days)
-        runtime_root = get_session_dir("main").parent.parent
+        runtime_root = DATA_ROOT_DIR
         if not runtime_root.exists():
             return 0
 
         deleted = 0
-        history_glob = f"*/session/{CHAT_HISTORY_FILE_GLOB}"
+        # 用户/项目 两级目录：.data/{userId}/{appId}/session/chat_history_*.jsonl
+        history_glob = f"*/*/session/{CHAT_HISTORY_FILE_GLOB}"
         for history_file in runtime_root.glob(history_glob):
             try:
                 mtime = datetime.fromtimestamp(history_file.stat().st_mtime, tz=UTC).replace(tzinfo=None)

@@ -37,8 +37,8 @@ class ContextAssembler:
     extra :str = ""
 
 
-    async def build_workspace(self, app_id: str, db_name: str | None = None):
-        code_dir = ensure_app_workdir(app_id)
+    async def build_workspace(self, user_id: str, app_id: str, db_name: str | None = None):
+        code_dir = ensure_app_workdir(user_id, app_id)
         safe_paths = [str(code_dir)]
 
         # CSV 数据目录作为安全路径（从配置读取）

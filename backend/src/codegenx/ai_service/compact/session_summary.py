@@ -40,9 +40,9 @@ def _count_tool_calls_since(messages: list[dict], since_idx: int) -> int:
     return count
 
 
-def get_session_summary_path(app_id: str, session_id: str) -> Path:
-    """会话摘要文件：session/{session_id}/SUMMARY.md"""
-    return get_session_dir(app_id) / session_id / "SUMMARY.md"
+def get_session_summary_path(user_id: str, app_id: str, session_id: str) -> Path:
+    """会话摘要文件：.data/{userId}/{appId}/session/{session_id}/SUMMARY.md"""
+    return get_session_dir(user_id, app_id) / session_id / "SUMMARY.md"
 
 
 # ── 会话摘要模板与提取提示词（原 memory/prompts.py 的 session 部分） ─────────
@@ -122,10 +122,12 @@ class SessionSummaryService:
         app_id: str,
         session_id: str,
         summary_path: Path | None = None,
+        user_id: str = "",
     ) -> None:
         self.app_id = app_id
         self.session_id = session_id
-        self._path = summary_path or get_session_summary_path(app_id, session_id)
+        self.user_id = user_id
+        self._path = summary_path or get_session_summary_path(user_id, app_id, session_id)
 
         # 阈值状态
         self._initialized = False

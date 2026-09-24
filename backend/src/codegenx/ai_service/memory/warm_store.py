@@ -36,7 +36,9 @@ ACCESS_FLUSH_THRESHOLD = 64  # 访问回写缓冲触发条数
 class WarmStore:
     """单个 app 的 warm 层文件存储（进程内单例，见 get_warm_store）。"""
 
-    def __init__(self, app_id: str) -> None:
+    def __init__(self, user_id: str, app_id: str) -> None:
+        # 记忆按 用户/项目 两级隔离，所有路径调用都带 user_id
+        self.user_id = user_id
         self.app_id = app_id
         # id → (last_accessed_at, 访问增量)
         self._access_buffer: dict[str, tuple[str, int]] = {}
@@ -45,7 +47,7 @@ class WarmStore:
     # ── meta / 滚动 ────────────────────────────────────────────────────────────
 
     def _load_meta(self) -> dict:
-        path = get_warm_meta_path(self.app_id)
+        path = get_warm_meta_path(self.user_id, self.app_id)
         if not path.exists():
             return {"seq": 1}
         try:
@@ -54,7 +56,7 @@ class WarmStore:
             return {"seq": 1}
 
     def _save_meta(self, meta: dict) -> None:
-        path = get_warm_meta_path(self.app_id)
+        path = get_warm_meta_path(self.user_id, self.app_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
@@ -67,13 +69,13 @@ class WarmStore:
         entry.layer = "warm"
         meta = self._load_meta()
         seq = int(meta.get("seq", 1))
-        target = get_warm_file_path(self.app_id, seq)
+        target = get_warm_file_path(self.user_id, self.app_id, seq)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         if target.exists() and target.stat().st_size >= WARM_FILE_MAX_BYTES:
             seq += 1
             meta["seq"] = seq
-            target = get_warm_file_path(self.app_id, seq)
+            target = get_warm_file_path(self.user_id, self.app_id, seq)
 
         with open(target, "a", encoding="utf-8") as fh:
             fh.write(entry.to_json_line() + "\n")
@@ -89,7 +91,7 @@ class WarmStore:
     ) -> list[MemoryEntry]:
         """按追加顺序扫描；after_id 之后（不含）的条目，status=None 表示不过滤。"""
         result: list[MemoryEntry] = []
-        for path in list_warm_files(self.app_id):
+        for path in list_warm_files(self.user_id, self.app_id):
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except OSError as exc:
@@ -109,7 +111,7 @@ class WarmStore:
     def find_by_ids(self, ids: list[str]) -> dict[str, MemoryEntry]:
         wanted = set(ids)
         found: dict[str, MemoryEntry] = {}
-        for path in list_warm_files(self.app_id):
+        for path in list_warm_files(self.user_id, self.app_id):
             if not wanted:
                 break
             try:
@@ -131,7 +133,7 @@ class WarmStore:
         if not targets:
             return 0
         hit = 0
-        for path in list_warm_files(self.app_id):
+        for path in list_warm_files(self.user_id, self.app_id):
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except OSError:
@@ -172,7 +174,7 @@ class WarmStore:
         buffered = self._access_buffer
         self._access_buffer = {}
         written = 0
-        for path in list_warm_files(self.app_id):
+        for path in list_warm_files(self.user_id, self.app_id):
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except OSError:
@@ -203,12 +205,12 @@ class WarmStore:
 
         调用方（lifecycle）拿到 id 后负责删除 Qdrant 点位。
         """
-        archive_dir = get_archive_dir(self.app_id)
+        archive_dir = get_archive_dir(self.user_id, self.app_id)
         archive_dir.mkdir(parents=True, exist_ok=True)
         archived_ids: list[str] = []
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
-        for path in list_warm_files(self.app_id):
+        for path in list_warm_files(self.user_id, self.app_id):
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except OSError:
@@ -255,7 +257,7 @@ class WarmStore:
         tmp.replace(path)
 
 
-@lru_cache(maxsize=64)
-def get_warm_store(app_id: str) -> WarmStore:
-    """按 app 维度的进程内单例（访问缓冲需要共享）。"""
-    return WarmStore(app_id)
+@lru_cache(maxsize=256)
+def get_warm_store(user_id: str, app_id: str) -> WarmStore:
+    """按 用户/项目 维度的进程内单例（访问缓冲需要共享）。"""
+    return WarmStore(user_id, app_id)

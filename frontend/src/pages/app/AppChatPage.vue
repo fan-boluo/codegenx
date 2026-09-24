@@ -539,7 +539,6 @@ const appInfo = ref<API.AppVO>({})
 const appId = ref<string>()
 const sessionId = ref('')
 const isCreatingApp = ref(false)
-const suppressAutoInitialMessage = ref(false)
 
 const messages = ref<MessageItem[]>([])
 const userInput = ref('')
@@ -1279,11 +1278,6 @@ const appendOutput = (type: OutputLine['type'], text: string) => {
   }
 }
 
-const normalizeUserId = (userId?: string | number | null) => {
-  if (userId === undefined || userId === null || userId === '') return ''
-  return String(userId)
-}
-
 const getAuthHeaders = (): Record<string, string> => {
   const token = localStorage.getItem('token')
   if (!token) return {}
@@ -1617,15 +1611,8 @@ watch(
   { deep: true },
 )
 
-const isOwner = computed(() => {
-  if (!appId.value) return true
-  const appOwnerId = normalizeUserId(appInfo.value?.userId)
-  const loginUserId = normalizeUserId(loginUserStore.loginUser.id)
-  if (!appOwnerId || !loginUserId) return false
-  return appOwnerId === loginUserId
-})
-
-const canOperateApp = computed(() => isOwner.value)
+// 后端 get/vo 已校验参与者身份（owner/成员/管理员），能加载出项目即可操作
+const canOperateApp = computed(() => Boolean(appId.value))
 
 // Task board state
 const tasks = ref<TaskInfo[]>([])
@@ -1644,9 +1631,8 @@ const clearActiveGeneration = (requestId?: string) => {
   isStoppingGeneration.value = false
 }
 
-const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessage?: boolean }) => {
+const fetchAppInfo = async (options?: { appId?: string }) => {
   const id = options?.appId ?? (route.params.id as string | undefined)
-  const autoGenerateInitialMessage = options?.autoGenerateInitialMessage ?? false
   if (!id) {
     appId.value = undefined; clearChatSessionId(); appInfo.value = {}
     messages.value = []; sourceFileTree.value = []
@@ -1658,9 +1644,7 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
       if (messages.value.length >= 2) { /* generated */ }
-      if (appInfo.value.initPrompt && isOwner.value && messages.value.length === 0 && autoGenerateInitialMessage) {
-        await sendInitialMessage(appInfo.value.initPrompt)
-      } else if (messages.value.length === 0) {
+      if (messages.value.length === 0) {
         // 尝试恢复本地存储的 session
         const storageKey = getAppSessionStorageKey(id)
         const storedSid = localStorage.getItem(storageKey)?.trim()
@@ -1684,15 +1668,6 @@ const fetchAppInfo = async (options?: { appId?: string; autoGenerateInitialMessa
     console.error('获取项目信息失败：', error)
     message.error('获取项目信息失败'); router.push('/')
   }
-}
-
-const sendInitialMessage = async (prompt: string) => {
-  messages.value.push({ type: 'user', content: prompt })
-  const aiMessageIndex = messages.value.length
-  messages.value.push({ type: 'ai', content: '', loading: true })
-  await nextTick(); scrollToBottom()
-  isGenerating.value = true
-  await generateCode(prompt, aiMessageIndex)
 }
 
 const sendMessage = async () => {
@@ -1812,13 +1787,11 @@ onBeforeUnmount(() => {
 
 watch(() => route.params.id, async (newId, oldId) => {
   if (newId === oldId) return
-  const shouldAutoGenerate = !suppressAutoInitialMessage.value
-  suppressAutoInitialMessage.value = false
   fileTabs.value = []
   activeFileTab.value = ''
   sidePanelTab.value = 'files'
   sidePanelVisible.value = true
-  await fetchAppInfo({ appId: typeof newId === 'string' ? newId : undefined, autoGenerateInitialMessage: shouldAutoGenerate })
+  await fetchAppInfo({ appId: typeof newId === 'string' ? newId : undefined })
 })
 
 onMounted(() => {

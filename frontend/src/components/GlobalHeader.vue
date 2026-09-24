@@ -2,7 +2,6 @@
   <div class="global-header">
     <div class="header-left">
       <a class="header-logo" href="/" @click.prevent="$router.push('/')">
-        <img src="../../public/logo.png" alt="logo" class="logo-img" />
         <span class="logo-text">数据分析平台</span>
       </a>
       <a-menu

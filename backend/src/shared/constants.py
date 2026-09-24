@@ -21,50 +21,41 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "app.log"  # 存储日志的文件
 
 """
-这是一个远程服务，不是本地部署的，不在用户根目录下，而是和应用代码放在一处的
+用户数据按 用户/项目 两级隔离存储（同一项目的成员各自只能看到自己的文件）：
 -- frontend
 -- backend
--- data
-  app1
-    -- code  源代码
-    -- deploy 部署安装包
-    -- memory
-    -- context
-    -- session
-  
-  app2
-
-""" 
+-- .data
+  {userId}
+    {appId}
+      -- code    源代码
+      -- memory
+      -- context
+      -- session
+"""
 
 DATA_ROOT_DIR = Path(__file__).resolve().parents[3] / ".data"
 
-APPS_DIR = DATA_ROOT_DIR / "apps"
-APPS_CODE_DIR = APPS_DIR / "code"
-APPS_DEPLOY_DIR = APPS_DIR / "deploy"
+def get_runtime_app_dir(user_id: str | int, app_id: str | int) -> Path:
+    # 用户/项目 两级目录：.data/{userId}/{appId}
+    return DATA_ROOT_DIR / str(user_id) / str(app_id)
 
-def get_runtime_app_dir(app_id: str | int) -> Path:
-    return DATA_ROOT_DIR / str(app_id)
-
-def get_code_dir(app_id: str | int) -> Path:
-    return get_runtime_app_dir(app_id) / "code"
+def get_code_dir(user_id: str | int, app_id: str | int) -> Path:
+    return get_runtime_app_dir(user_id, app_id) / "code"
 
 
-def get_deploy_dir(app_id:str) -> Path:
-    return get_runtime_app_dir(app_id) / "deploy"
-
-def get_context_dir(app_id: str | int) -> Path:
-    return get_runtime_app_dir(app_id) / "context"
+def get_context_dir(user_id: str | int, app_id: str | int) -> Path:
+    return get_runtime_app_dir(user_id, app_id) / "context"
 
 
-def get_memory_dir(app_id: str | int) -> Path:
-    return get_runtime_app_dir(app_id) / "memory"
+def get_memory_dir(user_id: str | int, app_id: str | int) -> Path:
+    return get_runtime_app_dir(user_id, app_id) / "memory"
 
 
-def get_session_dir(app_id: str | int) -> Path:
-    return get_runtime_app_dir(app_id) / "session"
+def get_session_dir(user_id: str | int, app_id: str | int) -> Path:
+    return get_runtime_app_dir(user_id, app_id) / "session"
 
-def get_current_session_dir(app_id: str | int,session_id:str) -> Path:
-    return get_session_dir(app_id) / session_id
+def get_current_session_dir(user_id: str | int, app_id: str | int, session_id: str) -> Path:
+    return get_session_dir(user_id, app_id) / session_id
 
 # ------------------------监控---------------------------
 # 是否开启

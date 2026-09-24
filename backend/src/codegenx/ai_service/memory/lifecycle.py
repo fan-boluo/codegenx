@@ -29,36 +29,43 @@ def _archive_days() -> int:
     return int(getattr(config.memory.store, "archive_days", 90) or 90)
 
 
-def list_app_ids() -> list[str]:
-    """枚举 .data 下的 app 目录（记忆按 app 维度存储）。"""
+def list_user_app_pairs() -> list[tuple[str, str]]:
+    """枚举 .data 下的 用户/项目 两级目录（记忆按 user/app 维度存储）。"""
     if not DATA_ROOT_DIR.exists():
         return []
-    return [d.name for d in DATA_ROOT_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    pairs: list[tuple[str, str]] = []
+    for user_dir in DATA_ROOT_DIR.iterdir():
+        if not user_dir.is_dir() or user_dir.name.startswith("."):
+            continue
+        for app_dir in user_dir.iterdir():
+            if app_dir.is_dir() and not app_dir.name.startswith("."):
+                pairs.append((user_dir.name, app_dir.name))
+    return pairs
 
 
 async def consolidate_all_apps() -> None:
-    for app_id in list_app_ids():
+    for user_id, app_id in list_user_app_pairs():
         try:
-            removed = await consolidate_app(app_id)
+            removed = await consolidate_app(user_id, app_id)
             if removed:
-                log.info("[consolidate] app {} 去重 {} 条", app_id, removed)
+                log.info("[consolidate] app {}/{} 去重 {} 条", user_id, app_id, removed)
         except Exception as exc:  # noqa: BLE001 — 单 app 失败不阻断其他 app
-            log.error("[consolidate] app {} 整理异常: {}", app_id, exc)
+            log.error("[consolidate] app {}/{} 整理异常: {}", user_id, app_id, exc)
 
 
 async def decay_and_archive_all_apps() -> None:
-    for app_id in list_app_ids():
+    for user_id, app_id in list_user_app_pairs():
         try:
-            decayed, archived = await decay_and_archive_app(app_id)
+            decayed, archived = await decay_and_archive_app(user_id, app_id)
             if decayed or archived:
-                log.info("[decay_archive] app {} 软删 {} 条，归档 {} 条", app_id, decayed, archived)
+                log.info("[decay_archive] app {}/{} 软删 {} 条，归档 {} 条", user_id, app_id, decayed, archived)
         except Exception as exc:  # noqa: BLE001
-            log.error("[decay_archive] app {} 异常: {}", app_id, exc)
+            log.error("[decay_archive] app {}/{} 异常: {}", user_id, app_id, exc)
 
 
-async def consolidate_app(app_id: str) -> int:
+async def consolidate_app(user_id: str, app_id: str) -> int:
     """单 app 近似去重：同内容（忽略首尾空白）条目只保留最新一条。"""
-    store = get_warm_store(app_id)
+    store = get_warm_store(user_id, app_id)
     entries = store.scan_entries(status=STATUS_ACTIVE)
     if len(entries) < 2:
         return 0
@@ -85,10 +92,10 @@ async def consolidate_app(app_id: str) -> int:
     return len(stale_ids)
 
 
-async def decay_and_archive_app(app_id: str) -> tuple[int, int]:
+async def decay_and_archive_app(user_id: str, app_id: str) -> tuple[int, int]:
     """单 app 衰减 + 归档。返回 (软删条数, 归档条数)。"""
     now = datetime.now(timezone.utc)
-    store = get_warm_store(app_id)
+    store = get_warm_store(user_id, app_id)
 
     # ── 软删除：active 且 last_accessed_at（缺省 created_at）超 decay_days ──────
     decay_ids: list[str] = []

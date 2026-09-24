@@ -1,6 +1,8 @@
 """
 记忆系统文件布局（json 为事实源）。
 
+记忆目录按 用户/项目 两级隔离：.data/{userId}/{appId}/memory
+
   {memory_dir}/
     hot.json                 # hot 层：核心约束（始终注入，token 预算 ≤2K）
     warm_meta.json           # warm 层滚动元信息（当前序号、总字节数）
@@ -23,34 +25,34 @@ WARM_FILE_MAX_BYTES = 20 * 1024 * 1024  # 单个 jsonl 滚动阈值
 _WARM_FILE_RE = re.compile(r"^warm_(\d{6})\.jsonl$")
 
 
-def get_hot_store_path(app_id: str) -> Path:
+def get_hot_store_path(user_id: str, app_id: str) -> Path:
     """hot 层事实源：{memory_dir}/hot.json"""
-    return get_memory_dir(app_id) / "hot.json"
+    return get_memory_dir(user_id, app_id) / "hot.json"
 
 
-def get_hot_memory_path(app_id: str) -> Path:
+def get_hot_memory_path(user_id: str, app_id: str) -> Path:
     """旧 hot.py（MEMORY.md 时代）的兼容入口，待阶段3删除旧链路后移除。"""
-    return get_hot_store_path(app_id)
+    return get_hot_store_path(user_id, app_id)
 
 
-def get_warm_meta_path(app_id: str) -> Path:
+def get_warm_meta_path(user_id: str, app_id: str) -> Path:
     """warm 层滚动元信息：{memory_dir}/warm_meta.json"""
-    return get_memory_dir(app_id) / "warm_meta.json"
+    return get_memory_dir(user_id, app_id) / "warm_meta.json"
 
 
-def get_warm_file_path(app_id: str, seq: int) -> Path:
+def get_warm_file_path(user_id: str, app_id: str, seq: int) -> Path:
     """warm 层数据文件：{memory_dir}/warm_{seq:06d}.jsonl"""
-    return get_memory_dir(app_id) / f"warm_{seq:06d}.jsonl"
+    return get_memory_dir(user_id, app_id) / f"warm_{seq:06d}.jsonl"
 
 
-def get_archive_dir(app_id: str) -> Path:
+def get_archive_dir(user_id: str, app_id: str) -> Path:
     """归档目录：{memory_dir}/archive/"""
-    return get_memory_dir(app_id) / "archive"
+    return get_memory_dir(user_id, app_id) / "archive"
 
 
-def list_warm_files(app_id: str) -> list[Path]:
+def list_warm_files(user_id: str, app_id: str) -> list[Path]:
     """按序号升序列出全部 warm 数据文件（不含 meta/archive）。"""
-    root = get_memory_dir(app_id)
+    root = get_memory_dir(user_id, app_id)
     if not root.exists():
         return []
     result: list[tuple[int, Path]] = []

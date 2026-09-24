@@ -38,7 +38,7 @@ create table if not exists app
     INDEX idx_owner (owner)            -- 提升基于用户 ID 的查询性能
 ) comment '应用' collate = utf8mb4_unicode_ci;
 
--- 项目成员表（用户-项目多对多权限关系；项目属主即 app.userId，不在此表存 owner 记录）
+-- 项目成员表（用户-项目多对多权限关系；项目属主即 app.owner，不在此表存 owner 记录）
 create table if not exists app_member
 (
     id         bigint auto_increment comment 'id' primary key,

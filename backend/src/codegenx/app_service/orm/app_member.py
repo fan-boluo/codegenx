@@ -2,26 +2,28 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, func, text
-from sqlalchemy import BigInteger, DateTime, Index, String, func, text
+from sqlalchemy import BigInteger, DateTime, Index, func, text
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.models.base import Base
 
 
-class App(Base):
-    """项目表（精简版）：属主即创建人（owner），一个项目绑定一个项目库（dbName）。"""
-    __tablename__ = "app"
+class AppMember(Base):
+    """项目成员表（用户-项目多对多）。
+
+    项目属主由 app.owner 表达，本表只存普通成员，不设 role 列；
+    移除成员走逻辑删除（isDelete=1），重新加入恢复原记录。
+    """
+    __tablename__ = "app_member"
     __table_args__ = (
-        Index("idx_appName", "appName"),
-        Index("idx_owner", "owner"),
+        Index("uk_app_user", "appId", "userId", unique=True),
+        Index("idx_userId", "userId"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    app_name: Mapped[str] = mapped_column("appName", String(128), nullable=False)
-    db_name: Mapped[str | None] = mapped_column("dbName", String(128), nullable=True)
-    owner: Mapped[int] = mapped_column(BigInteger, nullable=False)  # 项目属主即创建人
+    app_id: Mapped[int] = mapped_column("appId", BigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column("userId", BigInteger, nullable=False)
     create_time: Mapped[datetime] = mapped_column(
         "createTime",
         DateTime,
