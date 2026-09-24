@@ -1,20 +1,20 @@
 """
-warm_memories 向量检索层（Qdrant）。
+agent_memory_warm 向量检索层（Qdrant，设计方案 v2.1 §3.4 / §8）。
 
-定位：json/jsonl 是事实源，Qdrant 只是检索加速层 —— 任何时刻可以清空 collection
-后从 jsonl 全量重建（sync.py 负责对账）。本模块只做读写原语，不做业务决策：
+定位：MySQL agent_memory 是唯一真源，本层只是 warm 记忆的可重建检索索引——
+清空 collection 后由 sync_check 从 MySQL 全量重放。本模块只做读写原语，
+不做业务决策。
 
-  ensure_warm_collection   建库 + payload 索引（幂等，启动时调用）
-  upsert_entries           写入/覆盖条目点位
-  search_by_vector         语义检索（filter: app_id + status=active）
-  scroll_by_keyword        关键词检索（content 全文匹配）
-  mark_status              批量改状态（软删除同步）
-  touch_access             批量更新访问时间
-  delete_points            物理删除（归档同步）
-  count_active             对账用计数
+要点（P0-8）：
+  - payload 瘦身：只存 memory_id / app_id / user_id / memory_type / status /
+    created_at，正文不进 payload（回表取，§3.4.3）
+  - point id = agent_memory.id（BIGINT；Qdrant 不接受 ULID）
+  - 多租户：单 collection + payload 分区，user_id / app_id 建索引且
+    is_tenant=true（§3.4.2）；检索必须带租户 filter
+  - status 用 active/inactive 两档：recall 只取 active；失效记忆由
+    vector_synced_at 置 NULL 触发全量重推（upsert 整体覆盖 payload）
 
-向量维度取 config.embedding.dimensions（唯一来源）。qdrant-client 是同步 SDK，
-统一 asyncio.to_thread 包裹，避免阻塞事件循环。
+qdrant-client 是同步 SDK，统一 asyncio.to_thread 包裹，避免阻塞事件循环。
 """
 from __future__ import annotations
 
@@ -25,55 +25,51 @@ from qdrant_client import models
 from db.qdrant.client import get_qdrant_client_manager
 from shared import log
 from codegenx.ai_service.utils.config import config
-from codegenx.ai_service.memory.models import MemoryEntry, ulid_to_uuid
+from codegenx.ai_service.memory.models import MemoryEntry, STATUS_ACTIVE
 
-WARM_COLLECTION = "warm_memories"
+WARM_COLLECTION = "agent_memory_warm"
+
+# scroll 分页大小与页数上限（幽灵清理用；上限防异常数据拖死对账任务）
+_SCROLL_PAGE_SIZE = 256
+_SCROLL_MAX_PAGES = 200
 
 
-def _to_point_id(entry_id: str) -> str:
-    """json 侧 ULID 主键 → Qdrant 点位 ID（UUID 格式）。"""
-    return ulid_to_uuid(entry_id)
-
-
-def _payload_indexes() -> list[tuple[str, models.PayloadSchemaType | models.TextIndexParams]]:
+def _payload_indexes() -> list[tuple[str, object]]:
     return [
-        ("app_id", models.PayloadSchemaType.KEYWORD),
-        ("user_id", models.PayloadSchemaType.KEYWORD),
-        ("status", models.PayloadSchemaType.KEYWORD),
+        # is_tenant：Qdrant 针对字段优化索引布局，多租户过滤性能显著提升
+        ("user_id", models.KeywordIndexParams(type=models.KeywordIndexType.KEYWORD, is_tenant=True)),
+        ("app_id", models.KeywordIndexParams(type=models.KeywordIndexType.KEYWORD, is_tenant=True)),
         ("memory_type", models.PayloadSchemaType.KEYWORD),
-        ("topic", models.PayloadSchemaType.KEYWORD),
+        ("status", models.PayloadSchemaType.KEYWORD),
         ("created_at", models.PayloadSchemaType.DATETIME),
-        ("last_accessed_at", models.PayloadSchemaType.DATETIME),
-        (
-            "content",
-            models.TextIndexParams(
-                type=models.TextIndexType.TEXT,
-                tokenizer=models.TokenizerType.MULTILINGUAL,
-                min_token_size=1,
-            ),
-        ),
     ]
 
 
-def entry_to_payload(entry: MemoryEntry, user_id: str, app_id: str) -> dict:
-    payload = entry.to_dict()
-    payload["user_id"] = user_id
-    payload["app_id"] = app_id
-    return payload
+def point_payload(entry: MemoryEntry) -> dict:
+    """瘦 payload：指针 + 过滤字段（§3.4.3），正文回 MySQL 取（get_active_by_ids）。"""
+    return {
+        "memory_id": entry.memory_id,
+        "app_id": str(entry.app_id),
+        "user_id": str(entry.user_id),
+        "memory_type": entry.memory_type,
+        "status": "active" if entry.status == STATUS_ACTIVE else "inactive",
+        "created_at": entry.created_at,
+    }
 
 
-def _active_filter(user_id: str, app_id: str) -> models.Filter:
-    return models.Filter(
-        must=[
-            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
-            models.FieldCondition(key="app_id", match=models.MatchValue(value=app_id)),
-            models.FieldCondition(key="status", match=models.MatchValue(value="active")),
-        ]
-    )
+def _tenant_filter(app_id: str, user_id: str, active_only: bool = True) -> models.Filter:
+    """租户过滤（§8：无 filter 的检索请求不允许存在）。"""
+    must: list = [
+        models.FieldCondition(key="user_id", match=models.MatchValue(value=str(user_id))),
+        models.FieldCondition(key="app_id", match=models.MatchValue(value=str(app_id))),
+    ]
+    if active_only:
+        must.append(models.FieldCondition(key="status", match=models.MatchValue(value="active")))
+    return models.Filter(must=must)
 
 
 async def ensure_warm_collection() -> None:
-    """启动时确保 collection 与索引存在（幂等）。"""
+    """启动时确保 collection 与 payload 索引存在（幂等）。"""
     manager = get_qdrant_client_manager()
     await asyncio.to_thread(
         manager.ensure_collection,
@@ -83,15 +79,15 @@ async def ensure_warm_collection() -> None:
     )
 
 
-async def upsert_entries(entries: list[MemoryEntry], user_id: str, app_id: str, vectors: list[list[float]]) -> None:
-    """条目与向量一一对应写入。"""
+async def upsert_points(entries: list[MemoryEntry], vectors: list[list[float]]) -> None:
+    """写入/覆盖点位（id = agent_memory.id 整数）。状态变更靠整体重推。"""
     if not entries:
         return
     points = [
         models.PointStruct(
-            id=_to_point_id(entry.id),
+            id=int(entry.id),
             vector=vector,
-            payload=entry_to_payload(entry, user_id, app_id),
+            payload=point_payload(entry),
         )
         for entry, vector in zip(entries, vectors)
     ]
@@ -105,106 +101,39 @@ async def upsert_entries(entries: list[MemoryEntry], user_id: str, app_id: str, 
 
 
 async def search_by_vector(
-    user_id: str,
     app_id: str,
+    user_id: str,
     query_vector: list[float],
-    limit: int = 10,
+    limit: int = 20,
     score_threshold: float | None = None,
-) -> list[tuple[MemoryEntry, float]]:
-    """语义检索，返回 (entry, score) 列表，按分数降序。"""
+) -> list[tuple[int, float]]:
+    """语义检索，返回 (point_id=agent_memory.id, score) 列表，按分数降序。
+
+    payload 不含正文，调用方（retriever）按 id 回 MySQL。
+    """
     client = get_qdrant_client_manager().client
     try:
         hits = await asyncio.to_thread(
             client.query_points,
             collection_name=WARM_COLLECTION,
             query=query_vector,
-            query_filter=_active_filter(user_id, app_id),
+            query_filter=_tenant_filter(app_id, user_id, active_only=True),
             limit=limit,
             score_threshold=score_threshold or 0.0,
-            with_payload=True,
+            with_payload=False,
         )
-    except Exception as exc:  # noqa: BLE001 — 检索降级为空结果而非中断对话
+    except Exception as exc:  # noqa: BLE001 — 检索降级为空结果而非中断对话（§9）
         log.error("warm 向量检索失败:{}", exc)
         return []
-    result = []
-    for point in hits.points:
-        entry = MemoryEntry.from_dict(dict(point.payload or {}))
-        if entry is not None:
-            result.append((entry, point.score))
-    return result
+    return [(int(p.id), float(p.score)) for p in hits.points]
 
 
-async def scroll_by_keyword(
-    user_id: str,
-    app_id: str,
-    keyword: str,
-    limit: int = 10,
-) -> list[MemoryEntry]:
-    """关键词检索（content 全文 MatchText），作为混合召回的精确匹配通道。"""
-    if not keyword.strip():
-        return []
-    client = get_qdrant_client_manager().client
-    flt = models.Filter(
-        must=[
-            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
-            models.FieldCondition(key="app_id", match=models.MatchValue(value=app_id)),
-            models.FieldCondition(key="status", match=models.MatchValue(value="active")),
-            models.FieldCondition(key="content", match=models.MatchText(text=keyword)),
-        ]
-    )
-    try:
-        points, _ = await asyncio.to_thread(
-            client.scroll,
-            collection_name=WARM_COLLECTION,
-            scroll_filter=flt,
-            limit=limit,
-            with_payload=True,
-        )
-    except Exception as exc:  # noqa: BLE001 — 同上，降级为空结果
-        log.error("warm 关键词检索失败:{}", exc)
-        return []
-    entries = []
-    for point in points:
-        entry = MemoryEntry.from_dict(dict(point.payload or {}))
-        if entry is not None:
-            entries.append(entry)
-    return entries
-
-
-async def mark_status(ids: list[str], status: str) -> None:
-    """批量更新点位状态（软删除同步）。入参为 ULID 主键。"""
+async def delete_points_by_ids(ids: list[int]) -> None:
+    """物理删除点位（归档同步 / 幽灵清理）。入参为 agent_memory.id。"""
     if not ids:
         return
     client = get_qdrant_client_manager().client
-    await asyncio.to_thread(
-        client.set_payload,
-        collection_name=WARM_COLLECTION,
-        payload={"status": status},
-        points=[_to_point_id(i) for i in ids],
-        wait=True,
-    )
-
-
-async def touch_access(ids: list[str], accessed_at: str) -> None:
-    """批量更新访问时间（30 天未访问软删除的判断依据）。入参为 ULID 主键。"""
-    if not ids:
-        return
-    client = get_qdrant_client_manager().client
-    await asyncio.to_thread(
-        client.set_payload,
-        collection_name=WARM_COLLECTION,
-        payload={"last_accessed_at": accessed_at},
-        points=[_to_point_id(i) for i in ids],
-        wait=True,
-    )
-
-
-async def delete_points(ids: list[str]) -> None:
-    """物理删除点位（归档同步）。入参为 ULID 主键。"""
-    if not ids:
-        return
-    client = get_qdrant_client_manager().client
-    selector = models.PointIdsList(points=[_to_point_id(i) for i in ids])
+    selector = models.PointIdsList(points=[int(i) for i in ids])
     await asyncio.to_thread(
         client.delete,
         collection_name=WARM_COLLECTION,
@@ -213,14 +142,65 @@ async def delete_points(ids: list[str]) -> None:
     )
 
 
-async def count_active(user_id: str, app_id: str) -> int:
-    """对账用：当前用户/app 的 active 点位数。"""
+async def delete_points_by_filter(
+    app_id: str, user_id: str, memory_ids: list[str] | None = None
+) -> None:
+    """按 filter 物理删除（合规删除，§6.4 ③：一个请求搞定，无需先 scroll 出 id）。
+
+    memory_ids=None 删该租户全部点位；指定时只删这些 memory_id。
+    """
+    client = get_qdrant_client_manager().client
+    must: list = [
+        models.FieldCondition(key="user_id", match=models.MatchValue(value=str(user_id))),
+        models.FieldCondition(key="app_id", match=models.MatchValue(value=str(app_id))),
+    ]
+    if memory_ids:
+        must.append(models.FieldCondition(
+            key="memory_id", match=models.MatchAny(any=[str(m) for m in memory_ids]),
+        ))
+    try:
+        await asyncio.to_thread(
+            client.delete,
+            collection_name=WARM_COLLECTION,
+            points_selector=models.FilterSelector(filter=models.Filter(must=must)),
+            wait=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — 合规删除不因向量库故障中断（校验兜底）
+        log.error("合规删除 Qdrant filter 删除失败（由 sync_check 幽灵清理兜底）:{}", exc)
+
+
+async def scroll_point_ids(app_id: str, user_id: str) -> list[int]:
+    """拉取租户全量点位 id（幽灵清理的反向对账输入）。"""
+    client = get_qdrant_client_manager().client
+    flt = _tenant_filter(app_id, user_id, active_only=False)
+    ids: list[int] = []
+    offset = None
+    for _ in range(_SCROLL_MAX_PAGES):
+        points, offset = await asyncio.to_thread(
+            client.scroll,
+            collection_name=WARM_COLLECTION,
+            scroll_filter=flt,
+            limit=_SCROLL_PAGE_SIZE,
+            offset=offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        ids.extend(int(p.id) for p in points)
+        if offset is None or not points:
+            break
+    if offset is not None:
+        log.warning("warm 点位 scroll 达到分页上限({}),反向对账可能不完整", len(ids))
+    return ids
+
+
+async def count_points(app_id: str, user_id: str, active_only: bool = True) -> int:
+    """对账/校验用计数。-1 表示查询失败（调用方决定降级语义）。"""
     client = get_qdrant_client_manager().client
     try:
         info = await asyncio.to_thread(
             client.count,
             collection_name=WARM_COLLECTION,
-            count_filter=_active_filter(user_id, app_id),
+            count_filter=_tenant_filter(app_id, user_id, active_only=active_only),
             exact=True,
         )
         return info.count

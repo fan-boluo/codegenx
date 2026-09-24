@@ -1,8 +1,10 @@
 -- ============================================================
--- 记忆系统元数据表
--- 依据：docs/记忆系统详细设计方案.md 第 3.3 节
--- 说明：记忆内容本体存于 json 真相源与 Qdrant，此处只存
---       离线任务队列 / 会话消费水位 / 双数据源同步检查点。
+-- 记忆系统表（v2.1，与 docs/Agent记忆系统设计方案v2.md §3.1 一致）
+-- 存储栈：MySQL(唯一真源) + Qdrant(agent_memory_warm, 可重建检索层)
+-- 约定：id 类字段 VARCHAR(64)；时间 DATETIME(秒级)；
+--       字符集 utf8mb4 / utf8mb4_unicode_ci；不使用外键
+-- 建表顺序：memory_type_dict -> agent_memory -> memory_task
+--           -> memory_watermark -> memory_sync_checkpoint
 -- 使用：与 init/schema.sql 同库（codegenx），部署方手动执行。
 -- ============================================================
 

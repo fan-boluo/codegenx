@@ -1,12 +1,14 @@
 """
 记忆离线任务 scheduler —— 常驻单消费者循环。
 
-职责（设计文档 §5.2 / §6）：
+职责（设计方案 v2.1 §4/§6/§7）：
 1. 从 memory_task 表领取到期任务，按类型分发执行：
-   - warm_extract:   水位增量读对话（chat_message 表）→ 小模型提取候选记忆 → 判重/仲裁 → 双写 → 推进水位
-   - consolidate:    每日跨会话整理（近似去重合并）
-   - decay_archive:  30 天未访问软删除 / 90 天归档（jsonl→zip + Qdrant 物理删除）
-   - sync_check:     json 真相源 → Qdrant 对账补写（检查点增量）
+   - warm_extract:       水位增量读对话（chat_message 表）→ 小模型提取候选
+                         → 准入校验 → 分层落库（hot upsert / warm append）→ 推进水位
+   - consolidate:        每日整理（warm 精确重复合并；hot 压缩为 P2-2）
+   - decay_archive:      warm 30 天未命中软删 / 90 天归档（导出 + Qdrant 物理删除）
+   - sync_check:         MySQL 真源 ↔ Qdrant 双向对账（补写缺失 + 清理幽灵）
+   - compliance_delete:  合规删除级联（MySQL → Qdrant，见 memory/compliance.py）
 2. 失败退避重试（1m/5m/30m，超限置 dead），任务语义 at-least-once
 3. LLM 资源管控：独立小模型 + 信号量并发上限 + 在线让位（有活跃会话先让 1 秒）
 
@@ -40,6 +42,7 @@ from codegenx.ai_service.schedule.memory_task_store import (
     TASK_CONSOLIDATE,
     TASK_DECAY_ARCHIVE,
     TASK_SYNC_CHECK,
+    TASK_COMPLIANCE_DELETE,
 )
 
 # 单次提取消费的消息量上限（防止单任务过大拖垮小模型）
@@ -154,17 +157,20 @@ class MemoryScheduler:
         task_type = task["task_type"]
         started = time.time()
         try:
+            produced = 0
             if task_type == TASK_WARM_EXTRACT:
-                await self._do_warm_extract(task)
+                produced = await self._do_warm_extract(task)
             elif task_type == TASK_CONSOLIDATE:
                 await self._do_consolidate(task)
             elif task_type == TASK_DECAY_ARCHIVE:
                 await self._do_decay_archive(task)
             elif task_type == TASK_SYNC_CHECK:
-                await self._do_sync_check(task)
+                produced = await self._do_sync_check(task)
+            elif task_type == TASK_COMPLIANCE_DELETE:
+                await self._do_compliance_delete(task)
             else:
                 raise ValueError(f"未知任务类型: {task_type}")
-            await self.tasks.mark_done(task_id)
+            await self.tasks.mark_done(task_id, produced_count=int(produced or 0))
             log.debug("任务 #{} {} 完成，耗时 {:.1f}s", task_id, task_type, time.time() - started)
         except Exception as exc:  # noqa: BLE001
             status = await self.tasks.mark_failed(task_id, f"{type(exc).__name__}: {exc}")
@@ -175,11 +181,12 @@ class MemoryScheduler:
 
     # === 任务实现 ===
 
-    async def _do_warm_extract(self, task: dict) -> None:
-        """warm 层增量提取：水位 → 完整轮次 → 小模型提取 → 判重仲裁双写 → 推进水位。
+    async def _do_warm_extract(self, task: dict) -> int:
+        """增量提取：水位 → 完整轮次 → 小模型提取 → 准入校验分层落库 → 推进水位。
 
         只消费「以 assistant 收尾的完整轮次」：assistant 消息在 turn 结束后才入库，
         半截对话留在水位之后，等下个任务与后续轮次合并提取。
+        返回落库记忆条数（任务审计 produced_count）。
         """
         app_id = str(task.get("app_id") or "")
         session_id = str(task.get("session_id") or "")
@@ -193,7 +200,7 @@ class MemoryScheduler:
         last_seq = await self.tasks.get_watermark(session_id)
         records = await get_chat_message_store().read_since(session_id, after_seq=last_seq)
         if not records:
-            return
+            return 0
 
         # 2. 截到「以 assistant 收尾」的完整前缀；超过单次上限的留待下次
         consumed: list[tuple[int, dict]] = []
@@ -201,14 +208,14 @@ class MemoryScheduler:
             if rec[1].get("role") == "assistant":
                 consumed = records[: i + 1]
         if not consumed:
-            return  # 末尾没有完整轮次
+            return 0  # 末尾没有完整轮次
         if len(consumed) > _MAX_MESSAGES_PER_EXTRACT:
             consumed = consumed[-_MAX_MESSAGES_PER_EXTRACT:]
             # 截断后必须仍以 assistant 收尾，否则本轮只读不推进
             while consumed and consumed[-1][1].get("role") != "assistant":
                 consumed.pop()
             if not consumed:
-                return
+                return 0
 
         # 3. 小模型提取候选记忆
         turns_text = _render_messages([m for _, m in consumed])
@@ -221,7 +228,8 @@ class MemoryScheduler:
         )
         candidates = parse_extracted_memories(raw)
 
-        # 4. 判重/仲裁 + 双写（json 事实源先行）
+        # 4. 准入校验 + 分层落库（MySQL 真源先行，warm 向量层批量跟进）
+        written = 0
         if candidates:
             written = await write_memories(user_id, app_id, session_id, candidates, self._invoke_llm)
             if written:
@@ -229,6 +237,7 @@ class MemoryScheduler:
 
         # 5. 推进水位到消费到的最后一条 seq；LLM 失败已抛异常走重试，水位不动
         await self.tasks.advance_watermark(session_id, app_id, user_id, consumed[-1][0])
+        return written
 
     async def _do_consolidate(self, task: dict) -> None:
         """每日跨会话整理：全 app 近似去重合并（idle 时段运行，不耗 LLM）。"""
@@ -240,10 +249,26 @@ class MemoryScheduler:
         from codegenx.ai_service.memory.lifecycle import decay_and_archive_all_apps
         await decay_and_archive_all_apps()
 
-    async def _do_sync_check(self, task: dict) -> None:
-        """双数据源对账：检查点增量扫描 json 侧，补写/修正 Qdrant。"""
+    async def _do_sync_check(self, task: dict) -> int:
+        """双数据源对账：MySQL 真源 ↔ Qdrant 双向（补写缺失 + 清理幽灵）。"""
         from codegenx.ai_service.memory.sync import reconcile_all_apps
-        await reconcile_all_apps(self._invoke_llm)
+        return await reconcile_all_apps(self._invoke_llm)
+
+    async def _do_compliance_delete(self, task: dict) -> None:
+        """合规删除级联（P0-10）：payload 携带 scope/target/hard/request_id。"""
+        from codegenx.ai_service.memory.compliance import run_compliance_delete
+
+        payload = task.get("payload") or {}
+        app_id = str(task.get("app_id") or "")
+        user_id = str(task.get("user_id") or "")
+        scope = str(payload.get("scope") or "all")
+        target = str(payload.get("target") or "")
+        hard = bool(payload.get("hard", True))
+        deleted = await run_compliance_delete(
+            app_id, user_id, scope=scope, target=target, hard=hard,
+            request_id=str(payload.get("request_id") or ""),
+        )
+        log.info("[compliance_delete] 任务 #{} 完成: scope={} deleted={}", task["id"], scope, deleted)
 
     # === LLM 调用（小模型 + 并发管控）===
 
