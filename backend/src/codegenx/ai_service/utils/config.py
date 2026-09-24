@@ -229,6 +229,18 @@ class MemoryFlushConfig(Base):
         default=80,
         validation_alias=AliasChoices("hotMaxEntries", "hot_max_entries"),
     )  # hot 层写入期条数硬上限（§5.4：达限拒绝写入转投 consolidate）
+    hot_compress_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("hotCompressEnabled", "hot_compress_enabled"),
+    )  # P2-2：consolidate 时对超阈值 hot 层做 LLM 同类压缩
+    hot_compress_threshold_ratio: float = Field(
+        default=0.8,
+        validation_alias=AliasChoices("hotCompressThresholdRatio", "hot_compress_threshold_ratio"),
+    )  # active 条数达 hot_max_entries 的该比例才触发压缩（压到阈值下即停，不追极简）
+    hot_compress_exclude_types: str = Field(
+        default="hard_constraint",
+        validation_alias=AliasChoices("hotCompressExcludeTypes", "hot_compress_exclude_types"),
+    )  # 逗号分隔：不参与压缩的类型（硬约束语义丢失风险大，默认豁免）
     # v1 写入判重阈值：v2 已移除写入时 LLM 判重，字段暂留避免旧配置文件报错
     shortDuplicatedScoreThreshold: float = Field(default=0.90)
     longMatchesScoreThreshold: float = Field(default=0.7)

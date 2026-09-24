@@ -356,8 +356,8 @@ class MemoryScheduler:
     ) -> tuple[int, dict | None]:
         # 1. 水位增量读取（chat_message 表为源，按 seq 递增）
         from codegenx.ai_service.chat_message import get_chat_message_store
-        last_seq = await self.tasks.get_watermark(session_id)
-        records = await get_chat_message_store().read_since(session_id, after_seq=last_seq)
+        from_seq = await self.tasks.get_watermark(session_id)
+        records = await get_chat_message_store().read_since(session_id, after_seq=from_seq)
         if not records:
             return 0, None
 
@@ -389,9 +389,16 @@ class MemoryScheduler:
         candidates = parse_extracted_memories(raw)
 
         # 4. 准入校验 + 分层落库（MySQL 真源先行，warm 向量层批量跟进）
+        #    溯源（P2-7 ②）：消费区间内全部消息 uid 落 agent_memory.source_msg_ids
         written_ids: list[str] = []
         if candidates:
-            written_ids = await write_memories(user_id, app_id, session_id, candidates, self._invoke_llm)
+            source_uids = [
+                str(m.get("message_uid")) for _, m in consumed if m.get("message_uid")
+            ]
+            written_ids = await write_memories(
+                user_id, app_id, session_id, candidates, self._invoke_llm,
+                source_msg_ids=source_uids or None, task_id=int(task["id"]),
+            )
             if written_ids:
                 log.info("[warm_extract] 会话 {} 写入 {} 条记忆", session_id, len(written_ids))
 
@@ -403,16 +410,34 @@ class MemoryScheduler:
         payload = {
             "model": config.memory.store.model_name or config.get_default_model(),
             "cost_ms": int((time.time() - started) * 1000),
+            "from_seq": int(from_seq),
             "consumed_seq": consumed_seq,
+            "source_msg_count": sum(1 for _, m in consumed if m.get("message_uid")),
             "memory_ids": written_ids,
         }
         return len(written_ids), payload
 
     async def _do_consolidate(self, task: dict) -> None:
-        """每日跨会话整理：全 app 近似去重合并（idle 时段运行，不耗 LLM）。"""
+        """每日跨会话整理：warm 近似去重合并（纯规则）+ hot 层压缩（P2-2，耗 LLM）。
+
+        hot 压缩仅在 active 条数达阈值（默认 hot_max 的 80%）时按组触发，
+        见 memory/hot_compact.py；凌晨 idle 时段运行，LLM 与 conflict_detect
+        共用同一 invoke。
+        """
         from codegenx.ai_service.memory.lifecycle import consolidate_all_apps
         merged = await consolidate_all_apps()
         metrics.inc_consolidate_merged(int(merged or 0))
+        try:
+            from codegenx.ai_service.memory.hot_compact import compress_hot_all_apps
+            stats = await compress_hot_all_apps(self._invoke_llm)
+            if stats.get("groups_compressed"):
+                log.info(
+                    "[consolidate] hot 压缩: {} 租户 / {} 组 / 合并 {} 条",
+                    stats.get("tenants_compressed"), stats.get("groups_compressed"),
+                    stats.get("entries_merged"),
+                )
+        except Exception as exc:  # noqa: BLE001 — 压缩失败不影响 warm 合并结果
+            log.error("[consolidate] hot 压缩异常: {}", exc)
 
     async def _do_decay_archive(self, task: dict) -> None:
         """衰减归档：30 天未访问软删除 + 90 天归档（jsonl→zip + Qdrant 删除）。"""

@@ -255,6 +255,25 @@ class MemoryTaskStore:
             )
         return {r["status"]: int(r["c"]) for r in rows}
 
+    async def get_by_id(self, task_id: int) -> dict | None:
+        """按 id 取任务完整行（P2-7 ③ 提炼批次排查）。payload 解析为 dict。"""
+        async with session_maker() as session:
+            row = (
+                (
+                    await session.execute(
+                        text("SELECT * FROM memory_task WHERE id = :i"),
+                        {"i": int(task_id)},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        task = dict(row)
+        task["payload"] = self._parse_payload(task.get("payload"))
+        return task
+
     async def consolidate_scheduled_today(self) -> bool:
         """今天是否已登记过 consolidate（每日定时调度的判重依据）。"""
         return await self._scheduled_today("consolidate")

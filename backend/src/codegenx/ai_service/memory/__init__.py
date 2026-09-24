@@ -23,7 +23,12 @@ codegenx.ai_service.memory — 记忆系统（跨会话持久记忆，v2）。
   vector_store.py  agent_memory_warm 检索层（Qdrant 瘦 payload，点 id=自增主键）
   embedding.py     向量化（DashScope 兼容模式）
   retriever.py     混合召回（向量+关键词）+ 回表 + 三因子重排 + token 窗口
+                   + debug_recall 模拟检索（P2-7 ④，不登记命中）
   trigger.py       P1 二级漏斗：每轮信号检测 → watermark 计数 → 阈值触发提炼
+  hot_compact.py   P2-2 hot 层压缩：consolidate 每日同类 LLM 合并（超阈值才触发，
+                   hard_constraint 默认豁免，写时 DEL 由 DAO 内置）
+  admin.py         P2-7/P2-5 管理后台与排查五件套（/api/admin/memory/*，
+                   管理员鉴权；溯源/批次反查/模拟检索/向量重建/停用/编辑）
   sync.py          双数据源对账（正向补写 + 反向清幽灵 + 抽检，vector_synced_at 行级队列）
   memory_manager.py 门面：SessionContext 每轮调用组装注入（含 hot>warm 冲突规则）
   lifecycle.py     每日整理（warm 合并去重）+ 衰减归档（hot 豁免）

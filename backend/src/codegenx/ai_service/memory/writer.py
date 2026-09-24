@@ -64,12 +64,16 @@ async def write_memories(
     session_id: str,
     candidates: list[dict],
     llm_invoke=None,
+    source_msg_ids: list[str] | None = None,
+    task_id: int | None = None,
 ) -> list[str]:
     """批量写入候选记忆，返回实际落库的 memory_id 列表（len 即条数）。
 
     单条失败跳过，不阻断整批。
     Args:
         llm_invoke: 兼容 scheduler 签名保留，v2 写入链路不使用。
+        source_msg_ids: 来源消息 message_uid 列表（P2-7 溯源，合规级联删除依赖）。
+        task_id: 产生本批的 memory_task.id（P2-7 ③ 提炼批次反查）。
     """
     if not candidates:
         return []
@@ -81,6 +85,12 @@ async def write_memories(
     for cand in candidates:
         try:
             entry = _build_entry(user_id, app_id, session_id, cand)
+            if entry is None:
+                continue
+            if source_msg_ids:  # 溯源：消费区间内全部消息 uid（含 assistant）
+                entry.source_msg_ids = [str(m) for m in source_msg_ids]
+            if task_id:
+                entry.task_id = int(task_id)
             if entry is None:
                 continue
             if entry.memory_layer == LAYER_HOT:

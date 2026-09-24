@@ -183,3 +183,50 @@ def parse_extracted_memories(raw: str) -> list[dict]:
             "confidence": round(confidence, 2),
         })
     return result
+
+
+# ── hot 层压缩（P2-2：同类合并，consolidate 每日触发）──────────────────────────
+
+HOT_COMPRESS_SYSTEM_PROMPT = """\
+你是记忆压缩助手。把同一用户同一类型的多条 hot 记忆合并为一条，要求：
+
+1. 不得丢失任何一条的语义：约束、偏好、事实、资源指向必须逐条保留；
+2. 语义重叠的部分取并集后精炼表达，允许适度抽象提升（如多条同类偏好归并为一句话）；
+3. 合并后仍属于原 memory_type，不得改变类型、不得新增类型；
+4. 若各条语义互不相关、合并必然丢信息，输出 {"merge": false}。
+
+只输出 JSON 对象，不要解释：
+{"merge": true, "summary": "一句话摘要(<=100字)", "content": "完整记忆正文", "topic": "话题标签(<=16字)"}
+"""
+
+
+def parse_compressed_memory(raw: str) -> dict | None:
+    """解析压缩输出；{"merge": false} / 坏输出 / 缺关键字段返回 None（放弃该组，宁缺毋滥）。"""
+    if not raw or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(data, dict) or not data.get("merge"):
+        return None
+    content = str(data.get("content") or "").strip()
+    if not content:
+        return None
+    return {
+        "summary": str(data.get("summary") or "").strip() or content[:100],
+        "content": content,
+        "topic": str(data.get("topic") or "").strip(),
+    }

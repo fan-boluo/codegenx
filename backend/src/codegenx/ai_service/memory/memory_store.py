@@ -603,3 +603,75 @@ async def count_active(app_id: str, user_id: str) -> int:
             )
         ).first()
     return int(row[0] or 0) if row else 0
+
+
+# ── 管理/排查查询（P2-7 排查工具五件套 + P2-5 管理后台）────────────────────────
+
+async def get_by_memory_ids(
+    app_id: str, user_id: str, memory_ids: list[str]
+) -> list[MemoryEntry]:
+    """按 memory_id 批量取完整行（uk_memory_id 唯一；租户过滤防越权）。
+
+    P2-7 溯源反查 / P2-5 编辑前取旧条共用。
+    """
+    if not memory_ids:
+        return []
+    async with session_maker() as session:
+        rows = (
+            (
+                await session.execute(
+                    text(
+                        f"SELECT {_ROW_COLS} FROM agent_memory "
+                        "WHERE app_id = :a AND user_id = :u AND memory_id IN :mids"
+                    ),
+                    {"a": str(app_id), "u": str(user_id), "mids": tuple(memory_ids)},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return _rows_to_entries(rows)
+
+
+async def list_memories(
+    app_id: str,
+    user_id: str,
+    *,
+    status: int = 1,
+    memory_layer: int | None = None,
+    memory_type: str | None = None,
+    limit: int = 200,
+) -> list[MemoryEntry]:
+    """按租户列出记忆（P2-7 ① 全貌查询；status≤0 表示不过滤状态看全部）。"""
+    sql = f"SELECT {_ROW_COLS} FROM agent_memory WHERE app_id = :a AND user_id = :u"
+    params: dict = {"a": str(app_id), "u": str(user_id), "l": int(limit)}
+    if status and int(status) > 0:
+        sql += " AND status = :st"
+        params["st"] = int(status)
+    if memory_layer:
+        sql += " AND memory_layer = :ml"
+        params["ml"] = int(memory_layer)
+    if memory_type:
+        sql += " AND memory_type = :mt"
+        params["mt"] = str(memory_type)
+    sql += " ORDER BY memory_layer ASC, updated_at DESC LIMIT :l"
+    async with session_maker() as session:
+        rows = (
+            (await session.execute(text(sql), params)).mappings().all()
+        )
+    return _rows_to_entries(rows)
+
+
+async def reset_vector_sync(app_id: str, user_id: str) -> int:
+    """单用户向量重建入队（P2-7 ⑤）：active warm 行 vector_synced_at 全部置 NULL，
+    同步 Worker（30s）自动从 MySQL 全量重灌 Qdrant。返回入队行数。"""
+    async with session_maker() as session:
+        cur = await session.execute(
+            text(
+                "UPDATE agent_memory SET vector_synced_at = NULL "
+                "WHERE app_id = :a AND user_id = :u AND memory_layer = 2 AND status = 1"
+            ),
+            {"a": str(app_id), "u": str(user_id)},
+        )
+        await session.commit()
+        return int(cur.rowcount or 0)
