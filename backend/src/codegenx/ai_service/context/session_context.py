@@ -9,7 +9,7 @@ from codegenx.ai_service.context.assembler import ContextAssembler
 from codegenx.ai_service.compact import microcompact_messages, estimate_tokens
 from codegenx.ai_service.compact.compact import CompactionEngine
 from codegenx.ai_service.compact.large_output import persist_large_output
-from codegenx.ai_service.memory import SessionMemory
+from codegenx.ai_service.compact.session_summary import SessionSummaryService
 from codegenx.ai_service.memory.memory_manager import MemoryManager
 from codegenx.ai_service.skill.skill_loader import SkillLoader
 from codegenx.ai_service.tools.base import ToolResult
@@ -25,7 +25,8 @@ class SessionContext:
     db_name: str | None = None
     task_manager: TaskManager | None = None
     memory: MemoryManager = field(init=False)
-    _session_memory: SessionMemory = field(init=False)
+    # 会话内摘要（压缩边界）属于上下文工程，见 compact/session_summary.py
+    _session_summary: SessionSummaryService = field(init=False)
     # 组装
     assembler:ContextAssembler = field(default_factory=ContextAssembler)
 
@@ -43,8 +44,8 @@ class SessionContext:
     def __post_init__(self) -> None:
         self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id)
         self.task = self.task_manager or TaskManager(app_id=self.app_id, session_id=self.session_id)
-        self._session_memory = SessionMemory(session_id=self.session_id,app_id=self.app_id)
-        self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_memory,llm_fn=AsyncLLMClient().invoke)
+        self._session_summary = SessionSummaryService(session_id=self.session_id,app_id=self.app_id)
+        self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_summary,llm_fn=AsyncLLMClient().invoke)
         self.system_prompt = ""
         # 构建初始化的聊天记录，on_session_start从snapshot加载进行初始化
         self.chat_messages = []
@@ -59,7 +60,7 @@ class SessionContext:
         self.assembler.skill_prompt = await self.skill_loader.build_skill()
         self.assembler.task_prompt = self.task.get_board()
 
-        self.assembler.session_memory_prompt = self._session_memory.load()
+        self.assembler.session_summary_prompt = self._session_summary.load()
         self.system_prompt = self.assembler.prepare_turn_context()
         log.debug("system prompt init success")
         return self.system_prompt
@@ -130,10 +131,10 @@ class SessionContext:
             )
 
     async def compact_after_turn(self):
-        """整个 turn 结束后：异步触发 session_memory extraction（非阻塞后台任务）。"""
-        if self._session_memory.should_extract(self.chat_messages):
-            self._session_memory.fire_extract(self.chat_messages)
-            log.debug("session memory 后台压缩已触发")
+        """整个 turn 结束后：异步触发会话摘要后台提取（非阻塞任务，属于上下文工程的压缩边界）。"""
+        if self._session_summary.should_extract(self.chat_messages):
+            self._session_summary.fire_extract(self.chat_messages)
+            log.debug("session summary 后台提取已触发")
 
     async def force_compact(self) -> None:
         """强制压缩聊天历史（供 recovery 策略调用）。

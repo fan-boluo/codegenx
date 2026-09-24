@@ -9,14 +9,6 @@ from shared import log
 from codegenx.ai_service.agent.tool_handler import ToolRegistry
 from shared.constants import get_code_dir
 
-MEMORY_TOOL_NAMES = {
-    "memory_search",
-    "memory_get",
-    "write_short_term",
-    "write_long_term",
-    "write_identity_memory",
-}
-
 DATA_ANALYSIS_TOOL_NAMES = {
     "list_tables",
     "describe_table",
@@ -57,23 +49,8 @@ class ToolExecutor:
         stop_signal = getattr(session_state, "stop_signal", None) if session_state is not None else None
         safe_paths = self._resolve_safe_paths(turn_state, session_state,safe_paths)
 
-        if tool_name in MEMORY_TOOL_NAMES:
-            tool_input.setdefault("app_id", app_id)
-            tool_input.setdefault(
-                "user_id",
-                user_id or session_id or "anonymous",
-            )
-
         if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory", "code_check", "find", "grep"}:
             tool_input.setdefault("app_id", app_id)
-
-        if tool_name in {"write_short_term", "write_long_term"}:
-            tool_input.setdefault("session_id", session_id)
-            tool_input.setdefault("turn_id", turn_id)
-            tool_input.setdefault(
-                "user_id",
-                user_id or session_id or "anonymous",
-            )
 
         if tool_name == "subagent":
             tool_input.setdefault("app_id", app_id)

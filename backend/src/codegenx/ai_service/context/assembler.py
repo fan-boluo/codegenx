@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 from codegenx.ai_service.utils.context_utils import ensure_app_workdir
 from shared import log
-from shared.constants import get_memory_dir, get_code_dir
-from codegenx.ai_service.prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE, AUTO_MEMORY_PROMPT
+from shared.constants import get_memory_dir
+from codegenx.ai_service.prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE
 
 
 class ContextAssembler:
@@ -31,12 +31,8 @@ class ContextAssembler:
 
     # 任务看板
     task_prompt :str = ""
-    # 会话记忆
-    session_memory_prompt:str = ""
-
-    # 自动记忆
-    auto_memorize_prompt = AUTO_MEMORY_PROMPT
-    _auto_memorize_injected: bool = False
+    # 会话内摘要（compact/session_summary.py 产物，属上下文工程）
+    session_summary_prompt: str = ""
 
     extra :str = ""
 
@@ -61,7 +57,8 @@ class ContextAssembler:
         self.workspace_metadata = {
             "code_dir": str(code_dir),
             "safe_paths": list(safe_paths),
-            "allowed_rw_dirs": safe_paths + [str(get_memory_dir(app_id))] + csv_data_dirs,
+            # 记忆写入已改为条件触发的离线任务（schedule/），agent 不再直写 memory 目录
+            "allowed_rw_dirs": safe_paths + csv_data_dirs,
             "os_name": (platform.system() or "Windows").lower(),
             "project_skeleton": self.build_directory_skeleton(code_dir),
             "db_name": db_name or "",
@@ -70,7 +67,6 @@ class ContextAssembler:
         }
 
         self.base_prompt = DEFAULT_PROMPT_TEMPLATE.format(code_dir=self.workspace_metadata.get("code_dir"))
-        self.auto_memorize_prompt = AUTO_MEMORY_PROMPT.format(memoryDir=get_memory_dir(app_id), projectDir=get_code_dir(app_id))
 
     def build_extra(self) -> str:
         """ 提醒，需要更新任务看板了
@@ -112,13 +108,10 @@ class ContextAssembler:
             parts.append(workspace_prompt)
         if self.skill_prompt:
             parts.append(f"# 以下是你可以使用的技能：\n {self.skill_prompt}")
-        if self.session_memory_prompt:
-            parts.append(f"# 以下是提取的历史对话信息：\n {self.session_memory_prompt}")
+        if self.session_summary_prompt:
+            parts.append(f"# 以下是当前会话的摘要信息：\n {self.session_summary_prompt}")
         if self.task_prompt:
             parts.append(f"# 以下是任务看板：\n {self.task_prompt}")
-        if self.auto_memorize_prompt and not self._auto_memorize_injected:
-            parts.append(self.auto_memorize_prompt)
-            self._auto_memorize_injected = True
         if self.extra:
             parts.append(self.build_extra())
         return "\n".join(parts)

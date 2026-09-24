@@ -1,85 +1,62 @@
-from dataclasses import field, dataclass
+"""
+记忆门面 —— 每轮组装 hot + warm 两层注入（供 SessionContext.build_system_prompt 调用）。
 
-from threading import Lock
+分层（设计文档 §3）：
+  hot  hot_store.format_hot_prompt  核心约束，始终注入（≤2K token）
+  warm retriever.search_warm        话题记忆，按当前 query 混合召回 + 重排（≤8K token）
 
-from codegenx.ai_service.memory import append_to_hot_memory, format_warm_memory_prompt, find_relevant_topics, load_hot_memory, \
-    format_hot_memory_prompt
+写入不在这里：条件触发的提取走 schedule/ 任务（阶段3），本类只读。
+"""
+from __future__ import annotations
 
-_MEMORY_MANAGER_SINGLETON: "MemoryManager | None" = None
-_MEMORY_MANAGER_LOCK = Lock()
+from dataclasses import dataclass
+
+from shared import log
+from codegenx.ai_service.utils.config import config
+from codegenx.ai_service.memory.hot_store import format_hot_prompt
+from codegenx.ai_service.memory.retriever import search_warm, format_warm_entries_prompt
+
 
 @dataclass
 class MemoryManager:
-    """
-    Multi-tier memory manager.
-
-    Hot tier  — loads ~/.bot/memory/MEMORY.md on every turn (global, persistent).
-    Warm tier — keyword-recalls relevant topic files from ~/.bot/memory/topics/
-                on each query; deduplicates within the session.
-
-    Session-tier memory is handled separately by SessionMemory in engine.py
-    and injected during compaction, not here.
-    """
+    """会话级记忆门面（随 SessionContext 生命周期）。"""
 
     session_id: str = ""
-    app_id:str = ""
-
-    # Per-session warm-memory dedup state
-    _surfaced: set[str] = field(default_factory=set)
-    _session_bytes: int = field(default=0)
+    app_id: str = ""
 
     async def load(self, query: str = "") -> str:
-        """
-        Assemble memory prompt for the current turn.
+        """组装当前轮的记忆注入：hot（常驻）+ warm（按 query 召回）。
 
         Args:
-            query: User query for warm-memory keyword matching.
-                   Pass "" to skip warm-tier lookup (e.g. first turn).
+            query: 用户本轮输入，空则跳过 warm 召回。
         """
-        ignore_memory = bool(getattr(query, "ignore_memory", False))
-        if ignore_memory:
+        if not config.memory.search.enabled:
             return ""
+
         parts: list[str] = []
 
-        # ── Hot tier ──────────────────────────────────────────────────────────
-        hot_content = load_hot_memory(self.app_id)
-        hot_prompt = format_hot_memory_prompt(hot_content)
+        # ── hot 层：核心约束，每轮注入 ─────────────────────────────────────────
+        hot_prompt = format_hot_prompt(self.app_id)
         if hot_prompt:
             parts.append(hot_prompt)
 
-        # ── Warm tier ─────────────────────────────────────────────────────────
-        if query:
-            relevant = await find_relevant_topics(
-                app_id=self.app_id,
-                query=query,
-                already_surfaced=self._surfaced,
-                session_bytes_used=self._session_bytes,
-            )
-            for name, content in relevant:
-                self._surfaced.add(name)
-                self._session_bytes += len(content.encode("utf-8"))
-            warm_prompt = format_warm_memory_prompt(relevant)
-            if warm_prompt:
-                parts.append(warm_prompt)
+        # ── warm 层：按 query 混合召回 ─────────────────────────────────────────
+        warm_entries: list = []
+        if (query or "").strip():
+            try:
+                warm_entries = await search_warm(self.app_id, query)
+            except Exception as exc:  # noqa: BLE001 — 记忆检索失败不阻断对话
+                log.error("warm 记忆检索异常:{}", exc)
+                warm_entries = []
+            if warm_entries:
+                parts.append(format_warm_entries_prompt(warm_entries))
+
+        # 监控埋点：本轮记忆命中条数
+        if warm_entries:
+            try:
+                from codegenx.ai_service.monitor.monitor_pipeline import get_monitor_pipeline
+                get_monitor_pipeline().on_memory_recall(self.session_id, len(warm_entries))
+            except Exception:  # noqa: BLE001 — 埋点失败静默
+                pass
 
         return "\n\n".join(parts)
-
-    def remember(self, fact: str) -> None:
-        """
-        Persist a fact to ~/.bot/memory/MEMORY.md (hot tier, survives restarts).
-        Mirrors the old in-process remember() contract but backed by disk.
-        """
-        append_to_hot_memory(fact, self.app_id)
-
-    def clear_session_warm_cache(self) -> None:
-        """Reset per-session warm-memory dedup state (useful between sessions)."""
-        self._surfaced.clear()
-        self._session_bytes = 0
-
-def get_memory_manager() -> MemoryManager | None:
-    global _MEMORY_MANAGER_SINGLETON
-    if _MEMORY_MANAGER_SINGLETON is None:
-        _MEMORY_MANAGER_SINGLETON = MemoryManager()
-
-    return _MEMORY_MANAGER_SINGLETON
-

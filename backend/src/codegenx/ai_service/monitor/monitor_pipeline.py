@@ -30,14 +30,6 @@ from codegenx.ai_service.monitor.telemetry_schema import (
 )
 from shared import log
 
-MEMORY_TOOL_NAMES = {
-    "memory_search",
-    "memory_get",
-    "write_short_term",
-    "write_long_term",
-    "write_identity_memory",
-}
-
 _PIPELINE_SINGLETON: "MonitorPipeline | None" = None
 _PIPELINE_LOCK = Lock()
 
@@ -69,17 +61,6 @@ def _tool_status(result: Any) -> AgentState:
     return AgentState.SUCCESS
 
 
-def _memory_hits(result: Any) -> int:
-    if isinstance(result, dict):
-        details = result.get("details")
-        if isinstance(details, dict) and isinstance(details.get("results"), list):
-            return len(details["results"])
-        data = result.get("data")
-        if isinstance(data, list):
-            return len(data)
-    return 0
-
-
 class MonitorPipeline:
     """
     Facade that coordinates SpanCollector, SessionTelemetry, and MonitorStore.
@@ -102,6 +83,15 @@ class MonitorPipeline:
     def _get_turn_telemetry(self, session_id: str, span_id: str) -> TurnTelemetry | None:
         mc = self._metric_collectors.get(session_id)
         return mc.get_turn_telemetry(span_id) if mc else None
+
+    def on_memory_recall(self, session_id: str, hits: int) -> None:
+        """记忆检索埋点：retriever 每轮召回后上报命中条数（会话级指标）。"""
+        if hits <= 0:
+            return
+        session_telemetry = self._get_session_telemetry(session_id)
+        if session_telemetry is not None:
+            session_telemetry.total_memory_hits += hits
+        record_memory_hits(session_telemetry, None, hits)
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -414,13 +404,6 @@ class MonitorPipeline:
             )
             if span:
                 latency_ms = span.duration_ms or 0
-
-        if tool_name in MEMORY_TOOL_NAMES:
-            hits = _memory_hits(result)
-            if telemetry is not None:
-                telemetry.total_memory_hits += hits
-            session_telemetry = self._get_session_telemetry(session.session_id)
-            record_memory_hits(session_telemetry, telemetry, hits)
 
         session_telemetry = self._get_session_telemetry(session.session_id)
         record_tool_call(

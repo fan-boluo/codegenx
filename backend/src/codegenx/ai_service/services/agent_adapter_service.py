@@ -9,6 +9,9 @@ from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.agent.runtime import AgentRuntime
 from db.mysql.session import shutdown_mysql_engine
 from db.redis.redis_client import redis_client
+from db.qdrant.client import warm_up_qdrant_client, shutdown_qdrant_client
+from codegenx.ai_service.memory.vector_store import ensure_warm_collection
+from codegenx.ai_service.schedule.memory import get_memory_scheduler
 from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
 from shared import log
 
@@ -40,6 +43,15 @@ class AgentAdapterService:
             # 启动定时维护任务（DB 清理 + alert streak 清理）
             await get_monitor_maintenance_service().start_periodic_maintenance()
 
+            # 记忆系统启动：Qdrant 预热 + warm 库确保 + 离线任务 worker
+            # Qdrant/MySQL 暂不可用只降级记忆功能，不阻断主服务
+            with suppress(Exception):
+                await warm_up_qdrant_client()
+                await ensure_warm_collection()
+                log.info("warm_memories collection 已就绪")
+            with suppress(Exception):
+                await get_memory_scheduler().startup()
+
             self._started = True
 
     async def shutdown(self) -> None:
@@ -51,9 +63,15 @@ class AgentAdapterService:
                 with suppress(Exception):
                     await self._runtime.stop()
                 self._runtime = None
+            # 停止记忆离线任务 worker（宽限 10s，running 任务复位 pending）
+            with suppress(Exception):
+                await get_memory_scheduler().shutdown(grace=10.0)
             # 关闭本服务的实例
             with suppress(Exception):
                 await redis_client.aclose()
+
+            with suppress(Exception):
+                await shutdown_qdrant_client()
 
             with suppress(Exception):
                 await shutdown_mysql_engine()

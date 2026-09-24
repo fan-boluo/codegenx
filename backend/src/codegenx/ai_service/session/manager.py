@@ -44,6 +44,54 @@ class SessionManager:
     def _memory_log_file(self) -> Path:
         return self.session_dir / f"memory_log_{self.session_id}.jsonl"
 
+    # ── 记忆系统：水位增量读取 ─────────────────────────────────────────────────
+
+    def _chat_history_files_ordered(self) -> list[Path]:
+        """按写入顺序列出本会话全部聊天文件：base 先于 _0，_0 先于 _1 …"""
+        pattern = f"{_CHAT_HISTORY_PREFIX}{self.session_id}"
+        base = self.session_dir / f"{pattern}.jsonl"
+        indexed: list[tuple[int, Path]] = []
+        for path in self.session_dir.glob(f"{pattern}_*.jsonl"):
+            suffix = path.stem[len(pattern) + 1:]
+            if suffix.isdigit():
+                indexed.append((int(suffix), path))
+        indexed.sort()
+        result = [base] if base.exists() else []
+        result.extend(p for _, p in indexed)
+        return result
+
+    def read_messages_since(self, file_name: str = "", line_no: int = 0) -> list[tuple[str, int, dict]]:
+        """从水位 (file_name, line_no) 之后增量读取聊天消息（供记忆提取消费）。
+
+        返回 [(file_name, line_no, message), ...] 按写入顺序；
+        line_no 从 1 计；file_name 为空表示从头读。
+        解析失败的行跳过（坏行不阻断水位推进）。
+        """
+        result: list[tuple[str, int, dict]] = []
+        passed_watermark = file_name == ""
+        for path in self._chat_history_files_ordered():
+            if not passed_watermark:
+                if path.name != file_name:
+                    continue
+                passed_watermark = True  # 命中水位文件，从下一行开始
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for current_no, line in enumerate(f, start=1):
+                        if path.name == file_name and current_no <= line_no:
+                            continue
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            msg = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(msg, dict):
+                            result.append((path.name, current_no, msg))
+            except OSError as exc:
+                log.warning("聊天文件读取失败 {}:{}", path, exc)
+        return result
+
     async def save_turn_chat_message_snapshot(self,turn_chat_message: list[dict[str, Any]]) -> str:
         """保留最后一轮的chat_message，给会话重新打开时，直接从此chat_message直接继续输入给大模型"""
         snapshot_file = self._turn_chat_message_snapshot_file()

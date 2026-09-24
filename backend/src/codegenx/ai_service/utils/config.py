@@ -6,7 +6,7 @@ from pydantic import AliasChoices, ConfigDict, Field, BaseModel
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings
 
-_CONFIG_PATH = Path(__file__).resolve().parents[5] / "config.json"  # bot/utils/config.py → 上跳 5 级为 backend/
+_CONFIG_PATH = Path(__file__).resolve().parents[4] / "config.json"  # ai_service/utils/config.py → 上跳 4 级为 backend/
 
 
 class Base(BaseModel):
@@ -145,34 +145,53 @@ class ToolsConfig(Base):
 
 # memory ----------------------------------
 class MemorySearchConfig(Base):
-    """Memory search configuration """
+    """记忆检索配置：混合召回（向量+关键词）+ 三因子重排（语义/时间/类型）"""
     enabled: bool = Field(default=True)
-    search_top_k:int = Field(default=10)
-    search_score_threshold :float = Field(default=0.60)
-    short_lookback_days:int =Field(default=7)  # 短期记忆搜索天数范围
-    hybrid_vector_weight:float = Field(default=0.7)
-    long_term_weight:float = Field(default=0.7)
-    merge_result_similarity:float = Field(default=0.8)
+    top_k: int = Field(
+        default=10,
+        validation_alias=AliasChoices("topK", "top_k", "searchTopK"),
+    )  # 向量通道召回条数
+    score_threshold: float = Field(
+        default=0.45,
+        validation_alias=AliasChoices("scoreThreshold", "score_threshold", "searchScoreThreshold"),
+    )  # 向量原始相似度下限
+    keyword_top_k: int = Field(
+        default=10,
+        validation_alias=AliasChoices("keywordTopK", "keyword_top_k"),
+    )  # 关键词通道召回条数
+    # 三因子重排权重（语义 / 时间衰减 / 类型），和为 1
+    rerank_vector_weight: float = Field(default=0.7, validation_alias=AliasChoices("rerankVectorWeight", "rerank_vector_weight"))
+    rerank_time_weight: float = Field(default=0.2, validation_alias=AliasChoices("rerankTimeWeight", "rerank_time_weight"))
+    rerank_type_weight: float = Field(default=0.1, validation_alias=AliasChoices("rerankTypeWeight", "rerank_type_weight"))
+    time_decay_half_life_days: int = Field(
+        default=30,
+        validation_alias=AliasChoices("timeDecayHalfLifeDays", "time_decay_half_life_days"),
+    )  # 时间衰减半衰期：0.5^(age_days/half_life)
+    warm_token_budget: int = Field(
+        default=8192,
+        validation_alias=AliasChoices("warmTokenBudget", "warm_token_budget"),
+    )  # warm 层注入 token 预算
 
 
 class MemoryFlushConfig(Base):
-    """Memory flush configuration )"""
+    """记忆写入/生命周期配置（条件触发离线提取 + 衰减归档）"""
     enabled: bool = Field(default=True)
-    model_name:str = Field(default=None)
-    extract_max_concurrency: int = Field(default=2) # 离线 LLM 并发上限（信号量隔离，避免挤占在线对话资源）
+    model_name: str | None = Field(default=None)  # 离线提取小模型；空则用默认模型
+    extract_max_concurrency: int = Field(default=2)  # 离线 LLM 并发上限（信号量隔离，避免挤占在线对话资源）
 
-    consolidate_hour: int = Field(default=3)# 每日跨会话整理（consolidate）触发小时（24h 制）
-    softThresholdTokens: int = Field(default=4000)
-    forceFlushTranscriptBytes: int | None = Field(default=2 * 1024 * 1024)  # 2MB
-    prompt: str | None = Field(default=None)
-    systemPrompt: str | None = Field(default=None)
-    general_ttl_days: int = Field(default=7) # 通用的过期天数
-    session_retention_days: int = Field(default=7)  # md记忆文件留存时间
-    ttlDays: int = Field(default=7)  # 短期记忆过期天数
-    shortDuplicatedScoreThreshold: float = Field(default=0.90)  # 短期记忆去重分数阈值，超过这个分数的记忆会被认为是重复的，不会被写入记忆库
-    longMatchesScoreThreshold: float = Field(default=0.7)  # 长期记忆写入匹配分数阈值，分数大于这个值的被认为与当前的短期记忆相关，会交给大模型判断
-    longMatchesTopK: int = Field(default=3)  # 长期记忆写入匹配结果的最大数量
-    longDirectWriteImportanceThreshold: float = Field(default=0.79)  # 长期记忆直接写入的重要性阈值，无匹配且超过这个分数的记忆会被直接写入长期记忆库
+    consolidate_hour: int = Field(default=3)  # 每日整理/衰减/对账任务触发小时（24h 制）
+    decay_days: int = Field(
+        default=30,
+        validation_alias=AliasChoices("decayDays", "decay_days"),
+    )  # 未访问软删除天数
+    archive_days: int = Field(
+        default=90,
+        validation_alias=AliasChoices("archiveDays", "archive_days"),
+    )  # 归档天数（jsonl→zip + Qdrant 物理删除）
+    # 写入判重阈值：相似度 ≥ 重复跳过；[匹配下限, 重复) 交 LLM 仲裁
+    shortDuplicatedScoreThreshold: float = Field(default=0.90)
+    longMatchesScoreThreshold: float = Field(default=0.7)
+    longMatchesTopK: int = Field(default=3)
 
 
 class MemoryConfig(Base):
@@ -266,7 +285,7 @@ class ModelsConfig(Base):
 class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
-    models:List[ModelsConfig] = Field(default_factory=ModelsConfig)
+    models:List[ModelsConfig] = Field(default_factory=lambda: [ModelsConfig()])
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)

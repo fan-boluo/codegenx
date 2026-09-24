@@ -1,117 +1,144 @@
 """
-Prompt templates for memory extraction and recall.
+记忆系统提示词 —— 提取（对话 → 候选记忆）与仲裁（新记忆 vs 已有记忆）。
 
-Mirrors:
-  src/services/SessionMemory/prompts.ts  — session notes template + update prompt
-  src/memdir/memdir.ts                   — buildSearchingPastContextSection()
+会话摘要提示词不在这里：已随会话摘要服务移交 compact/session_summary.py。
 """
 from __future__ import annotations
 
-# ── Session memory template ────────────────────────────────────────────────────
-# Mirrors DEFAULT_SESSION_MEMORY_TEMPLATE in prompts.ts.
-# Section structure MUST be preserved by the extractor — headers and italic
-# description lines are the scaffold; only the content below them changes.
+import json
 
-SESSION_MEMORY_TEMPLATE = """\
-# Session Title
-_A short and distinctive 5-10 word descriptive title for the session._
+# ── 提取：对话片段 → 候选记忆列表 ─────────────────────────────────────────────
 
-# Current State
-_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._
+MEMORY_EXTRACT_SYSTEM_PROMPT = """\
+你是记忆提取助手。从对话片段中提取值得长期保存的记忆条目。
 
-# Task Specification
-_What did the user ask to build or find? Key design decisions or explanatory context._
+只提取以下四种类型（memory_type 必须是其中之一）：
+- user_correction: 用户对助手行为的纠正或明确指引（该做什么、不要做什么）。权重最高。
+- user_preference: 用户角色、职责、偏好、知识水平、沟通风格。
+- project_background: 项目背景、业务目标、进行中的工作、约束条件（无法从代码直接看出的）。
+- resource_path: 重要资源位置（数据表、文件、外部系统入口）。
 
-# Key Files and Topics
-_What are the important files, functions, or topics discussed? Brief notes on each._
+判定标准：
+1. 只提取持久有用的事实，一次性过程性内容（"我打开了这个文件"）不要提取。
+2. 用户显式表达的偏好和纠正必须提取，即使看似琐碎。
+3. 每条记忆压缩为一句话，信息密集，无主语（面向未来对话的助手阅读）。
+4. 相对时间转为绝对日期（"下周三" → "2026-09-30"）。
+5. 不确定就跳过：宁缺毋滥，错误记忆比没有记忆更糟。
+6. 最多提取 8 条。
 
-# Errors and Corrections
-_Errors encountered and how they were fixed. What approaches failed and should not be tried again._
+只输出 JSON 数组，不要输出任何其他文字：
+[
+  {"topic": "简短话题标签(2-6字)", "memory_type": "四种之一", "content": "一句话记忆"},
+  ...
+]
 
-# Learnings
-_What has worked well? What should be avoided? Do not duplicate items from other sections._
+无值得提取的内容时输出 []。
+"""
 
-# Key Results
-_If the user asked for a specific output (answer, table, document), include the exact result here._
+MEMORY_EXTRACT_USER_PROMPT = """\
+对话片段（按时间顺序，可能包含工具调用摘要）：
 
-# Worklog
-_Step by step, what was attempted and done? Very terse summary for each step._
+{conversation}
 """
 
 
-# ── Extraction prompt ─────────────────────────────────────────────────────────
+def format_conversation_for_extract(turns_text: str) -> str:
+    return MEMORY_EXTRACT_USER_PROMPT.format(conversation=turns_text)
 
-def build_extraction_prompt(
-    messages: list[dict],
-    current_notes: str,
-    notes_path: str,
-) -> str:
-    """
-    Build the prompt sent to the session-memory extraction subagent.
-    Mirrors buildSessionMemoryUpdatePrompt() in prompts.ts.
 
-    In production this is sent to a Sonnet sideQuery with FileEdit tool access.
-    The mock extractor in session.py uses it for reference only.
-    """
-    conversation = _format_messages_for_extraction(messages)
-    return (
-        f"IMPORTANT: These instructions are NOT part of the actual conversation. "
-        f"Do NOT reference note-taking in the notes content.\n\n"
-        f"Based on the conversation below, update the session notes at {notes_path}.\n\n"
-        f"Current notes:\n<current_notes>\n{current_notes or '(empty)'}\n</current_notes>\n\n"
-        f"Conversation:\n<conversation>\n{conversation}\n</conversation>\n\n"
-        f"Update every section that has new information. Be terse but info-dense. "
-        f"Preserve all section headers and italic description lines exactly."
+def parse_extracted_memories(raw: str) -> list[dict]:
+    """解析 LLM 输出的候选记忆 JSON 数组；容错截断/包裹，坏条目跳过。"""
+    if not raw or not raw.strip():
+        return []
+    text = raw.strip()
+    # 剥离 markdown 代码块包裹
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # 容错：截取首个 [ 到最后一个 ] 之间再试
+        start, end = text.find("["), text.rfind("]")
+        if start < 0 or end <= start:
+            return []
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, list):
+        return []
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", "") or "").strip()
+        if not content:
+            continue
+        result.append({
+            "topic": str(item.get("topic", "") or "").strip()[:32],
+            "memory_type": str(item.get("memory_type", "") or "").strip(),
+            "content": content[:500],
+        })
+    return result
+
+
+# ── 仲裁：新候选 vs 已有相似记忆 ───────────────────────────────────────────────
+
+MEMORY_ADJUDICATE_SYSTEM_PROMPT = """\
+你是记忆库仲裁助手。现在有一条新提取的记忆，和记忆库中与它最相似的旧记忆。
+判断新记忆应该如何处理：
+
+- DUPLICATE: 旧记忆已完整表达同一事实（措辞不同也算重复），无需写入。
+- UPDATE: 旧记忆部分过时或信息不完整，新记忆是更完整/更新的版本。在 content 字段给出合并后的最终表述（以新信息为准，保留旧记忆中仍然有效的细节）。
+- CONFLICT: 新旧记忆相互矛盾（如用户改变了决定）。新记忆胜出，旧记忆将失效。
+- KEEP_BOTH: 两者相关但表达不同事实，都应保留。
+
+只输出 JSON 对象，不要输出任何其他文字：
+{"action": "DUPLICATE|UPDATE|CONFLICT|KEEP_BOTH", "content": "仅 UPDATE 时需要，其余留空"}
+"""
+
+MEMORY_ADJUDICATE_USER_PROMPT = """\
+新记忆：
+{new_content}
+
+已有相似记忆：
+{existing_list}
+"""
+
+
+def format_adjudicate_user_prompt(new_content: str, matches: list[tuple[str, str]]) -> str:
+    """matches: [(memory_id, content), ...]"""
+    lines = [f"- [{mid}] {content}" for mid, content in matches]
+    return MEMORY_ADJUDICATE_USER_PROMPT.format(
+        new_content=new_content,
+        existing_list="\n".join(lines) or "（无）",
     )
 
 
-def _format_messages_for_extraction(messages: list[dict]) -> str:
-    """Format the last 40 messages for inclusion in an extraction prompt."""
-    parts: list[str] = []
-    for msg in messages[-40:]:
-        role = msg.get("role", "?")
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            # tool results — join content fields
-            content = "; ".join(str(item.get("content", "")) for item in content)
-        if isinstance(content, str) and content.strip():
-            parts.append(f"[{role}]: {content[:400]}")
-        # Summarise tool calls compactly
-        for tc in msg.get("tool_calls", []):
-            parts.append(f"[tool_call]: {tc.get('name', '?')}({tc.get('input', {})})")
-    return "\n".join(parts)
-
-FIND_RELEVANT_MD_SYSTEM_PROMPT = """
-你是一个专门评估记忆文件与用户查询相关性的助手。  
-你将收到一个**用户查询**和一个**记忆文件列表**，每个文件包含文件名和描述。  
-请为每个文件输出一个 0 到 10 之间的整数分数，表示该文件与用户查询的相关性：
-
-- 10：非常相关，文件内容极有可能直接回答查询或提供关键上下文。
-- 7‑9：相当相关，文件内容明显有助于回答查询。
-- 4‑6：部分相关，可能包含与查询间接相关的信息。
-- 1‑3：微弱相关，仅有非常宽泛或偶然的联系。
-- 0：完全无关。
-
-**评分时请考虑：**
-- 文件名和描述中是否包含查询的关键词或同义词。
-- 描述中提到的主题是否与用户查询的意图一致（不仅仅是字面匹配）。
-- 如果查询涉及“如何做 X”，那么描述中包含“X 的步骤/最佳实践”的文件分数应更高。
-
-只输出一个 JSON 对象，格式如下（不要输出任何其他文字）：
-{
-  "scores": {
-    "文件名1.md": 分数,
-    "文件名2.md": 分数,
-    ...
-  }
-}
-"""
-
-FIND_RELEVANT_MD_USER_PROMPT = """
-用户查询：{query}
-
-记忆文件列表：
-{files_list}
-
-请评估每个文件与查询的相关性，输出 JSON 分数。
-"""
+def parse_adjudication(raw: str) -> dict:
+    """解析仲裁结果；解析失败按 KEEP_BOTH 处理（保守：都保留）。"""
+    if not raw or not raw.strip():
+        return {"action": "KEEP_BOTH", "content": ""}
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return {"action": "KEEP_BOTH", "content": ""}
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return {"action": "KEEP_BOTH", "content": ""}
+    action = str(data.get("action", "") or "").strip().upper()
+    if action not in {"DUPLICATE", "UPDATE", "CONFLICT", "KEEP_BOTH"}:
+        action = "KEEP_BOTH"
+    return {"action": action, "content": str(data.get("content", "") or "").strip()}

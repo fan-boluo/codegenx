@@ -1,47 +1,17 @@
 """
-bot.memory — multi-tier memory system for the agent bot.
+codegenx.ai_service.memory — 记忆系统（跨会话持久记忆）。
 
-Architecture (mirrors Claude Code):
+与上下文工程的边界：
+  - 会话内摘要（压缩边界）已移交 compact/session_summary.py，属于上下文工程；
+  - 本包只负责跨会话的持久记忆：hot（核心约束，始终注入）+ warm（话题记忆，按需召回）。
 
-  Hot tier    (hot.py):     ~/.bot/memory/MEMORY.md
-                            Loaded once at session start → always in system prompt.
-                            Cheap: one file read, no LLM.
-
-  Warm tier   (warm.py):    ~/.bot/memory/topics/*.md
-                            Topic files recalled per query by keyword overlap.
-                            Capped: ≤5 files, ≤4 KB each, ≤60 KB per session.
-                            Production: replace keyword scorer with Sonnet sideQuery.
-
-  Session tier (session.py): ~/.bot/sessions/<id>/MEMORY.md
-                            Background extractor fires every ~3 tool calls or
-                            ~150 new tokens; writes a structured session summary.
-                            Non-blocking: runs as an asyncio.Task.
-                            Used by compaction to survive context trimming.
-
-  Compact      (compact.py): Trims messages when context > 2 000 est. tokens.
-                            Keeps recent exchanges + prepends session summary.
-
-Warm topic file format:
-  ---
-  type: topic
-  description: One-line description for keyword matching
-  ---
-  # Title
-  ... markdown content ...
+分层数据模型（详见 docs/记忆系统详细设计方案.md）：
+  models.py        记忆条目结构 + 类型权重 + ULID（json 事实源的行格式）
+  paths.py         记忆目录/文件布局
+  hot_store.py     hot.json 读写（始终注入，≤2K token）
+  warm_store.py    warm_*.jsonl 滚动写入 / 增量扫描 / 软删除 / 归档（事实源）
+  vector_store.py  warm_memories 向量检索层（Qdrant，可重建的加速层）
+  embedding.py     向量化（DashScope 兼容模式）
+  retriever.py     混合召回 + 三因子重排 + token 窗口（读取链路）
+  memory_manager.py 门面：SessionContext 每轮调用组装注入
 """
-from .hot import load_hot_memory, format_hot_memory_prompt, append_to_hot_memory
-from .warm import find_relevant_topics, format_warm_memory_prompt, scan_topic_files
-from .session import SessionMemory
-
-__all__ = [
-    # Hot tier
-    "load_hot_memory",
-    "format_hot_memory_prompt",
-    "append_to_hot_memory",
-    # Warm tier
-    "find_relevant_topics",
-    "format_warm_memory_prompt",
-    "scan_topic_files",
-    # Session tier
-    "SessionMemory",
-]

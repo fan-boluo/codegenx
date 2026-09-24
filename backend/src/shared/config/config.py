@@ -24,10 +24,6 @@ class Settings(BaseSettings):
     # ignore：忽略多余环境变量，不报错
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
-    database_path:str = ""
-    database_schema_path:str = ""
-    database_seed_path : str =""
-
     app_name: str = "ai-gateway"
     app_env: str = Field(default="local")
     app_host: str = "localhost"
@@ -49,7 +45,8 @@ class Settings(BaseSettings):
     qdrant_url:str = "localhost"
     qdrant_port: int = 6333
     qdrant_api_key: str = ""
-    qdrant_size: int =1024
+    # 注意：向量维度不在此配置 —— 以 backend/config.json 的 embedding.dimensions 为唯一来源，
+    # 由 memory/vector_store.py 建库时读取，避免双配置不一致。
 
     cors_allow_origin_patterns: str = "*"
     log_level: str = "INFO"

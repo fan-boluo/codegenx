@@ -6,8 +6,6 @@ from typing import Any
 
 READ_ONLY_TOOLS = {
     "read_file",
-    "memory_search",
-    "memory_get",
     "load_skill",
     "web_search",
 }
@@ -15,9 +13,6 @@ READ_ONLY_TOOLS = {
 WRITE_TOOLS = {
     "write_file",
     "edit_file",
-    "write_short_term",
-    "write_long_term",
-    "write_identity_memory",
 }
 
 

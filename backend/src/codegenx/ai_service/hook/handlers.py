@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 # from agent.assembler import get_context_assembler
 from codegenx.ai_service.agent.agent_schema import AgentState
 from codegenx.ai_service.task.task_manager import TaskManager
-from codegenx.ai_service.agent.tool_executor import MEMORY_TOOL_NAMES
 from codegenx.ai_service.monitor.monitor_pipeline import get_monitor_pipeline
 from codegenx.ai_service.session.manager import SessionManager
 from shared import log
@@ -120,8 +119,6 @@ async def post_tool_use(turn: Any, **kwargs):
             "result": result,
         }
         await session.session_manager.append_tool_log(snapshot)
-        if tool_name in MEMORY_TOOL_NAMES:
-            await session.session_manager.append_memory_log(snapshot)
     except Exception as exc:
         log.debug(f"Session log write failed for tool '{tool_name}': {exc}")
 
@@ -135,7 +132,32 @@ async def on_turn_end(turn: Any, **kwargs):
         await session_state.session_manager.save_turn_chat_message_snapshot(
             session_state.context_manager.chat_messages
         )
+        # 条件触发记忆提取：每 10 轮入队一次 warm_extract（dedup 防在途重复）
+        await _maybe_enqueue_warm_extract(session_state)
     await get_monitor_pipeline().on_turn_end(session_state, turn)
+
+
+async def _maybe_enqueue_warm_extract(session_state) -> None:
+    """每累计 10 个 user 轮次登记一次离线记忆提取任务（失败不影响对话）。"""
+    try:
+        user_turns = sum(
+            1 for m in session_state.context_manager.chat_messages
+            if isinstance(m, dict) and m.get("role") == "user"
+        )
+        if user_turns <= 0 or user_turns % 10 != 0:
+            return
+        from codegenx.ai_service.schedule.memory_task_store import (
+            get_memory_task_store, TASK_WARM_EXTRACT,
+        )
+        await get_memory_task_store().enqueue(
+            TASK_WARM_EXTRACT,
+            app_id=str(session_state.app_id),
+            session_id=session_state.session_id,
+            user_id=str(session_state.user_id or ""),
+            dedup=True,
+        )
+    except Exception as exc:
+        log.debug("warm_extract 任务登记失败（非致命）: {}", exc)
 
 
 async def on_error(turn: Any, **kwargs):
