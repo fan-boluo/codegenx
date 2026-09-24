@@ -1,0 +1,13 @@
+20260924 11:30:48 - MainProcess | MainThread | warm_store.flush_access:196 - DEBUG -warm 访问信息回写 2 条
+20260924 12:32:16 - MainProcess | MainThread | lifecycle.consolidate_app:79 - WARNING -[consolidate] Qdrant 失效同步失败（留待 sync_check）:Unexpected Response: 400 (Bad Request)
+Raw response content:
+b'{"status":{"error":"Format error in JSON body: value 01M38TYXFZQ23EGDN6J55F77KS is not a valid point ID, valid values are either an unsigned integer or a UUID at line 1 column 71"},"time":0.0}'
+20260924 12:32:16 - MainProcess | MainThread | lifecycle.decay_and_archive_app:111 - WARNING -[decay_archive] Qdrant 归档删除失败:Unexpected Response: 400 (Bad Request)
+Raw response content:
+b'{"status":{"error":"Format error in JSON body: data did not match any variant of untagged enum PointsSelector"},"time":0.0}'
+20260924 12:39:37 - MainProcess | MainThread | lifecycle.consolidate_app:79 - WARNING -[consolidate] Qdrant 失效同步失败（留待 sync_check）:Unexpected Response: 404 (Not Found)
+Raw response content:
+b'{"status":{"error":"Not found: Collection `warm_memories` doesn\'t exist!"},"time":0.0000206}'
+20260924 12:39:37 - MainProcess | MainThread | lifecycle.decay_and_archive_app:111 - WARNING -[decay_archive] Qdrant 归档删除失败:Unexpected Response: 404 (Not Found)
+Raw response content:
+b'{"status":{"error":"Not found: Collection `warm_memories` doesn\'t exist!"},"time":0.0000129}'
