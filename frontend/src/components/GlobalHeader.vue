@@ -2,7 +2,6 @@
   <div class="global-header">
     <div class="header-left">
       <a class="header-logo" href="/" @click.prevent="$router.push('/')">
-        <img src="../../public/logo.png" alt="logo" class="logo-img" />
         <span class="logo-text">数据分析平台</span>
       </a>
       <a-menu
@@ -43,6 +42,7 @@ import { useRouter } from 'vue-router'
 import { type MenuProps, message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser.ts'
 import { userLogout } from '@/api/userController.ts'
+import { clearLocalAuth } from '@/request'
 import { useIdleTimeout } from '@/composables/useIdleTimeout'
 import {
   LogoutOutlined,
@@ -106,20 +106,12 @@ const handleMenuClick: MenuProps['onClick'] = (e) => {
   }
 }
 
-const clearLocalAuth = () => {
-  loginUserStore.setLoginUser({ userName: '未登录' })
-  localStorage.removeItem('token')
-  // 清理所有 session 相关 localStorage
-  for (const key of Object.keys(localStorage)) {
-    if (key.startsWith('codegenx:app-chat-session:')) {
-      localStorage.removeItem(key)
-    }
-  }
-}
-
 const performIdleLogout = () => {
   if (!loginUserStore.loginUser.id) return
+  // 空闲超时登出也通知后端 revoke token
+  userLogout().catch(() => {})
   clearLocalAuth()
+  loginUserStore.setLoginUser({ userName: '未登录' })
   message.warning('长时间未操作，已自动退出登录')
   router.push('/user/login')
 }
@@ -130,6 +122,7 @@ const doLogout = async () => {
   const res = await userLogout()
   if (res.data.code === 0) {
     clearLocalAuth()
+    loginUserStore.setLoginUser({ userName: '未登录' })
     message.success('退出登录成功')
     await router.push('/user/login')
   } else {

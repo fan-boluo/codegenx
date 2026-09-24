@@ -93,7 +93,7 @@ export async function chatToGenCodeGetApiAppChatGenCodeGet(
 
 /** Chat To Gen Code Post POST /api/chat/gen/code */
 export async function chatToGenCodePostApiAppChatGenCodePost(
-  body: API.AppChatRequest,
+  body: Record<string, any>,
   options?: { [key: string]: any }
 ) {
   return request<any>('/api/chat/gen/code', {
@@ -136,21 +136,6 @@ export async function deleteAppPostApiAppDeletePost(
   })
 }
 
-/** Deploy App POST /api/app/deploy */
-export async function deployAppApiAppDeployPost(
-  body: Record<string, any>,
-  options?: { [key: string]: any }
-) {
-  return request<any>('/api/app/deploy', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    data: body,
-    ...(options || {}),
-  })
-}
-
 /** Download App Code GET /api/app/download/${param0} */
 export async function downloadAppCodeApiAppDownloadAppIdGet(
   // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
@@ -180,12 +165,41 @@ export async function getAppVoApiAppGetVoGet(
   })
 }
 
-/** List Good Apps POST /api/app/good/list/page/vo */
-export async function listGoodAppsApiAppGoodListPageVoPost(
+/** List App Members GET /api/app/member/list/${param0} */
+export async function listAppMembersApiAppMemberListAppIdGet(
+  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
+  params: API.listAppMembersApiAppMemberListAppIdGetParams,
+  options?: { [key: string]: any }
+) {
+  const { app_id: param0, ...queryParams } = params
+  return request<any>(`/api/app/member/list/${param0}`, {
+    method: 'GET',
+    params: { ...queryParams },
+    ...(options || {}),
+  })
+}
+
+/** Add App Member POST /api/app/member/add */
+export async function addAppMemberApiAppMemberAddPost(
   body: Record<string, any>,
   options?: { [key: string]: any }
 ) {
-  return request<any>('/api/app/good/list/page/vo', {
+  return request<any>('/api/app/member/add', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
+/** Remove App Member POST /api/app/member/remove */
+export async function removeAppMemberApiAppMemberRemovePost(
+  body: Record<string, any>,
+  options?: { [key: string]: any }
+) {
+  return request<any>('/api/app/member/remove', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -206,36 +220,6 @@ export async function listMyAppsApiAppMyListPageVoPost(
       'Content-Type': 'application/json',
     },
     data: body,
-    ...(options || {}),
-  })
-}
-
-/** Serve Static Resource GET /api/app/static/${param0} */
-export async function serveStaticResourceApiAppStaticDeployKeyGet(
-  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
-  params: API.serveStaticResourceApiAppStaticDeployKeyGetParams,
-  options?: { [key: string]: any }
-) {
-  const { deploy_key: param0, ...queryParams } = params
-  return request<any>(`/api/app/static/${param0}`, {
-    method: 'GET',
-    params: {
-      ...queryParams,
-    },
-    ...(options || {}),
-  })
-}
-
-/** Serve Static Resource GET /api/app/static/${param0}/${param1} */
-export async function serveStaticResourceApiAppStaticDeployKeyResourcePathGet(
-  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
-  params: API.serveStaticResourceApiAppStaticDeployKeyResourcePathGetParams,
-  options?: { [key: string]: any }
-) {
-  const { deploy_key: param0, resource_path: param1, ...queryParams } = params
-  return request<any>(`/api/app/static/${param0}/${param1}`, {
-    method: 'GET',
-    params: { ...queryParams },
     ...(options || {}),
   })
 }

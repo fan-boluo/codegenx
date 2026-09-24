@@ -11,7 +11,7 @@ dayjs.locale('zh-cn')
  * @param format 格式化字符串，默认为 'YYYY-MM-DD HH:mm:ss'
  * @returns 格式化后的时间字符串，如果时间为空则返回空字符串
  */
-export const formatTime = (time: string | undefined, format = 'YYYY-MM-DD HH:mm:ss'): string => {
+export const formatTime = (time: string | null | undefined, format = 'YYYY-MM-DD HH:mm:ss'): string => {
   if (!time) return ''
   return dayjs(time).format(format)
 }
@@ -21,7 +21,7 @@ export const formatTime = (time: string | undefined, format = 'YYYY-MM-DD HH:mm:
  * @param time 时间字符串
  * @returns 相对时间字符串，如 "2小时前"
  */
-export const formatRelativeTime = (time: string | undefined): string => {
+export const formatRelativeTime = (time: string | null | undefined): string => {
   if (!time) return ''
   return dayjs(time).fromNow()
 }
@@ -31,7 +31,7 @@ export const formatRelativeTime = (time: string | undefined): string => {
  * @param time 时间字符串
  * @returns 日期字符串，如 "2024-01-01"
  */
-export const formatDate = (time: string | undefined): string => {
+export const formatDate = (time: string | null | undefined): string => {
   if (!time) return ''
   return dayjs(time).format('YYYY-MM-DD')
 }
