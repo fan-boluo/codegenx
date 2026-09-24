@@ -1,0 +1,23 @@
+CREATE TABLE `chat_message` (
+  `id`                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `message_uid`       CHAR(36)        NOT NULL,
+  `user_id`           BIGINT UNSIGNED NOT NULL,
+  `session_id`        CHAR(36)        NOT NULL,
+  `app_id`            CHAR(3)          not null,
+  `seq`               BIGINT UNSIGNED NOT NULL COMMENT '会话内单调递增,提炼位点的载体',
+  `role`              VARCHAR(16)     NOT NULL COMMENT 'user/assistant/tool',
+  `content`           MEDIUMTEXT      NULL,
+  `payload_ref`       VARCHAR(512)    NULL COMMENT '超长内容外置对象存储的 key',
+  `content_bytes`     INT UNSIGNED    NOT NULL DEFAULT 0,
+  `content_tokens` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '本条消息内容的 token 数，写入时用 tokenizer 精确计算，所有 role 均有值'
+  `model`             VARCHAR(64)     NULL,
+  `prompt_tokens`     INT UNSIGNED    NULL,
+  `completion_tokens` INT UNSIGNED    NULL,
+  `finish_reason`     VARCHAR(32)     NULL,
+  `created_at`        DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_message_uid` (`message_uid`),
+  UNIQUE KEY `uk_session_seq` (`session_id`, `seq`),
+  KEY `idx_extract_scan` (`user_id`, `session_id`, `seq`),
+  KEY `idx_user_created` (`user_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
