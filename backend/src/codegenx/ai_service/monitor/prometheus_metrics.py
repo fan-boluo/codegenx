@@ -123,12 +123,95 @@ tool_latency_seconds = Histogram(
 )
 
 # ---------------------------------------------------------------------------
-# Memory
+# Memory（设计方案 v2.1 §10.1，P1-12）
 # ---------------------------------------------------------------------------
 memory_hits_total = Counter(
     "codegenx_memory_hits_total",
     "Total memory retrieval hits",
     ["app_id"],
+)
+
+# 写入链路
+memory_extract_total = Counter(
+    "codegenx_memory_extract_total",
+    "warm_extract task outcomes",
+    ["app_id", "status"],  # status: ok/failed/dead
+)
+memory_extract_latency_seconds = Histogram(
+    "codegenx_memory_extract_latency_seconds",
+    "warm_extract task wall-clock duration",
+    ["app_id"],
+    buckets=[1, 5, 10, 30, 60, 120, 300],
+)
+memory_extract_triggered_total = Counter(
+    "codegenx_memory_extract_triggered_total",
+    "warm_extract enqueue by trigger reason",
+    ["reason"],  # signal/token/timeout/session_end/stale_scan
+)
+memory_write_rejected_total = Counter(
+    "codegenx_memory_write_rejected_total",
+    "Candidate memories rejected at admission",
+    ["reason"],  # empty/type/sensitive/inferred_hot/hot_full
+)
+memory_task_dead = Gauge(
+    "codegenx_memory_task_dead",
+    "memory_task rows in status='dead'",
+)
+memory_task_stuck_reclaimed_total = Counter(
+    "codegenx_memory_task_stuck_reclaimed_total",
+    "Stuck running tasks reset to pending by patrol",
+)
+
+# 同步链路
+memory_vector_pending = Gauge(
+    "codegenx_memory_vector_pending",
+    "Rows with vector_synced_at IS NULL (layer=2)",
+)
+memory_vector_sync_fail_total = Counter(
+    "codegenx_memory_vector_sync_fail_total",
+    "Vector forward-sync batch failures",
+)
+memory_reconcile_missing_total = Counter(
+    "codegenx_memory_reconcile_missing_total",
+    "Reconcile: MySQL has / Qdrant missing, repaired",
+)
+memory_reconcile_ghost_total = Counter(
+    "codegenx_memory_reconcile_ghost_total",
+    "Reconcile: Qdrant ghosts cleaned",
+)
+memory_reconcile_spotcheck_miss_total = Counter(
+    "codegenx_memory_reconcile_spotcheck_miss_total",
+    "Spot-check samples not recalled by own summary",
+)
+
+# 检索链路
+memory_hot_token_usage_ratio = Gauge(
+    "codegenx_memory_hot_token_usage_ratio",
+    "hot injection tokens / budget (latest user sampled)",
+)
+memory_hot_count = Gauge(
+    "codegenx_memory_hot_count",
+    "Active hot entries for the latest sampled user",
+)
+memory_degrade_total = Counter(
+    "codegenx_memory_degrade_total",
+    "Memory subsystem degradations",
+    ["kind"],  # qdrant/redis/mysql/embedding/timeout
+)
+
+# 治理链路
+memory_conflict_detected_total = Counter(
+    "codegenx_memory_conflict_detected_total",
+    "Conflict pairs resolved by daily conflict_detect",
+)
+memory_consolidate_merged_total = Counter(
+    "codegenx_memory_consolidate_merged_total",
+    "Duplicate warm entries merged by consolidate",
+)
+memory_archived_total = Counter(
+    "codegenx_memory_archived_total",
+    "warm entries soft-deleted / archived",
+    ["action"],  # soft_delete/archive
 )
 
 # ---------------------------------------------------------------------------

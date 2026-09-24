@@ -40,29 +40,36 @@ def _archive_days() -> int:
     return int(getattr(config.memory.store, "archive_days", 90) or 90)
 
 
-async def consolidate_all_apps() -> None:
-    """全租户整理：warm 精确重复合并。单租户失败不阻断其他。"""
+async def consolidate_all_apps() -> int:
+    """全租户整理：warm 精确重复合并。单租户失败不阻断其他。返回合并条数。"""
     try:
         tenants = await list_tenants()
     except Exception as exc:  # noqa: BLE001 — MySQL 不可用时本轮放弃，下日重试
         log.error("[consolidate] 租户枚举失败:{}", exc)
-        return
+        return 0
+    total_merged = 0
     for app_id, user_id in tenants:
         try:
             merged = await merge_duplicate_warm(app_id, user_id)
+            total_merged += int(merged or 0)
             if merged:
                 log.info("[consolidate] app {}/{} 合并精确重复 warm {} 条", app_id, user_id, merged)
         except Exception as exc:  # noqa: BLE001
             log.error("[consolidate] app {}/{} 整理异常: {}", app_id, user_id, exc)
+    return total_merged
 
 
-async def decay_and_archive_all_apps() -> None:
-    """全局衰减软删（单条批量 SQL，无需按租户循环）→ 按租户归档导出。"""
+async def decay_and_archive_all_apps() -> tuple[int, int]:
+    """全局衰减软删（单条批量 SQL，无需按租户循环）→ 按租户归档导出。
+
+    返回 (软删条数, 归档导出条数)，供 scheduler 打治理指标。
+    """
+    soft_deleted = 0
     # ── 软删：只作用 warm（P0-11），active_slot/vector_synced_at 由 DAO 同步维护 ──
     try:
-        decayed = await decay_warm_soft_delete(_decay_days())
-        if decayed:
-            log.info("[decay_archive] warm 软删 {} 条（{} 天未命中，可恢复）", decayed, _decay_days())
+        soft_deleted = await decay_warm_soft_delete(_decay_days())
+        if soft_deleted:
+            log.info("[decay_archive] warm 软删 {} 条（{} 天未命中，可恢复）", soft_deleted, _decay_days())
     except Exception as exc:  # noqa: BLE001
         log.error("[decay_archive] warm 软删异常: {}", exc)
 
@@ -72,9 +79,9 @@ async def decay_and_archive_all_apps() -> None:
         rows = await scan_archivable(gap_days)
     except Exception as exc:  # noqa: BLE001
         log.error("[decay_archive] 归档扫描异常: {}", exc)
-        return
+        return soft_deleted, 0
     if not rows:
-        return
+        return soft_deleted, 0
 
     by_tenant: dict[tuple[str, str], list[MemoryEntry]] = {}
     for row in rows:
@@ -100,6 +107,8 @@ async def decay_and_archive_all_apps() -> None:
             await delete_points_by_ids(exported_ids)
         except Exception as exc:  # noqa: BLE001
             log.warning("[decay_archive] Qdrant 归档删除失败（留待 sync_check）:{}", exc)
+
+    return soft_deleted, len(exported_ids)
 
 
 def _export_archive_zip(app_id: str, user_id: str, items: list[MemoryEntry]) -> None:

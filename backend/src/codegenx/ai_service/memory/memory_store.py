@@ -101,6 +101,8 @@ async def upsert_hot_slot(
     count = await count_hot_slots(app_id, user_id)
     if count >= hot_max_entries:
         # 运行期不静默截断（P0-13）：写入拒绝 + 转投 consolidate，等压缩后再写
+        from codegenx.ai_service.memory import metrics as _metrics
+        _metrics.inc_write_rejected("hot_full")
         log.error(
             "hot 层达到条数硬上限({}/{}),拒绝写入并转投 consolidate: {}",
             count, hot_max_entries, entry.summary[:60],
@@ -140,6 +142,9 @@ async def upsert_hot_slot(
             _insert_params(entry),
         )
         await session.commit()
+        # P1-1 写时 DEL：hot 变更后下次读触发缓存重建
+        from codegenx.ai_service.memory import hot_cache
+        await hot_cache.invalidate(str(app_id), str(user_id))
         return int(cur.lastrowid or 0)
 
 
@@ -215,6 +220,9 @@ async def mark_inactive(
             },
         )
         await session.commit()
+        # 可能涉及 hot 行（conflict_detect/人工撤销走这里），写时 DEL 缓存
+        from codegenx.ai_service.memory import hot_cache
+        await hot_cache.invalidate(str(app_id), str(user_id))
         return int(cur.rowcount or 0)
 
 
@@ -276,8 +284,8 @@ async def search_summary_keyword(
 async def batch_touch_hit(app_id: str, user_id: str, ids: list[int]) -> None:
     """召回命中登记：hit_count+1、last_hit_at=NOW()（衰减与软删依据）。
 
-    过渡实现：检索链路内同步刷回（单用户 ≤k 行，热点可控）；
-    P1-7 改为 Redis Hash 聚合 + 定时批量刷回。失败静默（非致命）。
+    P1-7 后仅作 Redis 不可用时的兜底路径（hit_buffer.record_hits 的降级分支）；
+    常规路径是 Redis Hash 聚合 + 定时批量刷回。失败静默（非致命）。
     """
     if not ids:
         return
@@ -293,6 +301,70 @@ async def batch_touch_hit(app_id: str, user_id: str, ids: list[int]) -> None:
             await session.commit()
     except Exception as exc:  # noqa: BLE001 — 命中登记失败不影响检索
         log.debug("batch_touch_hit 失败（非致命）:{}", exc)
+
+
+async def apply_hit_flush(app_id: str, user_id: str, hits: dict[str, tuple[int, str]]) -> int:
+    """P1-7 刷回落地：按 memory_id 批量回写聚合命中（count, last_hit ISO）。
+
+    hits: {memory_id: (增量次数, ISO 时间戳)}。逐行 UPDATE（单租户一批 ≤ 若干百行）。
+    返回成功行数；调用方保证仅在整批成功后 DEL 缓存键。
+    """
+    if not hits:
+        return 0
+    done = 0
+    async with session_maker() as session:
+        for memory_id, (count, hit_at) in hits.items():
+            try:
+                cur = await session.execute(
+                    text(
+                        "UPDATE agent_memory SET hit_count = hit_count + :c, last_hit_at = :ts "
+                        "WHERE app_id = :a AND user_id = :u AND memory_id = :m"
+                    ),
+                    {
+                        "c": int(count),
+                        "ts": _iso_to_dt(hit_at),
+                        "a": str(app_id), "u": str(user_id), "m": memory_id,
+                    },
+                )
+                done += int(cur.rowcount or 0)
+            except Exception as exc:  # noqa: BLE001 — 单行失败不影响其余行
+                log.warning("[hit_flush] 行刷回失败 memory_id={}: {}", memory_id, exc)
+        await session.commit()
+    return done
+
+
+def _iso_to_dt(ts: str):
+    """ISO 字符串 → MySQL DATETIME 字面量；坏值返回 None（保持原 last_hit_at 不动）。"""
+    if not ts:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+async def sample_active_warm(limit: int = 100) -> list[MemoryEntry]:
+    """P1-5 抽检：随机采样 active warm 记忆（用 summary 自检索验证索引健康）。
+
+    全局采样（不分租户）；ORDER BY RAND() 在当前体量（单表万级）可接受。
+    """
+    async with session_maker() as session:
+        rows = (
+            (
+                await session.execute(
+                    text(
+                        f"SELECT {_ROW_COLS} FROM agent_memory "
+                        "WHERE memory_layer = 2 AND status = 1 "
+                        "ORDER BY RAND() LIMIT :l"
+                    ),
+                    {"l": int(limit)},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return _rows_to_entries(rows)
 
 
 # ── 向量同步队列（设计 §4.7：vector_synced_at IS NULL 即待办队列）───────────────
@@ -488,7 +560,9 @@ async def compliance_hard_delete(app_id: str, user_id: str, ids: list[int]) -> i
             {"ids": tuple(int(i) for i in ids), "a": str(app_id), "u": str(user_id)},
         )
         await session.commit()
-        return int(cur.rowcount or 0)
+    from codegenx.ai_service.memory import hot_cache
+    await hot_cache.invalidate(str(app_id), str(user_id))
+    return int(cur.rowcount or 0)
 
 
 async def compliance_soft_delete_redact(app_id: str, user_id: str, ids: list[int]) -> int:
@@ -511,7 +585,9 @@ async def compliance_soft_delete_redact(app_id: str, user_id: str, ids: list[int
             {"c": redacted, "ids": tuple(int(i) for i in ids), "a": str(app_id), "u": str(user_id)},
         )
         await session.commit()
-        return int(cur.rowcount or 0)
+    from codegenx.ai_service.memory import hot_cache
+    await hot_cache.invalidate(str(app_id), str(user_id))
+    return int(cur.rowcount or 0)
 
 
 async def count_active(app_id: str, user_id: str) -> int:

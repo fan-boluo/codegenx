@@ -1,16 +1,23 @@
 """
 记忆离线任务 scheduler —— 常驻单消费者循环。
 
-职责（设计方案 v2.1 §4/§6/§7）：
+职责（设计方案 v2.1 §4/§6/§7/§11-P1）：
 1. 从 memory_task 表领取到期任务，按类型分发执行：
    - warm_extract:       水位增量读对话（chat_message 表）→ 小模型提取候选
                          → 准入校验 → 分层落库（hot upsert / warm append）→ 推进水位
    - consolidate:        每日整理（warm 精确重复合并；hot 压缩为 P2-2）
    - decay_archive:      warm 30 天未命中软删 / 90 天归档（导出 + Qdrant 物理删除）
-   - sync_check:         MySQL 真源 ↔ Qdrant 双向对账（补写缺失 + 清理幽灵）
+   - sync_check:         MySQL 真源 ↔ Qdrant 双向对账 + 抽检 + 进度回写
    - compliance_delete:  合规删除级联（MySQL → Qdrant，见 memory/compliance.py）
-2. 失败退避重试（1m/5m/30m，超限置 dead），任务语义 at-least-once
-3. LLM 资源管控：独立小模型 + 信号量并发上限 + 在线让位（有活跃会话先让 1 秒）
+   - conflict_detect:    每日异步矛盾检测（P1-9：全量 hot 两两比对，保留新者）
+2. 内嵌周期作业（P1-3/P1-4/P1-6/P1-7）：
+   - 每 30s  向量同步 Worker：vector_synced_at IS NULL 队列批量补写
+   - 每 60s  卡死回收巡检：running 超 10 分钟复位 pending；顺带刷新 dead 指标
+   - 每 60s  兜底扫描：漏斗有积压信号且超时的会话补投 warm_extract
+   - 每 5min 命中刷回：Redis mem:hit:* Hash 批量回写 MySQL（P1-7）
+3. 任务执行带心跳（touch_running），防长任务被卡死回收误杀
+4. 失败退避重试（1m/5m/30m，超限置 dead），任务语义 at-least-once
+5. LLM 资源管控：独立小模型 + 信号量并发上限 + 在线让位（有活跃会话先让 1 秒）
 
 生命周期由 services/agent_adapter_service.py 管理：
 - startup: task_store.recover_running()（崩溃恢复）→ ensure_warm_collection → worker.start()
@@ -29,9 +36,13 @@ from shared import log
 
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.llm.async_client import AsyncLLMClient
+from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.prompts import (
+    MEMORY_CONFLICT_SYSTEM_PROMPT,
     MEMORY_EXTRACT_SYSTEM_PROMPT,
+    format_constraints_for_conflict,
     format_conversation_for_extract,
+    parse_conflict_pairs,
     parse_extracted_memories,
 )
 from codegenx.ai_service.memory.writer import write_memories
@@ -43,15 +54,21 @@ from codegenx.ai_service.schedule.memory_task_store import (
     TASK_DECAY_ARCHIVE,
     TASK_SYNC_CHECK,
     TASK_COMPLIANCE_DELETE,
+    TASK_CONFLICT_DETECT,
 )
 
 # 单次提取消费的消息量上限（防止单任务过大拖垮小模型）
 _MAX_MESSAGES_PER_EXTRACT = 80
 _MESSAGE_TEXT_LIMIT = 600
 
+# 内嵌周期作业间隔（秒）
+_VECTOR_SYNC_INTERVAL = 30.0     # P1-4 向量同步 Worker
+_PATROL_INTERVAL = 60.0          # P1-3 卡死回收 + 兜底扫描 + dead 指标
+_HIT_FLUSH_INTERVAL = 300.0      # P1-7 命中刷回
+
 
 class MemoryScheduler:
-    """记忆离线任务调度器（单消费者）。
+    """记忆离线任务调度器（单消费者 + 内嵌周期作业）。
 
     用法（agent_adapter_service）:
         scheduler = get_memory_scheduler()
@@ -78,6 +95,10 @@ class MemoryScheduler:
         self._sem = asyncio.Semaphore(config.memory.store.extract_max_concurrency or 2)
         self._stop = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
+        # 周期作业上次执行时刻
+        self._last_vector_sync = 0.0
+        self._last_patrol = 0.0
+        self._last_hit_flush = 0.0
 
     # === 生命周期 ===
 
@@ -112,11 +133,23 @@ class MemoryScheduler:
     # === 消费循环 ===
 
     async def _run_loop(self) -> None:
-        """单消费者主循环：每日调度检查 → 领取 → 逐个执行 → 空闲轮询。"""
+        """单消费者主循环：周期作业 → 每日调度检查 → 领取 → 逐个执行 → 空闲轮询。"""
         last_schedule_check = 0.0
         while not self._stop.is_set():
             try:
                 now = time.time()
+
+                # ── 内嵌周期作业（P1-3/P1-4/P1-7，各自容错不退出循环）────────────
+                if now - self._last_vector_sync >= _VECTOR_SYNC_INTERVAL:
+                    self._last_vector_sync = now
+                    await self._run_vector_sync()
+                if now - self._last_patrol >= _PATROL_INTERVAL:
+                    self._last_patrol = now
+                    await self._run_patrol()
+                if now - self._last_hit_flush >= _HIT_FLUSH_INTERVAL:
+                    self._last_hit_flush = now
+                    await self._run_hit_flush()
+
                 # 每分钟最多检查一次日调度（廉价查询）
                 if now - last_schedule_check >= 60:
                     last_schedule_check = now
@@ -136,8 +169,65 @@ class MemoryScheduler:
                 log.error("MemoryScheduler 循环异常\n{}", traceback.format_exc())
                 await asyncio.wait(self._stop.wait(), timeout=self._poll_interval)
 
+    # === 周期作业 ===
+
+    async def _run_vector_sync(self) -> None:
+        """P1-4 向量同步 Worker 单轮（批量 embedding + 批量 upsert）。"""
+        try:
+            from codegenx.ai_service.memory.sync import run_forward_sync_batch
+            pushed = await run_forward_sync_batch()
+            if pushed:
+                log.debug("[vector_sync] 推送 {} 个点位", pushed)
+        except Exception as exc:  # noqa: BLE001 — 失败留队列自动重试
+            log.warning("[vector_sync] 批次失败（vector_synced_at 保持 NULL，下轮重试）: {}", exc)
+
+    async def _run_patrol(self) -> None:
+        """P1-3 巡检：卡死回收 + dead 指标 + 漏斗兜底扫描。"""
+        try:
+            reclaimed = await self.tasks.reclaim_stuck(timeout_sec=600)
+            metrics.inc_stuck_reclaimed(reclaimed)
+            if reclaimed:
+                log.warning("[patrol] 卡死回收：{} 个 running 任务复位 pending", reclaimed)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[patrol] 卡死回收失败: {}", exc)
+        try:
+            stats = await self.tasks.stats()
+            metrics.set_task_dead(int(stats.get("dead", 0)))
+        except Exception:  # noqa: BLE001 — 指标失败无关业务
+            pass
+        # P1-2 兜底扫描：投递前崩溃的会话补投（§4.1）
+        try:
+            stale_minutes = config.memory.trigger.stale_scan_minutes or 15
+            stale = await self.tasks.scan_stale_pending(minutes=stale_minutes, limit=20)
+            for row in stale:
+                enqueued = await self.tasks.enqueue(
+                    TASK_WARM_EXTRACT,
+                    app_id=str(row.get("app_id") or ""),
+                    session_id=str(row.get("session_id") or ""),
+                    user_id=str(row.get("user_id") or ""),
+                    dedup=True,
+                )
+                if enqueued is not None:
+                    metrics.inc_extract_triggered("stale_scan")
+                    log.info(
+                        "[patrol] 兜底补投 warm_extract: 会话 {}（积压 signals={} tokens={}）",
+                        row.get("session_id"), row.get("pending_signals"), row.get("pending_tokens"),
+                    )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[patrol] 兜底扫描失败: {}", exc)
+
+    async def _run_hit_flush(self) -> None:
+        """P1-7 命中刷回：Redis Hash 聚合 → 批量回写 MySQL → DEL。"""
+        try:
+            from codegenx.ai_service.memory.hit_buffer import flush_all
+            flushed = await flush_all()
+            if flushed:
+                log.debug("[hit_flush] 刷回 {} 条命中", flushed)
+        except Exception as exc:  # noqa: BLE001 — 缓冲保留，下轮重试
+            log.debug("[hit_flush] 刷回失败（缓冲保留）: {}", exc)
+
     async def _schedule_daily_tasks(self) -> None:
-        """每日定时登记：consolidate（跨会话整理）+ decay_archive（衰减归档）。"""
+        """每日定时登记：consolidate / decay_archive / sync_check / conflict_detect。"""
         hour = datetime.now().hour
         trigger_hour = config.memory.store.consolidate_hour or 3
         if hour >= trigger_hour:
@@ -150,16 +240,48 @@ class MemoryScheduler:
             if not await self.tasks.sync_scheduled_today():
                 await self.tasks.enqueue(TASK_SYNC_CHECK, app_id="*")
                 log.info("已登记今日双数据源对账任务（sync_check）")
+            # P1-9 矛盾检测：按租户投递（幂等键 app:user:日期，天然防重）
+            if not await self.tasks.conflict_scheduled_today():
+                enqueued = await self._enqueue_conflict_detect_all()
+                if enqueued:
+                    log.info("已登记今日矛盾检测任务（conflict_detect）× {} 租户", enqueued)
+
+    async def _enqueue_conflict_detect_all(self) -> int:
+        today = datetime.now().strftime("%Y-%m-%d")
+        enqueued = 0
+        try:
+            from codegenx.ai_service.memory.memory_store import list_tenants
+            tenants = await list_tenants()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[conflict_detect] 租户枚举失败: {}", exc)
+            return 0
+        for app_id, user_id in tenants:
+            try:
+                task_id = await self.tasks.enqueue(
+                    TASK_CONFLICT_DETECT,
+                    app_id=app_id,
+                    user_id=user_id,
+                    idempotency_key=f"{app_id}:{user_id}:{today}",
+                )
+                if task_id is not None:
+                    enqueued += 1
+            except Exception:  # noqa: BLE001 — 同键已投过（uk_idempotency 冲突）直接跳过
+                continue
+        return enqueued
+
+    # === 任务执行 ===
 
     async def _process(self, task: dict) -> None:
-        """执行单个任务；失败走 mark_failed 退避重试。"""
+        """执行单个任务：带心跳防误回收；失败走 mark_failed 退避重试。"""
         task_id = task["id"]
         task_type = task["task_type"]
+        app_id = str(task.get("app_id") or "")
         started = time.time()
+        heartbeat = asyncio.create_task(self._heartbeat_loop(task_id))
         try:
-            produced = 0
+            produced, result_payload = 0, None
             if task_type == TASK_WARM_EXTRACT:
-                produced = await self._do_warm_extract(task)
+                produced, result_payload = await self._do_warm_extract(task)
             elif task_type == TASK_CONSOLIDATE:
                 await self._do_consolidate(task)
             elif task_type == TASK_DECAY_ARCHIVE:
@@ -168,39 +290,76 @@ class MemoryScheduler:
                 produced = await self._do_sync_check(task)
             elif task_type == TASK_COMPLIANCE_DELETE:
                 await self._do_compliance_delete(task)
+            elif task_type == TASK_CONFLICT_DETECT:
+                produced = await self._do_conflict_detect(task)
             else:
                 raise ValueError(f"未知任务类型: {task_type}")
-            await self.tasks.mark_done(task_id, produced_count=int(produced or 0))
+            await self.tasks.mark_done(
+                task_id, produced_count=int(produced or 0), result_payload=result_payload
+            )
+            if task_type == TASK_WARM_EXTRACT:
+                metrics.inc_extract(app_id, "ok")
+                metrics.observe_extract_latency(app_id, time.time() - started)
             log.debug("任务 #{} {} 完成，耗时 {:.1f}s", task_id, task_type, time.time() - started)
         except Exception as exc:  # noqa: BLE001
             status = await self.tasks.mark_failed(task_id, f"{type(exc).__name__}: {exc}")
+            if task_type == TASK_WARM_EXTRACT:
+                metrics.inc_extract(app_id, "dead" if status == "dead" else "failed")
             log.warning(
                 "任务 #{} {} 失败（第 {} 次）: {} → {}",
                 task_id, task_type, task.get("retry_count", 0) + 1, exc, status,
             )
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+
+    async def _heartbeat_loop(self, task_id: int) -> None:
+        """§7.4 心跳：每 30s touch updated_at，防长任务被卡死回收巡检复位。"""
+        while True:
+            await asyncio.sleep(30.0)
+            try:
+                await self.tasks.touch_running(task_id)
+            except Exception:  # noqa: BLE001 — 心跳失败不中断任务
+                pass
 
     # === 任务实现 ===
 
-    async def _do_warm_extract(self, task: dict) -> int:
+    async def _do_warm_extract(self, task: dict) -> tuple[int, dict | None]:
         """增量提取：水位 → 完整轮次 → 小模型提取 → 准入校验分层落库 → 推进水位。
 
         只消费「以 assistant 收尾的完整轮次」：assistant 消息在 turn 结束后才入库，
         半截对话留在水位之后，等下个任务与后续轮次合并提取。
-        返回落库记忆条数（任务审计 produced_count）。
+        会话锁（P1-6）：同会话并发提炼互斥；抢不到锁无过错重排（不计失败）。
+        返回 (落库记忆条数, 任务审计 payload)。
         """
         app_id = str(task.get("app_id") or "")
         session_id = str(task.get("session_id") or "")
         user_id = str(task.get("user_id") or "")
         if not app_id or not session_id:
             log.warning("[warm_extract] 任务缺少 app_id/session_id，跳过: #{}", task["id"])
-            return
+            return 0, None
 
+        # P1-6 会话锁：抢不到说明同会话在途，60s 后重试（reschedule 不计失败）
+        from codegenx.ai_service.memory import locks
+        token = await locks.acquire(session_id)
+        if token is None:
+            await self.tasks.reschedule(task["id"], delay_sec=60.0)
+            return 0, None
+        try:
+            return await self._warm_extract_locked(task, app_id, session_id, user_id)
+        finally:
+            await locks.release(session_id, token)
+
+    async def _warm_extract_locked(
+        self, task: dict, app_id: str, session_id: str, user_id: str
+    ) -> tuple[int, dict | None]:
         # 1. 水位增量读取（chat_message 表为源，按 seq 递增）
         from codegenx.ai_service.chat_message import get_chat_message_store
         last_seq = await self.tasks.get_watermark(session_id)
         records = await get_chat_message_store().read_since(session_id, after_seq=last_seq)
         if not records:
-            return 0
+            return 0, None
 
         # 2. 截到「以 assistant 收尾」的完整前缀；超过单次上限的留待下次
         consumed: list[tuple[int, dict]] = []
@@ -208,16 +367,17 @@ class MemoryScheduler:
             if rec[1].get("role") == "assistant":
                 consumed = records[: i + 1]
         if not consumed:
-            return 0  # 末尾没有完整轮次
+            return 0, None  # 末尾没有完整轮次
         if len(consumed) > _MAX_MESSAGES_PER_EXTRACT:
             consumed = consumed[-_MAX_MESSAGES_PER_EXTRACT:]
             # 截断后必须仍以 assistant 收尾，否则本轮只读不推进
             while consumed and consumed[-1][1].get("role") != "assistant":
                 consumed.pop()
             if not consumed:
-                return 0
+                return 0, None
 
         # 3. 小模型提取候选记忆
+        started = time.time()
         turns_text = _render_messages([m for _, m in consumed])
         raw = await self._invoke_llm(
             messages=[
@@ -229,28 +389,40 @@ class MemoryScheduler:
         candidates = parse_extracted_memories(raw)
 
         # 4. 准入校验 + 分层落库（MySQL 真源先行，warm 向量层批量跟进）
-        written = 0
+        written_ids: list[str] = []
         if candidates:
-            written = await write_memories(user_id, app_id, session_id, candidates, self._invoke_llm)
-            if written:
-                log.info("[warm_extract] 会话 {} 写入 {} 条记忆", session_id, written)
+            written_ids = await write_memories(user_id, app_id, session_id, candidates, self._invoke_llm)
+            if written_ids:
+                log.info("[warm_extract] 会话 {} 写入 {} 条记忆", session_id, len(written_ids))
 
         # 5. 推进水位到消费到的最后一条 seq；LLM 失败已抛异常走重试，水位不动
-        await self.tasks.advance_watermark(session_id, app_id, user_id, consumed[-1][0])
-        return written
+        consumed_seq = consumed[-1][0]
+        await self.tasks.advance_watermark(session_id, app_id, user_id, consumed_seq)
+
+        # 任务审计（§4.2 ⑥ payload 回填：不含对话内容，只含元数据）
+        payload = {
+            "model": config.memory.store.model_name or config.get_default_model(),
+            "cost_ms": int((time.time() - started) * 1000),
+            "consumed_seq": consumed_seq,
+            "memory_ids": written_ids,
+        }
+        return len(written_ids), payload
 
     async def _do_consolidate(self, task: dict) -> None:
         """每日跨会话整理：全 app 近似去重合并（idle 时段运行，不耗 LLM）。"""
         from codegenx.ai_service.memory.lifecycle import consolidate_all_apps
-        await consolidate_all_apps()
+        merged = await consolidate_all_apps()
+        metrics.inc_consolidate_merged(int(merged or 0))
 
     async def _do_decay_archive(self, task: dict) -> None:
         """衰减归档：30 天未访问软删除 + 90 天归档（jsonl→zip + Qdrant 删除）。"""
         from codegenx.ai_service.memory.lifecycle import decay_and_archive_all_apps
-        await decay_and_archive_all_apps()
+        soft_deleted, archived = await decay_and_archive_all_apps()
+        metrics.inc_archived("soft_delete", int(soft_deleted or 0))
+        metrics.inc_archived("archive", int(archived or 0))
 
     async def _do_sync_check(self, task: dict) -> int:
-        """双数据源对账：MySQL 真源 ↔ Qdrant 双向（补写缺失 + 清理幽灵）。"""
+        """双数据源对账：MySQL 真源 ↔ Qdrant 双向（补写缺失 + 清理幽灵）+ 抽检。"""
         from codegenx.ai_service.memory.sync import reconcile_all_apps
         return await reconcile_all_apps(self._invoke_llm)
 
@@ -269,6 +441,65 @@ class MemoryScheduler:
             request_id=str(payload.get("request_id") or ""),
         )
         log.info("[compliance_delete] 任务 #{} 完成: scope={} deleted={}", task["id"], scope, deleted)
+
+    async def _do_conflict_detect(self, task: dict) -> int:
+        """P1-9 每日矛盾检测（§4.6）：全量 active hot 两两 LLM 比对。
+
+        命中冲突 → 保留 created_at 更新的一条，旧的 markInactive(superseded)，
+        审计日志不含内容。检测结果不影响写入（异步兜底定位）。
+        """
+        app_id = str(task.get("app_id") or "")
+        user_id = str(task.get("user_id") or "")
+        from codegenx.ai_service.memory.hot_store import load_hot_entries
+        entries = await load_hot_entries(app_id, user_id)
+        if len(entries) < 2:
+            return 0
+
+        numbered = [e.inject_text()[:200] for e in entries]
+        raw = await self._invoke_llm(
+            messages=[
+                {"role": "system", "content": MEMORY_CONFLICT_SYSTEM_PROMPT},
+                {"role": "user", "content": format_constraints_for_conflict(numbered)},
+            ],
+            max_tokens=512,
+        )
+        pairs = parse_conflict_pairs(raw)
+        if not pairs:
+            return 0
+
+        from codegenx.ai_service.memory.models import STATUS_SUPERSEDED
+        from codegenx.ai_service.memory.memory_store import mark_inactive
+
+        resolved = 0
+        for a_str, b_str in pairs:
+            try:
+                ia, ib = int(a_str) - 1, int(b_str) - 1
+            except ValueError:
+                continue
+            if not (0 <= ia < len(entries) and 0 <= ib < len(entries)) or ia == ib:
+                continue
+            newer, older = entries[ia], entries[ib]
+            if older.created_at > newer.created_at:  # ISO 字面量字典序即时间序
+                newer, older = older, newer
+            changed = await mark_inactive(
+                app_id, user_id, [older.memory_id],
+                STATUS_SUPERSEDED, superseded_by=newer.memory_id,
+            )
+            if changed:
+                resolved += 1
+                # 审计（§10.2：不含 summary/content）
+                metrics.log_event(
+                    "conflict_resolved",
+                    app_id=app_id, user_id=user_id,
+                    removed_memory_id=older.memory_id, kept_memory_id=newer.memory_id,
+                    task_id=task["id"],
+                )
+        if resolved:
+            log.warning(
+                "[conflict_detect] {}/{} 解决 {} 对冲突（保留新者，旧者置 superseded）",
+                app_id, user_id, resolved,
+            )
+        return resolved
 
     # === LLM 调用（小模型 + 并发管控）===
 

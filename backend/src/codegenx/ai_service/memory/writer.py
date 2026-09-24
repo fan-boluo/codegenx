@@ -17,6 +17,7 @@ from typing import Awaitable, Callable
 
 from shared import log
 from codegenx.ai_service.utils.config import config
+from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.models import (
     MemoryEntry,
     LAYER_HOT,
@@ -63,18 +64,19 @@ async def write_memories(
     session_id: str,
     candidates: list[dict],
     llm_invoke=None,
-) -> int:
-    """批量写入候选记忆，返回实际落库条数。单条失败跳过，不阻断整批。
+) -> list[str]:
+    """批量写入候选记忆，返回实际落库的 memory_id 列表（len 即条数）。
 
+    单条失败跳过，不阻断整批。
     Args:
         llm_invoke: 兼容 scheduler 签名保留，v2 写入链路不使用。
     """
     if not candidates:
-        return 0
+        return []
     store_cfg = config.memory.store
     hot_max = int(getattr(store_cfg, "hot_max_entries", 80) or 80)
 
-    written = 0
+    written_ids: list[str] = []
     warm_entries: list[MemoryEntry] = []
     for cand in candidates:
         try:
@@ -90,12 +92,11 @@ async def write_memories(
                 )
                 if not new_id:
                     continue  # 硬上限拒绝（已 ERROR 日志 + 转投任务）
-                written += 1
             else:
                 new_id = await append_warm(app_id, user_id, entry)
                 entry.id = new_id
                 warm_entries.append(entry)
-                written += 1
+            written_ids.append(entry.memory_id)
         except Exception as exc:  # noqa: BLE001 — 单条失败不阻断整批
             log.error("记忆写入单条失败（跳过）: {} | {}", exc, str(cand)[:120])
 
@@ -108,24 +109,28 @@ async def write_memories(
             await upsert_points(warm_entries, vectors)
             await mark_vector_synced([e.id for e in warm_entries])
         except Exception as exc:  # noqa: BLE001
-            log.warning("warm 向量批量同步失败（vector_synced_at 留 NULL，待 sync_check 修复）:{}", exc)
+            metrics.inc_degrade("qdrant")
+            log.warning("warm 向量批量同步失败（vector_synced_at 留 NULL，待对账补写）:{}", exc)
 
-    return written
+    return written_ids
 
 
 def _build_entry(user_id: str, app_id: str, session_id: str, cand: dict) -> MemoryEntry | None:
-    """单条候选 → MemoryEntry；准入校验不过返回 None（原因已日志）。"""
+    """单条候选 → MemoryEntry；准入校验不过返回 None（拒绝原因打点，§10.1）。"""
     content = str(cand.get("content", "") or "").strip()
     if not content:
+        metrics.inc_write_rejected("empty")
         return None
     memory_type = str(cand.get("memory_type", "") or "").strip()
     if memory_type not in BUILTIN_MEMORY_TYPES:
+        metrics.inc_write_rejected("type")
         log.warning("未知记忆类型，拒绝写入（宁缺毋滥）: {}", memory_type)
         return None
 
     hit = match_sensitive(content)
     if hit:
-        # §10.1 memory.write.rejected_sensitive（指标埋点为 P1-12，先日志计数）
+        # §10.1 memory.write.rejected_sensitive
+        metrics.inc_write_rejected("sensitive")
         log.warning("候选记忆含敏感信息({}),拦截: {}", hit, content[:40])
         return None
 
@@ -135,6 +140,7 @@ def _build_entry(user_id: str, app_id: str, session_id: str, cand: dict) -> Memo
 
     # §4.3：模型推断不得进 hot 层（hot 只收用户明说/人工录入）
     if layer == LAYER_HOT and source_type == SOURCE_INFERRED:
+        metrics.inc_write_rejected("inferred_hot")
         log.warning("模型推断的 hot 类候选被拒（推断不得进 hot 层）: {}", memory_type)
         return None
 

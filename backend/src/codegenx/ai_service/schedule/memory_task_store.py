@@ -30,6 +30,7 @@ TASK_CONSOLIDATE = "consolidate"
 TASK_DECAY_ARCHIVE = "decay_archive"
 TASK_SYNC_CHECK = "sync_check"
 TASK_COMPLIANCE_DELETE = "compliance_delete"
+TASK_CONFLICT_DETECT = "conflict_detect"  # P1-9：每日异步矛盾检测
 
 # 失败退避序列（秒）：第 n 次失败后等待 backoffs[n-1] 再重试
 RETRY_BACKOFFS = (60.0, 300.0, 1800.0)
@@ -133,17 +134,74 @@ class MemoryTaskStore:
             t["payload"] = self._parse_payload(t.get("payload"))
         return tasks
 
-    async def mark_done(self, task_id: int, produced_count: int = 0) -> None:
-        """完成（produced_count 回填产出记忆条数，批次审计用）。"""
+    async def mark_done(
+        self, task_id: int, produced_count: int = 0, result_payload: dict | None = None
+    ) -> None:
+        """完成（produced_count 审计 + payload JSON_MERGE_PATCH 回填执行结果，§4.2 ⑥）。"""
+        async with session_maker() as session:
+            if result_payload:
+                await session.execute(
+                    text(
+                        "UPDATE memory_task SET status = 'done', produced_count = :pc, "
+                        "last_error = NULL, "
+                        "payload = JSON_MERGE_PATCH(COALESCE(payload, '{}'), :rp) "
+                        "WHERE id = :i"
+                    ),
+                    {
+                        "i": task_id, "pc": int(produced_count),
+                        "rp": json.dumps(result_payload, ensure_ascii=False, default=str),
+                    },
+                )
+            else:
+                await session.execute(
+                    text(
+                        "UPDATE memory_task SET status = 'done', produced_count = :pc, last_error = NULL "
+                        "WHERE id = :i"
+                    ),
+                    {"i": task_id, "pc": int(produced_count)},
+                )
+            await session.commit()
+
+    async def reschedule(self, task_id: int, delay_sec: float = 60.0) -> None:
+        """无过错重排（如会话锁被占）：保持 pending，延后领取，不计失败次数。"""
         async with session_maker() as session:
             await session.execute(
                 text(
-                    "UPDATE memory_task SET status = 'done', produced_count = :pc, last_error = NULL "
-                    "WHERE id = :i"
+                    "UPDATE memory_task SET status = 'pending', next_run_at = :n WHERE id = :i"
                 ),
-                {"i": task_id, "pc": int(produced_count)},
+                {"i": task_id, "n": int(time.time() + delay_sec)},
             )
             await session.commit()
+
+    async def touch_running(self, task_id: int) -> None:
+        """长任务心跳（§7.4）：仅刷新 updated_at，防止被卡死回收巡检误杀。"""
+        async with session_maker() as session:
+            await session.execute(
+                text(
+                    "UPDATE memory_task SET updated_at = NOW() "
+                    "WHERE id = :i AND status = 'running'"
+                ),
+                {"i": task_id},
+            )
+            await session.commit()
+
+    async def reclaim_stuck(self, timeout_sec: int = 600) -> int:
+        """卡死回收（§7.4）：running 且 updated_at 超时的任务复位 pending。
+
+        Worker 崩溃会让任务永久停在 running；巡检每分钟跑一次。
+        返回复位行数（P1-12 指标 memory.task.stuck_reclaimed）。
+        """
+        async with session_maker() as session:
+            cur = await session.execute(
+                text(
+                    "UPDATE memory_task SET status = 'pending', next_run_at = :n "
+                    "WHERE status = 'running' "
+                    "AND updated_at < DATE_SUB(NOW(), INTERVAL :t SECOND)"
+                ),
+                {"n": int(time.time()), "t": int(timeout_sec)},
+            )
+            await session.commit()
+            return int(cur.rowcount or 0)
 
     async def mark_failed(self, task_id: int, error: str, backoffs: tuple = RETRY_BACKOFFS) -> str:
         """失败退避：回 pending 延迟重试；超限置 dead。返回处理后的状态。"""
@@ -209,6 +267,10 @@ class MemoryTaskStore:
         """今天是否已登记过 sync_check。"""
         return await self._scheduled_today("sync_check")
 
+    async def conflict_scheduled_today(self) -> bool:
+        """今天是否已登记过 conflict_detect（P1-9）。"""
+        return await self._scheduled_today("conflict_detect")
+
     async def _scheduled_today(self, task_type: str) -> bool:
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         async with session_maker() as session:
@@ -236,17 +298,88 @@ class MemoryTaskStore:
             ).first()
         return int(row[0] or 0) if row else 0
 
+    async def get_watermark_full(self, session_id: str) -> dict | None:
+        """读取完整水位状态（漏斗触发判断用）。"""
+        async with session_maker() as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT last_seq, pending_signals, pending_tokens, last_extract_at "
+                            "FROM memory_watermark WHERE session_id = :s"
+                        ),
+                        {"s": session_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row else None
+
+    async def bump_pending(
+        self, session_id: str, app_id: str, user_id: str,
+        signals: int, tokens: int,
+    ) -> dict | None:
+        """P1-2 第一级：累加轻量信号计数（upsert 原子自增），返回累加后状态。
+
+        只动 pending_* 计数，不碰 last_seq（消费位点唯一写者是提炼 Worker，
+        见 memory/trigger.py 的偏差说明）。
+        """
+        async with session_maker() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO memory_watermark "
+                    "(session_id, app_id, user_id, last_seq, pending_signals, pending_tokens) "
+                    "VALUES (:s, :a, :u, 0, :sg, :tk) "
+                    "ON DUPLICATE KEY UPDATE "
+                    "pending_signals = pending_signals + VALUES(pending_signals), "
+                    "pending_tokens = pending_tokens + VALUES(pending_tokens)"
+                ),
+                {
+                    "s": session_id, "a": str(app_id), "u": str(user_id or ""),
+                    "sg": max(0, int(signals)), "tk": max(0, int(tokens)),
+                },
+            )
+            await session.commit()
+        return await self.get_watermark_full(session_id)
+
+    async def scan_stale_pending(self, minutes: int, limit: int = 50) -> list[dict]:
+        """P1-2 兜底扫描：有积压信号且超时未处理的会话（投递前崩溃补投，§4.1）。"""
+        async with session_maker() as session:
+            rows = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT session_id, app_id, user_id, pending_signals, pending_tokens "
+                            "FROM memory_watermark "
+                            "WHERE (pending_signals > 0 OR pending_tokens > 0) "
+                            "AND updated_at < DATE_SUB(NOW(), INTERVAL :m MINUTE) "
+                            "ORDER BY updated_at LIMIT :l"
+                        ),
+                        {"m": int(minutes), "l": int(limit)},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
     async def advance_watermark(
         self, session_id: str, app_id: str, user_id: str, last_seq: int
     ) -> None:
-        """推进水位（upsert）。只在提取成功后调用，保证崩溃可续提。"""
+        """推进水位并清零漏斗计数（§4.2 ⑥，仅在提取成功后调用）。
+
+        pending_signals/pending_tokens 归零 + last_extract_at=NOW()；
+        崩溃在推进前则计数保留，重试覆盖同一区间（幂等）。
+        """
         async with session_maker() as session:
             await session.execute(
                 text(
                     "INSERT INTO memory_watermark "
                     "(session_id, app_id, user_id, last_seq) "
                     "VALUES (:s, :a, :u, :l) "
-                    "ON DUPLICATE KEY UPDATE last_seq = :l"
+                    "ON DUPLICATE KEY UPDATE last_seq = :l, "
+                    "pending_signals = 0, pending_tokens = 0, last_extract_at = NOW()"
                 ),
                 {
                     "s": session_id,
@@ -283,6 +416,39 @@ class MemoryTaskStore:
                     "ON DUPLICATE KEY UPDATE last_entry_id = :e"
                 ),
                 {"u": str(user_id or ""), "a": str(app_id), "sc": scope, "e": last_entry_id},
+            )
+            await session.commit()
+
+    async def record_reconcile(
+        self,
+        app_id: str,
+        user_id: str,
+        scope: str,
+        last_entry_id: str = "",
+        scanned_rows: int = 0,
+        missing_found: int = 0,
+        ghost_found: int = 0,
+    ) -> None:
+        """P1-5 对账进度回写（§7.3 ④）：last_reconcile_at=NOW() + 统计列。
+
+        checkpoint 只做断点续跑与审计，不承担同步正确性（正确性由
+        vector_synced_at 行级队列保证）。
+        """
+        async with session_maker() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO memory_sync_checkpoint "
+                    "(user_id, app_id, scope, last_entry_id, last_reconcile_at, "
+                    " scanned_rows, missing_found, ghost_found) "
+                    "VALUES (:u, :a, :sc, :e, NOW(), :sr, :mf, :gf) "
+                    "ON DUPLICATE KEY UPDATE last_entry_id = :e, last_reconcile_at = NOW(), "
+                    "scanned_rows = :sr, missing_found = :mf, ghost_found = :gf"
+                ),
+                {
+                    "u": str(user_id or ""), "a": str(app_id), "sc": scope,
+                    "e": last_entry_id, "sr": int(scanned_rows),
+                    "mf": int(missing_found), "gf": int(ghost_found),
+                },
             )
             await session.commit()
 

@@ -12,7 +12,7 @@ warm 层检索器 —— 向量召回 → 应用层重排 → 回表（设计方
      - decay = 0.5^(age_days / half_life)，age 按 COALESCE(last_hit_at, created_at)，
        half_life 按类型（memory_type_dict.half_life_d 的代码内镜像）
   5. token 预算窗口截断（warm 是概率性召回，少一条不影响正确性）
-  6. 命中登记（hit_count/last_hit_at；P1-7 改 Redis 聚合，现为同步批量刷回）
+  6. 命中登记（P1-7：Redis Hash 聚合，scheduler 每 5 分钟批量刷回 MySQL）
 
 Qdrant 不可用时向量通道降级为空，关键词通道仍可用（无 embedding 依赖）。
 """
@@ -24,11 +24,12 @@ from datetime import datetime, timezone
 
 from shared import log
 from codegenx.ai_service.utils.config import config
+from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.models import MemoryEntry, estimate_text_tokens, half_life_of
+from codegenx.ai_service.memory.embedding import get_embedding_client
 from codegenx.ai_service.memory.memory_store import (
     get_active_by_ids,
     search_summary_keyword,
-    batch_touch_hit,
 )
 from codegenx.ai_service.memory.vector_store import search_by_vector
 
@@ -96,17 +97,18 @@ async def search_warm(app_id: str, user_id: str, query: str) -> list[MemoryEntry
     async def _vector_channel() -> None:
         try:
             query_vector = await get_embedding_client().embed_query(query)
+            for pid, score in await search_by_vector(
+                app_id=app_id,
+                user_id=user_id,
+                query_vector=query_vector,
+                limit=int(getattr(cfg, "recall_top_n", 0) or cfg.top_k or 24),
+                score_threshold=cfg.score_threshold,
+            ):
+                semantic[pid] = score
         except Exception as exc:  # noqa: BLE001 — 向量通道失败降级，不影响关键词通道
-            log.warning("warm 向量通道 embedding 失败，仅用关键词通道:{}", exc)
+            metrics.inc_degrade("qdrant")
+            log.warning("warm 向量通道失败（embedding/Qdrant），仅用关键词通道:{}", exc)
             return
-        for pid, score in await search_by_vector(
-            app_id=app_id,
-            user_id=user_id,
-            query_vector=query_vector,
-            limit=cfg.top_k,
-            score_threshold=cfg.score_threshold,
-        ):
-            semantic[pid] = score
 
     keyword_query = build_keyword_query(query)
 
@@ -151,9 +153,10 @@ async def search_warm(app_id: str, user_id: str, query: str) -> list[MemoryEntry
         selected.append(entry)
         used += cost
 
-    # ── 命中登记（衰减与软删依据；过渡同步刷回，P1-7 改 Redis 聚合）─────────────
+    # ── 命中登记（P1-7：Redis Hash 聚合，scheduler 每 5 分钟批量刷回）────────────
     if selected:
-        await batch_touch_hit(app_id, user_id, [e.id for e in selected])
+        from codegenx.ai_service.memory.hit_buffer import record_hits
+        await record_hits(app_id, user_id, [e.memory_id for e in selected])
 
     return selected
 
