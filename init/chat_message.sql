@@ -9,7 +9,7 @@ CREATE TABLE `chat_message` (
   `content`           MEDIUMTEXT      NULL COMMENT '整条消息的 JSON 序列化（含 tool_calls 等结构字段）',
   `payload_ref`       VARCHAR(512)    NULL COMMENT '超长内容外置对象存储的 key',
   `content_bytes`     INT UNSIGNED    NOT NULL DEFAULT 0,
-  `content_tokens`    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT '本条消息内容的 token 数，写入时估算，所有 role 均有值',
+  `content_tokens`    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT '本条内容 token 数，全 role 有值；提炼触发与窗口预算用',
   `model`             VARCHAR(64)     NULL,
   `prompt_tokens`     INT UNSIGNED    NULL,
   `completion_tokens` INT UNSIGNED    NULL,
