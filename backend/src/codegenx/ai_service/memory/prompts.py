@@ -66,6 +66,63 @@ def format_conversation_for_extract(turns_text: str) -> str:
     return MEMORY_EXTRACT_USER_PROMPT.format(conversation=turns_text)
 
 
+# ── 矛盾检测（P1-9，§4.6：每日异步兜底，不阻塞写入）────────────────────────────
+
+MEMORY_CONFLICT_SYSTEM_PROMPT = """\
+你是记忆审计助手。给定某用户当前生效的核心约束列表（编号），找出其中语义冲突的对。
+
+冲突示例：「回复必须用中文」vs「英文场景下用英文回复」；「代码用 TypeScript」vs「脚本一律用 Python」。
+不算冲突：主题不同、粒度不同、可以同时满足的约束。
+
+只输出 JSON 数组，每个元素是一对冲突编号，无冲突输出 []：
+[["1", "3"], ...]
+"""
+
+MEMORY_CONFLICT_USER_PROMPT = """\
+当前生效的核心约束（编号 列表）：
+
+{items}
+"""
+
+
+def format_constraints_for_conflict(items: list[str]) -> str:
+    return MEMORY_CONFLICT_USER_PROMPT.format(
+        items="\n".join(f"{i + 1}. {t}" for i, t in enumerate(items))
+    )
+
+
+def parse_conflict_pairs(raw: str) -> list[tuple[str, str]]:
+    """解析 LLM 输出的冲突编号对；坏输出容错为空（宁放过不误杀）。"""
+    if not raw or not raw.strip():
+        return []
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("["), text.rfind("]")
+        if start < 0 or end <= start:
+            return []
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, list):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for item in data:
+        if (
+            isinstance(item, (list, tuple)) and len(item) == 2
+            and all(isinstance(x, (str, int)) for x in item)
+        ):
+            pairs.append((str(item[0]), str(item[1])))
+    return pairs
+
+
 def parse_extracted_memories(raw: str) -> list[dict]:
     """解析 LLM 输出的候选记忆 JSON 数组；容错截断/包裹，坏条目跳过。
 

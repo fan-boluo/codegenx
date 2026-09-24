@@ -150,7 +150,11 @@ class MemorySearchConfig(Base):
     top_k: int = Field(
         default=10,
         validation_alias=AliasChoices("topK", "top_k", "searchTopK"),
-    )  # 向量通道召回条数
+    )  # 兼容旧字段；向量召回条数以 recall_top_n 为准
+    recall_top_n: int = Field(
+        default=24,
+        validation_alias=AliasChoices("recallTopN", "recall_top_n"),
+    )  # 向量通道召回条数 N（§5.2：N 明显大于最终注入条数，重排才有意义）
     score_threshold: float = Field(
         default=0.45,
         validation_alias=AliasChoices("scoreThreshold", "score_threshold", "searchScoreThreshold"),
@@ -175,6 +179,35 @@ class MemorySearchConfig(Base):
         default=8192,
         validation_alias=AliasChoices("warmTokenBudget", "warm_token_budget"),
     )  # warm 层注入 token 预算
+    hot_load_timeout_ms: int = Field(
+        default=200,
+        validation_alias=AliasChoices("hotLoadTimeoutMs", "hot_load_timeout_ms"),
+    )  # hot 加载超时（§9 建议值），超时降级为无 hot 注入
+    warm_load_timeout_ms: int = Field(
+        default=500,
+        validation_alias=AliasChoices("warmLoadTimeoutMs", "warm_load_timeout_ms"),
+    )  # warm 召回超时（§9 建议值），超时降级为无 warm 注入
+
+
+class MemoryTriggerConfig(Base):
+    """提炼触发两级漏斗（P1-2，§4.1）：轻量信号判断 → 双路阈值触发 LLM 提炼"""
+    enabled: bool = Field(default=True)
+    signal_threshold: int = Field(
+        default=5,
+        validation_alias=AliasChoices("signalThreshold", "signal_threshold"),
+    )  # pending_signals 达到即触发
+    token_threshold: int = Field(
+        default=3000,
+        validation_alias=AliasChoices("tokenThreshold", "token_threshold"),
+    )  # pending_tokens 达到即触发（长文档场景不被轮次掩盖）
+    idle_trigger_minutes: int = Field(
+        default=30,
+        validation_alias=AliasChoices("idleTriggerMinutes", "idle_trigger_minutes"),
+    )  # 有信号且距上次提炼超过该分钟数即触发
+    stale_scan_minutes: int = Field(
+        default=15,
+        validation_alias=AliasChoices("staleScanMinutes", "stale_scan_minutes"),
+    )  # 兜底扫描：有积压信号且超过该分钟数未处理则补投
 
 
 class MemoryFlushConfig(Base):
@@ -205,6 +238,7 @@ class MemoryFlushConfig(Base):
 class MemoryConfig(Base):
     search: MemorySearchConfig = Field(default_factory=MemorySearchConfig)
     store: MemoryFlushConfig = Field(default_factory=MemoryFlushConfig)
+    trigger: MemoryTriggerConfig = Field(default_factory=MemoryTriggerConfig)
 
 
 class MonitorStorageConfig(Base):

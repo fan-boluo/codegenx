@@ -10,10 +10,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from shared import log
 from codegenx.ai_service.utils.config import config
+from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.hot_store import format_hot_prompt
 from codegenx.ai_service.memory.retriever import search_warm, format_warm_entries_prompt
 
@@ -44,22 +46,39 @@ class MemoryManager:
             return ""
 
         parts: list[str] = []
+        search_cfg = config.memory.search
+        hot_timeout = max(0.05, (search_cfg.hot_load_timeout_ms or 200) / 1000)
+        warm_timeout = max(0.05, (search_cfg.warm_load_timeout_ms or 500) / 1000)
 
-        # ── hot 层：核心约束，每轮注入（加载失败内部已降级为空）────────────────
+        # ── hot 层：核心约束，每轮注入（超时/异常均降级为空，§9 原则 1）──────────
         try:
-            hot_prompt = await format_hot_prompt(self.app_id, self.user_id)
-        except Exception as exc:  # noqa: BLE001 — 记忆加载不得阻塞对话（§9 原则 1）
+            hot_prompt = await asyncio.wait_for(
+                format_hot_prompt(self.app_id, self.user_id), timeout=hot_timeout
+            )
+        except asyncio.TimeoutError:
+            metrics.inc_degrade("timeout")
+            log.warning("hot 层加载超时(>{}ms)，本轮降级为无 hot 约束", int(hot_timeout * 1000))
+            hot_prompt = ""
+        except Exception as exc:  # noqa: BLE001 — 记忆加载不得阻塞对话
+            metrics.inc_degrade("mysql")
             log.error("hot 层注入异常:{}", exc)
             hot_prompt = ""
         if hot_prompt:
             parts.append(hot_prompt)
 
-        # ── warm 层：按 query 混合召回 ─────────────────────────────────────────
+        # ── warm 层：按 query 混合召回（超时/异常降级，§9 原则 1）────────────────
         warm_entries: list = []
         if (query or "").strip():
             try:
-                warm_entries = await search_warm(self.app_id, self.user_id, query)
+                warm_entries = await asyncio.wait_for(
+                    search_warm(self.app_id, self.user_id, query), timeout=warm_timeout
+                )
+            except asyncio.TimeoutError:
+                metrics.inc_degrade("timeout")
+                log.warning("warm 召回超时(>{}ms)，本轮降级为无 warm 记忆", int(warm_timeout * 1000))
+                warm_entries = []
             except Exception as exc:  # noqa: BLE001 — 记忆检索失败不阻断对话
+                metrics.inc_degrade("mysql")
                 log.error("warm 记忆检索异常:{}", exc)
                 warm_entries = []
             if warm_entries:

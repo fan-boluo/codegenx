@@ -8,17 +8,25 @@ codegenx.ai_service.memory — 记忆系统（跨会话持久记忆，v2）。
 数据架构（详见 docs/Agent记忆系统设计方案v2.md）：
   MySQL agent_memory 为唯一真源（hot/warm 同表分层 memory_layer=1/2），
   Qdrant agent_memory_warm 仅是 warm 层可重建检索索引，json 文件仅为迁移源。
+  离线任务统一走 memory_task 表队列（at-least-once）：
+    warm_extract / consolidate / decay_archive / sync_check / conflict_detect /
+    compliance_delete（P1：卡死回收 + 心跳 + 幂等键）。
 
 模块地图：
   models.py        MemoryEntry + 类型字典/权重/半衰期 + ULID
   memory_store.py  agent_memory DAO（hot upsert / warm append / 生命周期 / 合规删除）
-  hot_store.py     hot 层注入（token 预算 + 类型优先级裁剪，MySQL 直读）
-  writer.py        在线/离线写入统一入口（准入校验 + 敏感信息过滤 + 向量同步队列）
+  hot_store.py     hot 层注入（token 预算 + 类型优先级裁剪；P1 起经 Redis 缓存读）
+  hot_cache.py     P1 Redis hot 缓存（写时 DEL 失效，TTL 24h，读侧租户复核）
+  hit_buffer.py    P1 last_hit_at 异步冲刷（Redis Hash 聚合 5 分钟落库，含直写兜底）
+  locks.py         P1 会话级 Redis 锁（SETNX EX 300 + Lua 释放；Redis 挂时降级放行）
+  writer.py        在线/离线写入统一入口（准入校验 + 敏感信息过滤 + 拒绝原因指标）
   vector_store.py  agent_memory_warm 检索层（Qdrant 瘦 payload，点 id=自增主键）
   embedding.py     向量化（DashScope 兼容模式）
   retriever.py     混合召回（向量+关键词）+ 回表 + 三因子重排 + token 窗口
+  trigger.py       P1 二级漏斗：每轮信号检测 → watermark 计数 → 阈值触发提炼
+  sync.py          双数据源对账（正向补写 + 反向清幽灵 + 抽检，vector_synced_at 行级队列）
   memory_manager.py 门面：SessionContext 每轮调用组装注入（含 hot>warm 冲突规则）
   lifecycle.py     每日整理（warm 合并去重）+ 衰减归档（hot 豁免）
-  sync.py          双数据源对账（正向补写 + 反向清幽灵，断点仅续跑用）
   compliance.py    合规删除级联（MySQL → Qdrant，scope=all/memory_id/subject/source_msg_id）
+  metrics.py       P1 指标安全门面（prometheus codegenx_memory_* + 结构化日志，不含正文）
 """

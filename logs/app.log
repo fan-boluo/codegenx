@@ -4092,3 +4092,9 @@ sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (2003, "Can't co
 20260923 20:39:41 - MainProcess | MainThread | session_pool.stop:78 - INFO -SessionPool stopped
 20260923 20:39:41 - MainProcess | MainThread | main.lifespan:67 - INFO -codegenx monolith shutdown completed
 20260924 18:36:21 - MainProcess | MainThread | store._parse_content:187 - WARNING -chat_message.content 解析失败，跳过该行
+20260924 21:59:04 - MainProcess | MainThread | store._parse_content:219 - WARNING -chat_message.content 解析失败，跳过该行
+20260924 21:59:04 - MainProcess | MainThread | store._parse_content:229 - WARNING -超长消息 blob 读取失败（返回占位）: C:\Users\aa\.claude\jobs\1b96987c\_blob_test.json.gone | [Errno 2] No such file or directory: 'C:\\Users\\aa\\.claude\\jobs\\1b96987c\\_blob_test.json.gone'
+20260924 22:00:23 - MainProcess | MainThread | store._parse_content:219 - WARNING -chat_message.content 解析失败，跳过该行
+20260924 22:00:23 - MainProcess | MainThread | store._parse_content:229 - WARNING -超长消息 blob 读取失败（返回占位）: C:\Users\aa\.claude\jobs\1b96987c\_blob_test.json.gone | [Errno 2] No such file or directory: 'C:\\Users\\aa\\.claude\\jobs\\1b96987c\\_blob_test.json.gone'
+20260924 22:00:34 - MainProcess | MainThread | store._parse_content:219 - WARNING -chat_message.content 解析失败，跳过该行
+20260924 22:00:34 - MainProcess | MainThread | store._parse_content:229 - WARNING -超长消息 blob 读取失败（返回占位）: C:\Users\aa\.claude\jobs\1b96987c\_blob_test.json.gone | [Errno 2] No such file or directory: 'C:\\Users\\aa\\.claude\\jobs\\1b96987c\\_blob_test.json.gone'
