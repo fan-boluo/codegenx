@@ -278,33 +278,28 @@ async def _llm_compact(
 
 # ── Unified auto-compact entry point ──────────────────────────────────────────
 
-class CompactionEngine:
+
+def _default_compact_llm_fn(messages: list[dict]) -> Any:
+    """默认 LLM 压缩调用：走韧性层（compact 场景模型链 + 熔断/重试/降级）。"""
+    from codegenx.ai_service.llm.resilience import SCENARIO_COMPACT, resilient_invoke
+
+    return resilient_invoke(SCENARIO_COMPACT, messages)
+
+
+class CompactionService:
+    """无状态压缩服务（P2 服务化，原 CompactionEngine，docs/SystemApp架构设计.md §4.3）。
+
+    - llm_fn 全局：默认走韧性层（resilient_invoke compact 场景链）；
+    - 三态熔断器是会话级语义（一个会话压缩失败不应熔断别的会话），
+      由 SessionContext.compact_breaker 持有，每次调用传入；
+    - 会话摘要（Path A 快速通道）经 summary_loader 读取（app.summary.load(ids)）。
     """
-    Stateful compaction engine for one session.
 
-    Usage in engine.py::
-
-        self._compaction = CompactionEngine(session_id, llm_fn)
-
-        # before each query:
-        messages = self._compaction.microcompact(messages)
-
-        # after token check:
-        if self._compaction.should_compact(messages):
-            messages = await self._compaction.compact(messages)
-    """
-
-    def __init__(
-        self,
-        session_id: str,
-        llm_fn: Any = None,                 # async generator: messages -> token strings
-        session_memory: Any = None,  # SessionMemory instance (optional)
-    ) -> None:
-        self.session_id = session_id
-        self._llm_fn = llm_fn
-        self._session_memory = session_memory
-        # P1：复用韧性层通用三态熔断器（每会话一个，挡 Path B；阈值沿用 MAX_CONSECUTIVE_FAILURES）
-        self._breaker = CircuitBreaker(
+    # P1：复用韧性层通用三态熔断器（每会话一个，挡 Path B；阈值沿用 MAX_CONSECUTIVE_FAILURES）
+    @staticmethod
+    def make_breaker(session_id: str) -> CircuitBreaker:
+        """创建会话级压缩熔断器（key=compact:{session_id}，冷却后可探测恢复）。"""
+        return CircuitBreaker(
             f"compact:{session_id}",
             failure_threshold=MAX_CONSECUTIVE_FAILURES,
             recovery_timeout=COMPACT_BREAKER_RECOVERY_SECONDS,
@@ -312,10 +307,17 @@ class CompactionEngine:
             half_open_success_rate=0.5,
         )
 
+    def __init__(self, llm_fn: Any = None) -> None:
+        self._llm_fn = llm_fn or _default_compact_llm_fn
+
     # ------------------------------------------------------------------ public
 
     async def compact_if_needed(
-        self, messages: list[dict]
+        self,
+        messages: list[dict],
+        *,
+        breaker: CircuitBreaker | None = None,
+        summary_loader: Any = None,          # Callable[[], str] | None
     ) -> tuple[list[dict], CompactResult | None]:
         """
         Run the full compaction pipeline if the threshold is exceeded.
@@ -329,10 +331,11 @@ class CompactionEngine:
             return messages, None
 
         tokens_before = estimate_tokens(messages)
-        result = await self._run_compaction(messages)
+        result = await self._run_compaction(messages, breaker=breaker, summary_loader=summary_loader)
         if result is None or result.tokens_after >= result.tokens_before:
             # P1：压缩失败/无效计入通用熔断器（挡的是 Path B，Path A 永远可用）
-            await self._breaker.record_failure()
+            if breaker is not None:
+                await breaker.record_failure()
             if result is not None:
                 log.info(
                     "Compaction ineffective ({}→{} tokens, +{:.0f}%); falling back to truncation.",
@@ -357,7 +360,8 @@ class CompactionEngine:
                 tokens_after=estimate_tokens(truncated),
             )
 
-        await self._breaker.record_success()
+        if breaker is not None:
+            await breaker.record_success()
         log.info(
             "Compaction complete via {}: {}→{} tokens, removed {} messages.",
             result.path_used,
@@ -370,13 +374,17 @@ class CompactionEngine:
     # ----------------------------------------------------------------- private
 
     async def _run_compaction(
-        self, messages: list[dict]
+        self,
+        messages: list[dict],
+        *,
+        breaker: CircuitBreaker | None = None,
+        summary_loader: Any = None,
     ) -> CompactResult | None:
         log.debug("step 执行压缩开始")
         # Path A — session memory fast path
-        if self._session_memory is not None:
+        if summary_loader is not None:
             try:
-                summary = self._session_memory.load()
+                summary = summary_loader()
                 if summary and summary.strip():
                     log.info("setp 压缩：Using session-memory fast-path compaction.")
                     return _session_memory_compact(messages, summary)
@@ -384,17 +392,15 @@ class CompactionEngine:
                 log.warning("Session-memory fast-path failed: {}; trying LLM.", exc)
 
         # Path B — LLM summarization（唯一受熔断门控的路径）
-        if self._llm_fn is not None:
-            if not await self._breaker.acquire():
-                log.warning(
-                    "[compact] LLM 压缩熔断打开，跳过 Path B（session={}，冷却后自动探测恢复）",
-                    self.session_id,
-                )
-            else:
-                log.debug("setp 压缩：Using LLM compaction.")
-                result = await _llm_compact(messages, self._llm_fn)
-                if result is not None:
-                    return result
+        if breaker is None or await breaker.acquire():
+            log.debug("setp 压缩：Using LLM compaction.")
+            result = await _llm_compact(messages, self._llm_fn)
+            if result is not None:
+                return result
+        else:
+            log.warning(
+                "[compact] LLM 压缩熔断打开，跳过 Path B（冷却后自动探测恢复）",
+            )
 
         log.error("setp 压缩：All compaction paths failed.")
         return None

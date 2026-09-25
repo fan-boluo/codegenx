@@ -25,18 +25,23 @@ class SessionPool:
         max_sessions: int = 1000,
         idle_timeout_seconds: int = 3600,
         cleanup_interval_seconds: int = 300,
+        swap_idle_seconds: int = 300,
     ):
         """
         Initialize SessionPool.
-        
+
         Args:
             max_sessions: Maximum number of active sessions
             idle_timeout_seconds: Seconds before idle session cleanup (default 1 hour)
             cleanup_interval_seconds: Interval between cleanup runs (default 5 minutes)
+            swap_idle_seconds: Seconds before an idle session's chat_messages are
+                unloaded (swap-out, P3). Must be far smaller than idle_timeout_seconds;
+                0 disables swapping.
         """
         self.max_sessions = max_sessions
         self.idle_timeout_seconds = idle_timeout_seconds
         self.cleanup_interval_seconds = cleanup_interval_seconds
+        self.swap_idle_seconds = swap_idle_seconds
         
         # OrderedDict maintains insertion order for LRU tracking
         self._sessions: OrderedDict[str, Any] = OrderedDict()
@@ -78,7 +83,7 @@ class SessionPool:
         log.info("SessionPool stopped")
 
     async def get_or_create(
-        self, session_id: str, request: Any, runtime: Any
+        self, session_id: str, request: Any
     ) -> tuple[Any, bool]:
         """
         Get existing session or create new one.
@@ -86,7 +91,6 @@ class SessionPool:
         Args:
             session_id: Unique session identifier
             request: AiServiceGenerateRequest
-            runtime: AgentRuntime instance
 
         Returns:
             Tuple of (session_state, is_new_session)
@@ -110,11 +114,10 @@ class SessionPool:
                     "SessionPool reached max capacity, evicted LRU session: {}",
                     lru_session_id,
                 )
-            
+
             session = RuntimeSessionState(
                 session_id=session_id,
                 request=request,
-                runtime=runtime,
             )
             session.touch()
             self._sessions[session_id] = session
@@ -166,9 +169,10 @@ class SessionPool:
                 log.warning("SessionPool cleanup error: {}", exc)
 
     async def _cleanup_inactive_sessions(self) -> None:
-        """Remove sessions that are idle or already closed."""
+        """Remove sessions that are idle or already closed; swap-out the middle band."""
         now = time.time()
         sessions_to_remove = []
+        swapped_sessions = []
 
         async with self._lock:
             for session_id, session in list(self._sessions.items()):
@@ -182,6 +186,22 @@ class SessionPool:
                 idle_duration = now - last_activity
                 if idle_duration > self.idle_timeout_seconds:
                     sessions_to_remove.append(session_id)
+                    continue
+
+                # P3 swap-out（docs/SystemApp架构设计.md §7）：闲置超过 swap 阈值且
+                # 无在途任务 → 卸载 chat_messages（快照已在 turn_end 落盘），会话对象
+                # 留在池中保持连续性；下次请求由 runtime 按需从快照恢复
+                if (
+                    self.swap_idle_seconds > 0
+                    and idle_duration > self.swap_idle_seconds
+                    and not getattr(session, "swapped_out", False)
+                    and self._is_quiescent(session)
+                ):
+                    cm = getattr(session, "context_manager", None)
+                    if cm is not None and cm.chat_messages:
+                        cm.chat_messages = []
+                    session.swapped_out = True
+                    swapped_sessions.append(session_id)
 
             for session_id in sessions_to_remove:
                 await self._close_session_unsafe(session_id)
@@ -192,6 +212,22 @@ class SessionPool:
                 "SessionPool cleanup: removed {} idle/closed sessions",
                 len(sessions_to_remove),
             )
+        if swapped_sessions:
+            log.info(
+                "SessionPool cleanup: swapped out {} idle sessions (chat_messages unloaded)",
+                len(swapped_sessions),
+            )
+
+    @staticmethod
+    def _is_quiescent(session: Any) -> bool:
+        """会话当前无在途工作：无活跃请求任务、worker 空闲、不在处理中。"""
+        if getattr(session, "processing", False):
+            return False
+        active_tasks = getattr(session, "active_tasks", {})
+        if any(not task.done() for task in active_tasks.values()):
+            return False
+        worker_task = getattr(session, "worker_task", None)
+        return worker_task is None or worker_task.done()
 
     async def _close_session_unsafe(self, session_id: str) -> None:
         """Close session without lock (caller must hold lock)."""

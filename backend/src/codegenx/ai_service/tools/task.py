@@ -1,10 +1,13 @@
-"""Task management tools (s12).
+"""Task management tools (s12, P2 服务化改写 docs/SystemApp架构设计.md §4.3)。
 
 Four tools that give the LLM full CRUD access to the persistent task board:
   task_create  — create a new task, optionally with dependencies
   task_update  — change status / owner / subject / description
   task_get     — fetch a single task record
   task_list    — list all (or filtered) tasks on the board
+
+原注入 TaskManager 实例改为注入 user_id/app_id/session_id，
+工具内部经 get_app().tasks（全局 TaskBoardService，ids 作方法参数）。
 """
 from __future__ import annotations
 
@@ -14,6 +17,23 @@ from typing import Any
 
 from codegenx.ai_service.tools.base import BaseTool, ToolResult
 from shared import log
+
+
+def _task_service(params: dict) -> Any | None:
+    """取全局任务看板服务；ids 缺失返回 None（由调用方给出错误提示）。"""
+    from codegenx.ai_service.system_app import get_app
+
+    if not str(params.get("session_id", "") or ""):
+        return None
+    return get_app().tasks
+
+
+def _ids(params: dict) -> dict:
+    return {
+        "user_id": str(params.get("user_id", "") or ""),
+        "app_id": str(params.get("app_id", "") or ""),
+        "session_id": str(params.get("session_id", "") or ""),
+    }
 
 
 class TaskCreateTool(BaseTool):
@@ -56,14 +76,15 @@ class TaskCreateTool(BaseTool):
         }
 
     async def execute(self, params: dict, signal: asyncio.Event | None = None) -> ToolResult:
-        task_manager = params.get("task_manager")
-        if task_manager is None:
-            return ToolResult(success=False, data="TaskManager is not available.")
+        tasks = _task_service(params)
+        if tasks is None:
+            return ToolResult(success=False, data="Task board is not available (missing session ids).")
         try:
-            task = task_manager.create(
+            task = tasks.create(
                 subject=str(params.get("subject", "")),
                 description=str(params.get("description", "") or ""),
                 depends_on=list(params.get("depends_on") or []),
+                **_ids(params),
             )
             return ToolResult(
                 success=True,
@@ -111,19 +132,20 @@ class TaskUpdateTool(BaseTool):
         }
 
     async def execute(self, params: dict, signal: asyncio.Event | None = None) -> ToolResult:
-        task_manager = params.get("task_manager")
-        if task_manager is None:
-            return ToolResult(success=False, data="TaskManager is not available.")
+        tasks = _task_service(params)
+        if tasks is None:
+            return ToolResult(success=False, data="Task board is not available (missing session ids).")
         task_id = params.get("task_id")
         if task_id is None:
             return ToolResult(success=False, data="task_id is required.")
         try:
-            task = task_manager.update(
+            task = tasks.update(
                 int(task_id),
                 status=params.get("status"),
                 owner=params.get("owner"),
                 subject=params.get("subject"),
                 description=params.get("description"),
+                **_ids(params),
             )
             return ToolResult(
                 success=True,
@@ -159,14 +181,14 @@ class TaskGetTool(BaseTool):
         }
 
     async def execute(self, params: dict, signal: asyncio.Event | None = None) -> ToolResult:
-        task_manager = params.get("task_manager")
-        if task_manager is None:
-            return ToolResult(success=False, data="TaskManager is not available.")
+        tasks = _task_service(params)
+        if tasks is None:
+            return ToolResult(success=False, data="Task board is not available (missing session ids).")
         task_id = params.get("task_id")
         if task_id is None:
             return ToolResult(success=False, data="task_id is required.")
         try:
-            task = task_manager.get(int(task_id))
+            task = tasks.get(int(task_id), **_ids(params))
             if task is None:
                 return ToolResult(success=False, data=f"Task {task_id} not found.", render=f"任务 #{task_id} 不存在")
             return ToolResult(success=True, data=str(task), render=f"获取任务: {task.get('subject', '')}")
@@ -205,17 +227,17 @@ class TaskListTool(BaseTool):
         }
 
     async def execute(self, params: dict, signal: asyncio.Event | None = None) -> ToolResult:
-        task_manager = params.get("task_manager")
-        if task_manager is None:
-            return ToolResult(success=False, data="TaskManager is not available.")
+        tasks = _task_service(params)
+        if tasks is None:
+            return ToolResult(success=False, data="Task board is not available (missing session ids).")
         try:
             status_filter = params.get("status")
-            tasks = task_manager.list_all(status=status_filter)
-            board = task_manager.get_board()
+            board_tasks = tasks.list_all(status=status_filter, **_ids(params))
+            board = tasks.get_board(**_ids(params))
             return ToolResult(
                 success=True,
-                data=str({"tasks": tasks, "board": board}),
-                render=f"任务列表: {len(tasks)} 个任务"
+                data=str({"tasks": board_tasks, "board": board}),
+                render=f"任务列表: {len(board_tasks)} 个任务"
             )
         except Exception as exc:
             log.error("[task_list] {}", exc)

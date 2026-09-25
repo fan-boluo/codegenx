@@ -83,6 +83,22 @@ class ToolRegistry:
         log.info(f"\n🎉 工具加载完成，总计加载: {len(self.tools)} 个工具")
 
 
+    def child_view(self, excluded: set[str] | None = None,
+                   allowed: list[str] | None = None) -> "ToolRegistry":
+        """产出过滤子视图：浅拷贝 tool 列表，不重扫目录（P3，docs/SystemApp架构设计.md §6）。
+
+        excluded 先剔除（如 subagent/compact），allowed 再白名单裁剪（None=不裁剪）。
+        返回的 ToolRegistry 与父注册表共享同一批 Tool 对象（executor 等只读复用）。
+        """
+        view = ToolRegistry.__new__(ToolRegistry)  # 绕过 __init__ 的目录扫描
+        view.tools = list(self.tools)
+        if excluded:
+            view.tools = [t for t in view.tools if t.name not in excluded]
+        if allowed:
+            allowed_set = {str(n).strip() for n in allowed if str(n).strip()}
+            view.tools = [t for t in view.tools if t.name in allowed_set]
+        return view
+
     def call_tool(self, tool_name: str, tool_input: dict) -> Any:
         """
         标准化工具调用函数

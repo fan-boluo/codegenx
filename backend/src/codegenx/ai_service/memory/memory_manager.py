@@ -1,5 +1,8 @@
 """
-记忆门面 —— 每轮组装 hot + warm 两层注入（供 SessionContext.build_system_prompt 调用）。
+记忆门面 —— 每轮组装 hot + warm 两层注入（P2 服务化，docs/SystemApp架构设计.md §4.3）。
+
+原 MemoryManager（每会话一个实例、只持 3 个 id 字符串）改为全局无状态 MemoryFacade：
+ids 进签名（user_id=/app_id=/session_id=），内部模块函数不动。
 
 分层（设计方案 v2.1 §1.1/§5.5）：
   hot  hot_store.format_hot_prompt  核心约束，每轮全量注入（MySQL，≤hot_token_budget）
@@ -11,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 
 from shared import log
 from codegenx.ai_service.utils.config import config
@@ -28,19 +30,24 @@ MEMORY_USAGE_RULES = """\
 """
 
 
-@dataclass
-class MemoryManager:
-    """会话级记忆门面（随 SessionContext 生命周期）。"""
+class MemoryFacade:
+    """全局只读记忆门面（hot/warm 仍按 app+user 维度，session 仅用于埋点）。"""
 
-    session_id: str = ""
-    app_id: str = ""
-    user_id: str = ""
-
-    async def load(self, query: str = "") -> str:
+    async def load(
+        self,
+        query: str = "",
+        *,
+        user_id: str = "",
+        app_id: str = "",
+        session_id: str = "",
+        read_types: list[str] | None = None,
+    ) -> str:
         """组装当前轮的记忆注入：hot（常驻）+ warm（按 query 召回）+ 冲突规则。
 
         Args:
             query: 用户本轮输入，空则跳过 warm 召回。
+            read_types: P4 §10.5 记忆类型过滤（AgentSpec.memory.read_types）；
+                None=全部；warm 层按 memory_type 过滤，hot 层为核心约束不过滤。
         """
         if not config.memory.search.enabled:
             return ""
@@ -53,7 +60,7 @@ class MemoryManager:
         # ── hot 层：核心约束，每轮注入（超时/异常均降级为空，§9 原则 1）──────────
         try:
             hot_prompt = await asyncio.wait_for(
-                format_hot_prompt(self.app_id, self.user_id), timeout=hot_timeout
+                format_hot_prompt(app_id, user_id), timeout=hot_timeout
             )
         except asyncio.TimeoutError:
             metrics.inc_degrade("timeout")
@@ -71,7 +78,7 @@ class MemoryManager:
         if (query or "").strip():
             try:
                 warm_entries = await asyncio.wait_for(
-                    search_warm(self.app_id, self.user_id, query), timeout=warm_timeout
+                    search_warm(app_id, user_id, query), timeout=warm_timeout
                 )
             except asyncio.TimeoutError:
                 metrics.inc_degrade("timeout")
@@ -81,6 +88,10 @@ class MemoryManager:
                 metrics.inc_degrade("mysql")
                 log.error("warm 记忆检索异常:{}", exc)
                 warm_entries = []
+            if warm_entries and read_types is not None:
+                # P4：按 AgentSpec.memory.read_types 过滤（类型体系见 memory/models.py）
+                allowed = {str(t).strip() for t in read_types if str(t).strip()}
+                warm_entries = [e for e in warm_entries if e.memory_type in allowed]
             if warm_entries:
                 parts.append(format_warm_entries_prompt(warm_entries))
 
@@ -92,8 +103,9 @@ class MemoryManager:
         if warm_entries:
             try:
                 from codegenx.ai_service.monitor.monitor_pipeline import get_monitor_pipeline
-                get_monitor_pipeline().on_memory_recall(self.session_id, len(warm_entries))
+                get_monitor_pipeline().on_memory_recall(session_id, len(warm_entries))
             except Exception:  # noqa: BLE001 — 埋点失败静默
                 pass
 
         return "\n\n".join(parts)
+

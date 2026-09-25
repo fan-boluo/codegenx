@@ -200,26 +200,3 @@ class SessionRecorder:
 
         pass
 
-if __name__ == '__main__':
-    # 初始化管理器
-    manager = SessionManager()
-
-    # 获取/创建会话
-    session1 = manager.get_or_create_session()  # 自动生成ID
-    # session2 = manager.get_or_create_session("my-session-123")  # 指定ID
-    # print(session1, session2)
-    # print(manager._cache)
-    # # 保存会话
-    # manager.flush_to_disk(session2.session_id)
-
-
-    # def test_thread():
-    #     for _ in range(5):
-    #         s = manager.get_or_create_session()
-    #
-    # # 10个线程同时操作，不会出现冲突
-    # threads = [threading.Thread(target=test_thread) for _ in range(10)]
-    # for t in threads:
-    #     t.start()
-    # for t in threads:
-    #     t.join()

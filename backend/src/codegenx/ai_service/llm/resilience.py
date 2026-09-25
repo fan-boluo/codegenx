@@ -237,9 +237,17 @@ async def resilient_invoke(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     primary_model: Optional[str] = None,
+    agent: Optional[str] = None,
+    agent_override: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """非流式调用：同模型退避重试 → 逐级 fallback（每级独立熔断）。"""
-    chain = config.get_model_chain(scenario, primary_override=primary_model)
+    """非流式调用：同模型退避重试 → 逐级 fallback（每级独立熔断）。
+
+    P4 §10.4：agent/agent_override 传智能体维度的模型覆盖（spec.name / spec.model_override）。
+    """
+    chain = config.get_model_chain(
+        scenario, primary_override=primary_model,
+        agent=agent, agent_override=agent_override,
+    )
     kwargs = _exec_kwargs(tools, max_tokens, temperature)
     last_exc: Optional[BaseException] = None
     max_attempts = max(0, config.llm.max_attempts)
@@ -303,13 +311,19 @@ async def resilient_invoke_stream(
     temperature: Optional[float] = None,
     primary_model: Optional[str] = None,
     timeout: Optional[float] = None,
+    agent: Optional[str] = None,
+    agent_override: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """流式调用：重试/换模型仅限**首 chunk 之前**；首 chunk 后失败直接抛。
 
     这是 P1-5（流式中断重试导致前端内容重复）的修复点：一旦有内容已透传给
     上层消费者，任何失败都不能透明重放，只能让本轮显式失败。
+    P4 §10.4：agent/agent_override 传智能体维度的模型覆盖（spec.name / spec.model_override）。
     """
-    chain = config.get_model_chain(scenario, primary_override=primary_model)
+    chain = config.get_model_chain(
+        scenario, primary_override=primary_model,
+        agent=agent, agent_override=agent_override,
+    )
     kwargs = _exec_kwargs(tools, max_tokens, temperature)
     if timeout is not None:
         kwargs["timeout"] = timeout

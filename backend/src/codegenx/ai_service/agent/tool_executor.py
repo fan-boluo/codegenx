@@ -62,9 +62,10 @@ class ToolExecutor:
             tool_input.setdefault("parent_turn_id", turn_id)
 
         if tool_name in TASK_TOOL_NAMES:
-            # inject TaskManager (s12) — stored on session state per app_id
-            task_manager = getattr(session_state, "task_manager", None) if session_state is not None else None
-            tool_input.setdefault("task_manager", task_manager)
+            # P2 服务化：不再注入 TaskManager 实例，改为注入 ids（工具内部走 app.tasks）
+            tool_input.setdefault("user_id", user_id)
+            tool_input.setdefault("app_id", app_id)
+            tool_input.setdefault("session_id", session_id)
 
         if tool_name in DATA_ANALYSIS_TOOL_NAMES:
             db_name = getattr(session_state, "db_name", None) if session_state is not None else None

@@ -17,7 +17,7 @@ Micro-compaction (no LLM):
   microcompact_messages(messages)     — clear oversized tool results
 
 Full compaction:
-  CompactionEngine                    — stateful session compactor
+  CompactionService                   — stateless compaction service（原 CompactionEngine）
   compact_conversation(...)           — one-shot helper
 
 Constants:
@@ -52,7 +52,7 @@ from codegenx.ai_service.compact.micro import (
 
 from codegenx.ai_service.compact.compact import (
     CompactResult,
-    CompactionEngine,
+    CompactionService,
     compact_conversation,
     MAX_TOKENS_AFTER,
     MIN_TEXT_MESSAGES,
@@ -80,7 +80,7 @@ __all__ = [
     "microcompact_stats",
     # full compaction
     "CompactResult",
-    "CompactionEngine",
+    "CompactionService",
     "compact_conversation",
     "MAX_TOKENS_AFTER",
     "MIN_TEXT_MESSAGES",

@@ -1,7 +1,6 @@
 import asyncio
 from typing import Any
 
-from codegenx.ai_service.skill.skill_loader import SkillLoader
 from codegenx.ai_service.tools.base import BaseTool, ToolResult
 from shared import log
 
@@ -32,7 +31,10 @@ class LoadSkillTool(BaseTool):
     async def execute(self, params: dict, signal: asyncio.Event | None = None) -> ToolResult:
         name = str(params.get("name", "")).strip()
         try:
-            skill_text = SkillLoader().load_full_text(name)
+            # P2 服务化：经全局容器取 SkillRegistry（原 SkillLoader 临时实例已废弃）
+            from codegenx.ai_service.system_app import get_app
+
+            skill_text = get_app().skills.full_text(name)
             return ToolResult(
                 success=True,
                 data=skill_text,

@@ -28,6 +28,11 @@ class SubagentTaskTool(BaseTool):
                     "type": "string",
                     "description": "Short description of the task",
                 },
+                "agent_name": {
+                    "type": "string",
+                    "description": "Optional target agent name from the agent registry "
+                                   "(e.g. data_explore). Omit for the default agent.",
+                },
                 "max_turns": {
                     "type": "integer",
                     "description": "Maximum tool-use turns allowed for the subagent (default: 15).",
@@ -52,6 +57,8 @@ class SubagentTaskTool(BaseTool):
             app_id=str(params.get("app_id", "main") or "main"),
             user_id=str(params.get("user_id", "") or ""),
             description=str(params.get("description", "") or ""),
+            # P4 §10.6：指定目标智能体（空=默认智能体）
+            agent_name=str(params.get("agent_name", "") or ""),
             max_turns=int(params.get("max_turns", 15) or 15),
             allowed_tools=list(allowed_tools) if isinstance(allowed_tools, list) else None,
             plan_summary=str(params.get("plan_summary", "") or ""),

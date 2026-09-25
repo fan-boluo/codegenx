@@ -1,91 +1,27 @@
 from __future__ import annotations
 
-import asyncio
-from contextlib import suppress
 from collections.abc import AsyncGenerator
 
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 
-from codegenx.ai_service.agent.runtime import AgentRuntime
-from db.mysql.session import shutdown_mysql_engine
-from db.redis.redis_client import redis_client
-from db.qdrant.client import warm_up_qdrant_client, shutdown_qdrant_client
-from codegenx.ai_service.memory.vector_store import ensure_warm_collection
-from codegenx.ai_service.schedule.memory import get_memory_scheduler
-from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
-from codegenx.ai_service.hook import hook_manager
+from codegenx.ai_service.system_app import get_app, init_app
 from shared import log
 
 
 class AgentAdapterService:
-    def __init__(self) -> None:
-        self._runtime: AgentRuntime | None = None
-        self._startup_lock = asyncio.Lock()
-        self._started = False
-        self._telemetry_started = False
-
-    def _get_runtime(self) -> AgentRuntime:
-        runtime = self._runtime
-        if runtime is None:
-            runtime = AgentRuntime()
-            self._runtime = runtime
-        return runtime
+    """薄壳：生命周期与引擎访问全部委托 SystemApp 全局容器（docs/SystemApp架构设计.md §3.3）。"""
 
     async def startup(self) -> None:
-        async with self._startup_lock:
-            if self._started:
-                return
-            # 冻结 hook 注册表：内置监听器已随应用 import 链完成 @on 收集（docs/Hook设计.md §6）
-            hook_manager.load_and_freeze()
-            # TODO 后台任务在哪里启动，现在有的是健康检查和session poll
-            runtime = self._get_runtime()
-            # runtime.start 启动runtime需要的任务
-            await runtime.start()
-            log.info("启动runtime完毕")
-
-            # 启动定时维护任务（DB 清理 + alert streak 清理）
-            await get_monitor_maintenance_service().start_periodic_maintenance()
-
-            # 记忆系统启动：Qdrant 预热 + warm 库确保 + 离线任务 worker
-            # Qdrant/MySQL 暂不可用只降级记忆功能，不阻断主服务
-            with suppress(Exception):
-                await warm_up_qdrant_client()
-                await ensure_warm_collection()
-                log.info("warm_memories collection 已就绪")
-            with suppress(Exception):
-                await get_memory_scheduler().startup()
-
-            self._started = True
+        await init_app().startup()
 
     async def shutdown(self) -> None:
-        async with self._startup_lock:
-            # 停止定时维护任务
-            await get_monitor_maintenance_service().stop_periodic_maintenance()
-
-            if self._runtime is not None:
-                with suppress(Exception):
-                    await self._runtime.stop()
-                self._runtime = None
-            # 停止记忆离线任务 worker（宽限 10s，running 任务复位 pending）
-            with suppress(Exception):
-                await get_memory_scheduler().shutdown(grace=10.0)
-            # 关闭本服务的实例
-            with suppress(Exception):
-                await redis_client.aclose()
-
-            with suppress(Exception):
-                await shutdown_qdrant_client()
-
-            with suppress(Exception):
-                await shutdown_mysql_engine()
-
-            self._started = False
+        await get_app().shutdown()
 
     async def stream_message(
         self,
         request: AiServiceGenerateRequest
     ) -> AsyncGenerator[str, None]:
-        runtime = self._get_runtime()
+        runtime = get_app().runtime
         async for event in runtime.submit_request(request):
             log.info("stream message {}", event.model_dump_json())
             yield event.model_dump_json() + "\n"
@@ -101,7 +37,11 @@ class AgentAdapterService:
         reason: str | None = None,
         grace_seconds: float | None = None,
     ) -> dict[str, object]:
-        runtime = self._runtime
+        # 容器未启动（lifespan 未跑完）时与旧「runtime 未创建」行为一致：不受理
+        try:
+            runtime = get_app().runtime
+        except RuntimeError:
+            runtime = None
         if runtime is None:
             return {
                 "accepted": False,
