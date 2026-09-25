@@ -70,7 +70,7 @@ VERIFYING_KEY = _load_verifying_key()
 
 class JWTUser(BaseModel):
     """JWT user payload."""
-    user_id: int
+    user_id: str  # user_xxxx 前缀 ID
     user_account: str
     user_role: str
 

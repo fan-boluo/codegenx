@@ -1,6 +1,6 @@
 <template>
   <div class="user-info">
-    <a-avatar :src="user?.userAvatar || undefined" :size="size">
+    <a-avatar :size="size">
       {{ user?.userName?.charAt(0) || 'U' }}
     </a-avatar>
     <span v-if="showName" class="user-name">{{ user?.userName || '未知用户' }}</span>

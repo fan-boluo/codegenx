@@ -1,7 +1,7 @@
 declare namespace API {
   type AppVO = {
-    id?: number
-    owner?: number | string
+    id?: string
+    owner?: string
     ownerName?: string | null
     appName?: string
     dbName?: string
@@ -14,7 +14,7 @@ declare namespace API {
     pageSize?: number
     sortField?: string
     sortOrder?: string
-    id?: number
+    id?: string
     appName?: string
   }
 

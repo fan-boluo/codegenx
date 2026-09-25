@@ -93,7 +93,7 @@ class AgentAdapterService:
     async def stop_session(
         self,
         *,
-        app_id: int,
+        app_id: str,
         user_id: str | None = None,
         session_id: str,
         trace_id: str,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, String, func, text
+from sqlalchemy import DateTime, Index, String, func, text
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,11 +18,10 @@ class User(Base):
         Index("idx_userName", "userName"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # user_xxxx，插入前由服务层生成
     user_account: Mapped[str] = mapped_column("userAccount", String(256), nullable=False)
     user_password: Mapped[str] = mapped_column("userPassword", String(512), nullable=False)
     user_name: Mapped[str | None] = mapped_column("userName", String(256), nullable=True)
-    user_avatar: Mapped[str | None] = mapped_column("userAvatar", String(1024), nullable=True)
     user_profile: Mapped[str | None] = mapped_column("userProfile", String(512), nullable=True)
     user_role: Mapped[str] = mapped_column(
         "userRole",

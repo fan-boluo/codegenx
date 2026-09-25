@@ -29,6 +29,7 @@ from codegenx.app_service.schema.app import (
     AppVO,
 )
 from shared.schema.common import PageData
+from shared.utils.id_utils import generate_app_id
 from codegenx.app_service.services.access import (
     get_active_member,
     require_manager,
@@ -56,6 +57,7 @@ class AppService:
             db_name,
         )
         app = App(
+            id=await self._generate_unique_app_id(),
             owner=login_user.user_id,
             app_name=app_name,
             db_name=db_name,
@@ -79,17 +81,25 @@ class AppService:
         log.info("app-service create app completed traceId={} userId={} appId={}", trace_id, login_user.user_id, app.id)
         return app.id
 
+    async def _generate_unique_app_id(self) -> str:
+        """生成 app_xxxx 前缀 ID，撞主键时重试"""
+        for _ in range(5):
+            new_id = generate_app_id()
+            if not await self.db.scalar(select(App.id).where(App.id == new_id)):
+                return new_id
+        ThrowUtils.throw_if(True, ErrorCode.SYSTEM_ERROR, "应用ID生成失败，请重试")
+        raise AssertionError("unreachable")
 
-    async def delete_app(self, app_id: int, login_user: JWTUser) -> bool:
+    async def delete_app(self, app_id: str, login_user: JWTUser) -> bool:
         app = await self._get_existing_app(app_id)
         await require_manager(self.db, app, login_user)
         await self._delete_app_by_id(app_id)
         return True
 
-    async def get_app_by_id(self, app_id: int) -> App | None:
+    async def get_app_by_id(self, app_id: str) -> App | None:
         return await self.db.get(App, app_id)
 
-    async def get_app_vo_by_id(self, app_id: int, login_user: JWTUser) -> AppVO:
+    async def get_app_vo_by_id(self, app_id: str, login_user: JWTUser) -> AppVO:
         app = await self._get_viewable_app(app_id, login_user)
         owner_names = await self._get_owner_names([app.owner])
         return self._to_app_vo(app, owner_names.get(app.owner))
@@ -110,7 +120,7 @@ class AppService:
         await self.db.commit()
         return True
 
-    async def delete_app_by_admin(self, app_id: int, login_user: JWTUser) -> bool:
+    async def delete_app_by_admin(self, app_id: str, login_user: JWTUser) -> bool:
         self._require_admin(login_user)
         await self._delete_app_by_id(app_id)
         return True
@@ -125,7 +135,7 @@ class AppService:
 
     # ---------------------- 项目成员管理 ----------------------
 
-    async def list_members(self, app_id: int, login_user: JWTUser) -> list[AppMemberVO]:
+    async def list_members(self, app_id: str, login_user: JWTUser) -> list[AppMemberVO]:
         app = await self._get_existing_app(app_id)
         await require_participant(self.db, app, login_user)
         result = await self.db.execute(
@@ -159,7 +169,7 @@ class AppService:
             ThrowUtils.throw_if(not request.user_id, ErrorCode.PARAMS_ERROR, "请指定要邀请的用户")
             target_user = await self.db.get(User, request.user_id)
             ThrowUtils.throw_if(target_user is None, ErrorCode.NOT_FOUND_ERROR, "用户不存在")
-        member_user_id = int(target_user.id)
+        member_user_id = target_user.id  # user_xxxx 前缀字符串
         ThrowUtils.throw_if(member_user_id == app.owner, ErrorCode.PARAMS_ERROR, "该用户已是项目属主")
         ThrowUtils.throw_if(
             await get_active_member(self.db, request.app_id, member_user_id) is not None,
@@ -201,7 +211,7 @@ class AppService:
 
     # ---------------------- 文件与运行（成员各自目录隔离） ----------------------
 
-    async def download_app_code(self, app_id: int, login_user: JWTUser) -> Path:
+    async def download_app_code(self, app_id: str, login_user: JWTUser) -> Path:
         app = await self._get_participant_app(app_id, login_user)
         source_dir = get_code_dir(login_user.user_id, app.id)
         ThrowUtils.throw_if(not source_dir.exists(), ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码")
@@ -210,14 +220,14 @@ class AppService:
         archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=source_dir)
         return Path(archive_path)
 
-    async def get_code_tree(self, app_id: int, login_user: JWTUser) -> list:
+    async def get_code_tree(self, app_id: str, login_user: JWTUser) -> list:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id)
         if not code_dir.exists():
             return []
         return AppService._build_file_tree(code_dir, code_dir)
 
-    async def get_code_file(self, app_id: int, file_path: str, login_user: JWTUser) -> str:
+    async def get_code_file(self, app_id: str, file_path: str, login_user: JWTUser) -> str:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         target = (code_dir / file_path).resolve()
@@ -242,7 +252,7 @@ class AppService:
             return "".join(content) + "[文件超过500KB，仅展示前50行]"
         return target.read_text(encoding="utf-8", errors="replace")
 
-    async def save_code_file(self, app_id: int, file_path: str, content: str, login_user: JWTUser) -> bool:
+    async def save_code_file(self, app_id: str, file_path: str, content: str, login_user: JWTUser) -> bool:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         target = (code_dir / file_path).resolve()
@@ -254,7 +264,7 @@ class AppService:
         target.write_text(content, encoding="utf-8")
         return True
 
-    async def create_file(self, app_id: int, file_path: str, login_user: JWTUser) -> bool:
+    async def create_file(self, app_id: str, file_path: str, login_user: JWTUser) -> bool:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         target = (code_dir / file_path).resolve()
@@ -267,7 +277,7 @@ class AppService:
         target.touch(exist_ok=False)
         return True
 
-    async def create_folder(self, app_id: int, dir_path: str, login_user: JWTUser) -> bool:
+    async def create_folder(self, app_id: str, dir_path: str, login_user: JWTUser) -> bool:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         target = (code_dir / dir_path).resolve()
@@ -279,7 +289,7 @@ class AppService:
         target.mkdir(parents=True, exist_ok=False)
         return True
 
-    async def upload_file(self, app_id: int, file_path: str, content: bytes, login_user: JWTUser) -> bool:
+    async def upload_file(self, app_id: str, file_path: str, content: bytes, login_user: JWTUser) -> bool:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         target = (code_dir / file_path).resolve()
@@ -291,7 +301,7 @@ class AppService:
         target.write_bytes(content)
         return True
 
-    async def delete_node(self, app_id: int, node_path: str, login_user: JWTUser) -> bool:
+    async def delete_node(self, app_id: str, node_path: str, login_user: JWTUser) -> bool:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         target = (code_dir / node_path).resolve()
@@ -307,7 +317,7 @@ class AppService:
             target.unlink()
         return True
 
-    async def rename_node(self, app_id: int, old_path: str, new_path: str, login_user: JWTUser) -> bool:
+    async def rename_node(self, app_id: str, old_path: str, new_path: str, login_user: JWTUser) -> bool:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         old_target = (code_dir / old_path).resolve()
@@ -323,7 +333,7 @@ class AppService:
         old_target.rename(new_target)
         return True
 
-    async def run_script(self, app_id: int, file_path: str, env: str, login_user: JWTUser) -> AsyncGenerator[str, None]:
+    async def run_script(self, app_id: str, file_path: str, env: str, login_user: JWTUser) -> AsyncGenerator[str, None]:
         app = await self._get_participant_app(app_id, login_user)
         code_dir = get_code_dir(login_user.user_id, app.id).resolve()
         target = (code_dir / file_path).resolve()
@@ -366,7 +376,7 @@ class AppService:
         async for chunk in drain():
             yield chunk
 
-    async def get_db_tables(self, app_id: int, login_user: JWTUser) -> list:
+    async def get_db_tables(self, app_id: str, login_user: JWTUser) -> list:
         app = await self._get_participant_app(app_id, login_user)
         if not app.db_name:
             return []
@@ -400,29 +410,29 @@ class AppService:
             pass
         return result
 
-    async def _get_participant_app(self, app_id: int, login_user: JWTUser) -> App:
+    async def _get_participant_app(self, app_id: str, login_user: JWTUser) -> App:
         """参与类接口的取应用入口：owner/member/admin 均放行。"""
-        ThrowUtils.throw_if(app_id <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 错误")
+        ThrowUtils.throw_if(not app_id, ErrorCode.PARAMS_ERROR, "应用 ID 错误")
         app = await self.db.get(App, app_id)
         ThrowUtils.throw_if(app is None, ErrorCode.NOT_FOUND_ERROR, "应用不存在")
         await require_participant(self.db, app, login_user)
         return app
 
-    async def _get_viewable_app(self, app_id: int, login_user: JWTUser) -> App:
+    async def _get_viewable_app(self, app_id: str, login_user: JWTUser) -> App:
         """查看详情：成员即可（admin 天然放行）。"""
-        ThrowUtils.throw_if(app_id <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 错误")
+        ThrowUtils.throw_if(not app_id, ErrorCode.PARAMS_ERROR, "应用 ID 错误")
         app = await self.db.get(App, app_id)
         ThrowUtils.throw_if(app is None, ErrorCode.NOT_FOUND_ERROR, "应用不存在")
         await require_participant(self.db, app, login_user)
         return app
 
-    async def _get_existing_app(self, app_id: int) -> App:
-        ThrowUtils.throw_if(app_id <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 错误")
+    async def _get_existing_app(self, app_id: str) -> App:
+        ThrowUtils.throw_if(not app_id, ErrorCode.PARAMS_ERROR, "应用 ID 错误")
         app = await self.db.get(App, app_id)
         ThrowUtils.throw_if(app is None, ErrorCode.NOT_FOUND_ERROR, "应用不存在")
         return app
 
-    async def _delete_app_by_id(self, app_id: int) -> None:
+    async def _delete_app_by_id(self, app_id: str) -> None:
         """删除项目：物理删 app 记录；成员记录逻辑删除。"""
         await self._get_existing_app(app_id)
         await self.db.execute(delete(App).where(App.id == app_id))

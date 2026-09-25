@@ -50,13 +50,13 @@ def _system_error(exc: Exception) -> BusinessException:
     return BusinessException(ErrorCode.SYSTEM_ERROR, str(exc))
 
 
-@router.post("/create", response_model=BaseResponse[int])
+@router.post("/create", response_model=BaseResponse[str])
 async def add_app(
     payload: AppAddRequest,
     http_request: Request,
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
-) -> BaseResponse[int]:
+) -> BaseResponse[str]:
     trace_id = getattr(http_request.state, "trace_id", None)
     log.info(
         "app-service add app request traceId={} userId={} appName={}",
@@ -77,7 +77,7 @@ async def add_app(
 
 @router.delete("", response_model=BaseResponse[bool])
 async def delete_app(
-    app_id: int = Query(alias="appId"),
+    app_id: str = Query(alias="appId"),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[bool]:
@@ -93,7 +93,7 @@ async def delete_app(
 
 @router.get("/{app_id}", response_model=BaseResponse[dict | None])
 async def get_app(
-    app_id: int,
+    app_id: str,
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[dict | None]:
@@ -109,7 +109,7 @@ async def get_app(
 
 @router.get("/get/vo", response_model=BaseResponse[AppVO])
 async def get_app_vo(
-    id: int = Query(),
+    id: str = Query(),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[AppVO]:
@@ -217,7 +217,7 @@ async def list_all_apps_for_admin(
 
 @router.get("/member/list/{app_id}", response_model=BaseResponse[list[AppMemberVO]])
 async def list_app_members(
-    app_id: int,
+    app_id: str,
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[list[AppMemberVO]]:
@@ -265,7 +265,7 @@ async def remove_app_member(
 
 @router.get("/download/{app_id}")
 async def download_app_code(
-    app_id: int,
+    app_id: str,
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -282,7 +282,7 @@ async def download_app_code(
 
 @router.get("/code/tree/{app_id}", response_model=BaseResponse[list])
 async def get_app_code_tree(
-    app_id: int,
+    app_id: str,
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[list]:
@@ -298,7 +298,7 @@ async def get_app_code_tree(
 
 @router.get("/code/file/{app_id}", response_model=BaseResponse[str])
 async def get_app_code_file(
-    app_id: int,
+    app_id: str,
     path: str = Query(...),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
@@ -315,7 +315,7 @@ async def get_app_code_file(
 
 @router.post("/code/file/{app_id}", response_model=BaseResponse[bool])
 async def save_app_code_file(
-    app_id: int,
+    app_id: str,
     path: str = Query(...),
     payload: dict[str, object] = Body(...),
     current_user: JWTUser = Depends(require_login),
@@ -334,7 +334,7 @@ async def save_app_code_file(
 
 @router.post("/code/file/create/{app_id}", response_model=BaseResponse[bool])
 async def create_app_code_file(
-    app_id: int,
+    app_id: str,
     path: str = Query(...),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
@@ -351,7 +351,7 @@ async def create_app_code_file(
 
 @router.post("/code/folder/create/{app_id}", response_model=BaseResponse[bool])
 async def create_app_code_folder(
-    app_id: int,
+    app_id: str,
     path: str = Query(...),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
@@ -368,7 +368,7 @@ async def create_app_code_folder(
 
 @router.post("/code/file/upload/{app_id}", response_model=BaseResponse[bool])
 async def upload_app_code_file(
-    app_id: int,
+    app_id: str,
     path: str = Query(...),
     file: UploadFile = File(...),
     current_user: JWTUser = Depends(require_login),
@@ -387,7 +387,7 @@ async def upload_app_code_file(
 
 @router.delete("/code/{app_id}", response_model=BaseResponse[bool])
 async def delete_app_code_node(
-    app_id: int,
+    app_id: str,
     path: str = Query(...),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
@@ -404,7 +404,7 @@ async def delete_app_code_node(
 
 @router.post("/code/rename/{app_id}", response_model=BaseResponse[bool])
 async def rename_app_code_node(
-    app_id: int,
+    app_id: str,
     from_param: str = Query(..., alias="from"),
     to: str = Query(...),
     current_user: JWTUser = Depends(require_login),
@@ -422,7 +422,7 @@ async def rename_app_code_node(
 
 @router.post("/code/run/{app_id}")
 async def run_app_code_script(
-    app_id: int,
+    app_id: str,
     payload: dict[str, object] = Body(...),
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
@@ -443,7 +443,7 @@ async def run_app_code_script(
 
 @router.get("/db/tables/{app_id}", response_model=BaseResponse[list])
 async def get_app_db_tables(
-    app_id: int,
+    app_id: str,
     current_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ) -> BaseResponse[list]:

@@ -1,7 +1,7 @@
 CREATE TABLE `chat_message` (
   `id`                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `message_uid`       CHAR(36)        NOT NULL,
-  `user_id`           BIGINT UNSIGNED NOT NULL,
+  `user_id`           VARCHAR(32)     NOT NULL COMMENT '用户id（user_xxxx）',
   `session_id`        CHAR(36)        NOT NULL,
   `app_id`            VARCHAR(64)     NOT NULL,
   `seq`               BIGINT UNSIGNED NOT NULL COMMENT '会话内单调递增,提炼位点的载体',

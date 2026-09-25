@@ -89,9 +89,9 @@ const inviteAccount = ref('')
 const addingMember = ref(false)
 
 const isMemberManager = computed(() => {
-  // 仅项目属主或管理员可管理成员（与后端权限一致）
-  const uid = Number(loginUserStore.loginUser.id || 0)
-  return Boolean(memberApp.value?.owner) && Number(memberApp.value.owner) === uid
+  // 仅项目属主或管理员可管理成员（与后端权限一致）；id 已改为 user_xxxx 前缀字符串
+  const uid = String(loginUserStore.loginUser.id || '')
+  return Boolean(memberApp.value?.owner) && String(memberApp.value.owner) === uid
 })
 
 const openCreateChat = (prompt?: string) => {
@@ -141,12 +141,12 @@ const selectPromptExample = (_example: string) => {
   openCreateChat()
 }
 
-const goToChat = (appId?: number | null) => {
+const goToChat = (appId?: string | null) => {
   if (!appId) return
   router.push(`/app/chat/${appId}`)
 }
 
-const goToEdit = async (appId?: number | null) => {
+const goToEdit = async (appId?: string | null) => {
   if (!appId) return
   try {
     const res = await getAppVoById({ id: appId })
@@ -209,7 +209,7 @@ const fetchMembers = async () => {
   if (!memberApp.value?.id) return
   memberLoading.value = true
   try {
-    const res = await listAppMembers({ app_id: Number(memberApp.value.id) })
+    const res = await listAppMembers({ app_id: String(memberApp.value.id) })
     if (res.data.code === 0 && res.data.data) {
       members.value = res.data.data ?? []
       return
@@ -232,7 +232,7 @@ const handleInviteMember = async () => {
   addingMember.value = true
   try {
     const res = await addAppMember({
-      appId: Number(memberApp.value.id),
+      appId: String(memberApp.value.id),
       userAccount: account,
     })
     if (res.data.code === 0) {
@@ -250,11 +250,11 @@ const handleInviteMember = async () => {
   }
 }
 
-const handleRemoveMember = async (userId?: number) => {
+const handleRemoveMember = async (userId?: string) => {
   if (!userId) return
   try {
     const res = await removeAppMember({
-      appId: Number(memberApp.value.id),
+      appId: String(memberApp.value.id),
       userId,
     })
     if (res.data.code === 0) {

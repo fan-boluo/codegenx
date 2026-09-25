@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, func, text
+from sqlalchemy import BigInteger, DateTime, Index, String, func, text
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,8 +22,8 @@ class AppMember(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    app_id: Mapped[int] = mapped_column("appId", BigInteger, nullable=False)
-    user_id: Mapped[int] = mapped_column("userId", BigInteger, nullable=False)
+    app_id: Mapped[str] = mapped_column("appId", String(32), nullable=False)  # app_xxxx
+    user_id: Mapped[str] = mapped_column("userId", String(32), nullable=False)  # user_xxxx
     create_time: Mapped[datetime] = mapped_column(
         "createTime",
         DateTime,

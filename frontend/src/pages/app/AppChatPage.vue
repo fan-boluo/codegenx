@@ -266,7 +266,7 @@
               {{ messageItem.content }}
             </div>
             <div class="message-avatar">
-              <a-avatar :src="loginUserStore.loginUser.userAvatar || undefined" :size="28">
+              <a-avatar :size="28">
                 {{ loginUserStore.loginUser.userName?.charAt(0) || 'U' }}
               </a-avatar>
             </div>
@@ -1707,7 +1707,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ appId: Number(appId.value), message: userMessage, sessionId: currentSessionId, requestId, traceId: createClientId(), dbName: appInfo.value?.dbName || null }),
+      body: JSON.stringify({ appId: String(appId.value), message: userMessage, sessionId: currentSessionId, requestId, traceId: createClientId(), dbName: appInfo.value?.dbName || null }),
       signal: controller.signal,
     })
     if (!response.ok) { throw new Error(`HTTP ${response.status}`) }
@@ -1749,7 +1749,7 @@ const stopGeneration = async () => {
     await fetch(`${baseURL}/api/ai/chat/stop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ appId: Number(appId.value), sessionId: activeGenerationSessionId.value, requestId: activeGenerationRequestId.value, traceId: createClientId(), reason: 'user-stop' }),
+      body: JSON.stringify({ appId: String(appId.value), sessionId: activeGenerationSessionId.value, requestId: activeGenerationRequestId.value, traceId: createClientId(), reason: 'user-stop' }),
     })
     message.info('已停止生成')
   } catch (error) {

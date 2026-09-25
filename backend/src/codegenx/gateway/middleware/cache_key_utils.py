@@ -19,7 +19,7 @@ class CacheKeyUtils:
         return f"user:login:state:{session_id}"
 
     @staticmethod
-    def gen_user_rate_limit_key(user_id: int, action: str) -> str:
+    def gen_user_rate_limit_key(user_id: str, action: str) -> str:
         """Generate user rate limit cache key.
 
         Args:
@@ -32,7 +32,7 @@ class CacheKeyUtils:
         return f"user:rate_limit:{user_id}:{action}"
 
     @staticmethod
-    def gen_app_chat_memory_key(app_id: int) -> str:
+    def gen_app_chat_memory_key(app_id: str) -> str:
         """Generate app chat memory_bak cache key.
 
         Args:
@@ -44,7 +44,7 @@ class CacheKeyUtils:
         return f"app:chat_memory:{app_id}"
 
     @staticmethod
-    def gen_app_config_key(app_id: int) -> str:
+    def gen_app_config_key(app_id: str) -> str:
         """Generate app configuration cache key.
 
         Args:

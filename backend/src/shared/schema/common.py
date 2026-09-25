@@ -25,7 +25,8 @@ class BaseResponse(CamelBaseModel, Generic[T]):
 
 
 class DeleteRequest(CamelBaseModel):
-    id: int
+    # user/app 的 id 已改为前缀字符串（user_xxxx/app_xxxx）
+    id: str
 
 
 class PageRequest(CamelBaseModel):
@@ -45,11 +46,12 @@ class PageData(CamelBaseModel, Generic[T]):
 
 
 class LongIdModel(CamelBaseModel):
-    id: int | None = None
+    # user/app 的 id 为前缀字符串（user_xxxx/app_xxxx）
+    id: str | None = None
 
-    # id序列化，int类型序列化为字符串，避免精度丢失
+    # id序列化，统一序列化为字符串
     @field_serializer("id", when_used="json")
-    def serialize_id(self, value: int | None) -> str | None:
+    def serialize_id(self, value: str | None) -> str | None:
         return str(value) if value is not None else None
 
 

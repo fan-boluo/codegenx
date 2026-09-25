@@ -49,7 +49,7 @@ class JWTRevocationService:
 
     # ── per-token revocation ──────────────────────────────
 
-    async def revoke_token(self, user_id: int, token: str) -> None:
+    async def revoke_token(self, user_id: str, token: str) -> None:
         """Revoke a single token by adding its jti to the revoked set."""
         jti = compute_jti(token)
         key = f"{JWT_REVOKED_PREFIX}:{user_id}"
@@ -62,7 +62,7 @@ class JWTRevocationService:
         except Exception as exc:
             log.error("Failed to revoke token: user_id={} jti={} error={}", user_id, jti, exc)
 
-    async def is_revoked(self, user_id: int, token: str) -> bool:
+    async def is_revoked(self, user_id: str, token: str) -> bool:
         """Check if a token has been revoked."""
         jti = compute_jti(token)
         key = f"{JWT_REVOKED_PREFIX}:{user_id}"
@@ -74,7 +74,7 @@ class JWTRevocationService:
 
     # ── user-level mass revocation ────────────────────────
 
-    async def revoke_all_user_tokens(self, user_id: int) -> None:
+    async def revoke_all_user_tokens(self, user_id: str) -> None:
         """Revoke all tokens for a user by bumping the version number.
 
         All tokens issued before this call will fail version check.
@@ -87,7 +87,7 @@ class JWTRevocationService:
         except Exception as exc:
             log.error("Failed to revoke all tokens: user_id={} error={}", user_id, exc)
 
-    async def get_user_token_version(self, user_id: int) -> int:
+    async def get_user_token_version(self, user_id: str) -> int:
         """Get current token version for a user."""
         key = f"{JWT_VERSION_PREFIX}:{user_id}"
         try:

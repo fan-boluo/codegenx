@@ -27,7 +27,7 @@ class RateLimitService:
         remain = limit - used
         return remain if remain > 0 else 0
 
-    async def check_user_rate_limit(self, user_id: int, action: str, limit: int | None = None) -> bool:
+    async def check_user_rate_limit(self, user_id: str, action: str, limit: int | None = None) -> bool:
         effective_limit = limit if limit is not None else CHAT_USER_RATE_LIMIT_PER_SECOND
         key = f"rate_limit:user:{user_id}:{action}"
         return await self.try_acquire(key, effective_limit, 1)
