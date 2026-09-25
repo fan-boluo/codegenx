@@ -107,6 +107,35 @@ llm_completion_tokens_total = Counter(
 )
 
 # ---------------------------------------------------------------------------
+# LLM 韧性层（P1：重试/降级/熔断，见 docs/LLM调用设计方案.md §5-§6）
+# ---------------------------------------------------------------------------
+llm_scenario_calls_total = Counter(
+    "codegenx_llm_scenario_calls_total",
+    "Resilient executor attempts by outcome",
+    ["scenario", "model", "outcome"],  # outcome: ok/error_retryable/error_context_overflow/error_fatal/error_logic
+)
+llm_retry_total = Counter(
+    "codegenx_llm_retry_total",
+    "Same-model retries by the resilient executor",
+    ["scenario", "model"],
+)
+llm_fallback_total = Counter(
+    "codegenx_llm_fallback_total",
+    "Calls that switched to a fallback model",
+    ["scenario", "model"],  # model = 被切到的 fallback 模型
+)
+llm_breaker_opens_total = Counter(
+    "codegenx_llm_breaker_opens_total",
+    "Circuit breaker OPEN transitions",
+    ["circuit"],  # circuit = "provider:model"
+)
+llm_circuit_state = Gauge(
+    "codegenx_llm_circuit_state",
+    "Circuit breaker state (0=closed 1=half_open 2=open)",
+    ["circuit"],
+)
+
+# ---------------------------------------------------------------------------
 # Tool
 # ---------------------------------------------------------------------------
 tool_calls_total = Counter(

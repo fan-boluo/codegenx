@@ -3,8 +3,7 @@ from typing import Any, Dict
 
 from codegenx.ai_service.agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from codegenx.ai_service.task.task_manager import TaskManager
-from codegenx.ai_service.llm.async_client import get_llm
-from codegenx.ai_service.utils.config import config
+from codegenx.ai_service.llm.resilience import SCENARIO_COMPACT, resilient_invoke
 from shared import log
 from codegenx.ai_service.context.assembler import ContextAssembler
 from codegenx.ai_service.compact import microcompact_messages, estimate_tokens
@@ -48,8 +47,8 @@ class SessionContext:
         self.memory = MemoryManager(session_id=self.session_id,app_id=self.app_id,user_id=self.user_id)
         self.task = self.task_manager or TaskManager(app_id=self.app_id, session_id=self.session_id, user_id=self.user_id)
         self._session_summary = SessionSummaryService(session_id=self.session_id,app_id=self.app_id,user_id=self.user_id)
-        # P0 修复：压缩走共享客户端 + compact 场景模型路由（原来即用即弃新建且永远用默认模型）
-        self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_summary,llm_fn=get_llm(config.get_model_for_scenario("compact")).invoke)
+        # P1：压缩走韧性层（compact 场景模型链 + 熔断/重试/降级），不再即用即弃新建客户端
+        self._compaction = CompactionEngine(session_id=self.session_id,session_memory=self._session_summary,llm_fn=lambda messages: resilient_invoke(SCENARIO_COMPACT, messages))
         self.system_prompt = ""
         # 构建初始化的聊天记录，on_session_start从snapshot加载进行初始化
         self.chat_messages = []

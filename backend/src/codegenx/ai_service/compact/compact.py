@@ -25,7 +25,6 @@ Circuit breaker
 from __future__ import annotations
 
 import asyncio
-import random
 from shared import log
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
@@ -278,27 +277,23 @@ async def _llm_compact(
                 "LLM compact attempt {}/{} failed ({}): {}",
                 attempt, MAX_COMPACT_RETRIES, err_class.value, exc,
             )
-            # 确定性错误/本地 bug：重试无意义，直接放弃（上层走截断兜底路径）
-            if err_class in (LLMErrorClass.FATAL, LLMErrorClass.LOGIC):
+            # P1：瞬态错误的重试/降级已由韧性层（resilient_invoke）负责；
+            # 本循环只处理上下文超长——截断最老消息后重试，其余错误直接放弃
+            #（上层 compact_if_needed 走保守截断兜底）
+            if err_class is not LLMErrorClass.CONTEXT_OVERFLOW:
                 return None
             if attempt >= MAX_COMPACT_RETRIES:
                 return None
-            if err_class is LLMErrorClass.CONTEXT_OVERFLOW:
-                # PTL retry: drop oldest fraction, ensuring we don't split
-                # an assistant message from its follow-up tool messages.
-                n_drop = max(1, int(len(work_messages) * PTL_TRUNCATE_RATIO))
-                # Find safe boundary: if the cut lands on a tool message,
-                # walk forward until we find a non-tool message.
-                safe_idx = n_drop
-                while safe_idx < len(work_messages) and work_messages[safe_idx].get("role") == "tool":
-                    safe_idx += 1
-                work_messages = work_messages[safe_idx:]
-                log.info("PTL retry: dropped {} oldest messages (safe boundary at {})", safe_idx, safe_idx)
-            else:
-                # 瞬态错误（超时/429/5xx）：指数退避后原样重试，不再无间隔截断消息
-                delay = min(0.5 * (2 ** (attempt - 1)), 4.0) + random.uniform(0, 0.3)
-                log.info("LLM compact transient error, backing off {:.1f}s", delay)
-                await asyncio.sleep(delay)
+            # PTL retry: drop oldest fraction, ensuring we don't split
+            # an assistant message from its follow-up tool messages.
+            n_drop = max(1, int(len(work_messages) * PTL_TRUNCATE_RATIO))
+            # Find safe boundary: if the cut lands on a tool message,
+            # walk forward until we find a non-tool message.
+            safe_idx = n_drop
+            while safe_idx < len(work_messages) and work_messages[safe_idx].get("role") == "tool":
+                safe_idx += 1
+            work_messages = work_messages[safe_idx:]
+            log.info("PTL retry: dropped {} oldest messages (safe boundary at {})", safe_idx, safe_idx)
 
     return None
 

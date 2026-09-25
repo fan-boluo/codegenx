@@ -1,20 +1,21 @@
-"""LLM error-recovery mixin (s11).
+"""LLM error-recovery mixin (s11)。
 
-Three recovery paths wired into the main invoke loop:
+业务语义恢复（本 Mixin 职责）：
   1. finish_reason length/max_tokens → inject CONTINUATION_MESSAGE and retry.
   2. Context-too-long API error      → compact history and retry.
-  3. Transient transport error        → exponential backoff and retry.
+传输类瞬态错误的重试/降级/熔断已移交韧性层（llm/resilience.py，P1）：
+首 chunk 前由 executor 透明重试或切换 fallback 模型；首 chunk 后失败直接抛出，
+本层不再重试（否则前端会出现重复内容，P1-5）。
 """
 from __future__ import annotations
 
 import asyncio
-import random
 from typing import TYPE_CHECKING, Any
 from codegenx.ai_service.agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from codegenx.ai_service.agent.runtime_schema import  RuntimeSessionState, TurnStoppedError, \
     ActivateTurn
-from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
+from codegenx.ai_service.llm.resilience import SCENARIO_AGENT, resilient_invoke_stream
 from shared import log
 
 if TYPE_CHECKING:
@@ -45,11 +46,8 @@ class LLMRecoveryMixin:
         tools = session_state.runtime.tools
         # P0-2 修复：使用 agent 配置的模型（原实现漏传 → 永远回落默认模型，AgentConfig.model 成死配置）
         agent_model = (cfg.resolved_model_name or "").strip() or None
-        # P0-1 修复：共享客户端在循环外创建一次（原实现在重试 while 循环内即用即弃，从不 close）
-        llm_client = get_llm(agent_model)
         continuation_attempts = 0
         compact_attempts = 0
-        transport_attempts = 0
         accumulated_content = ""
         # 本地追踪 continuation 注入的消息，避免污染 context.chat_messages，因为是属于错误重试的消息
         continuation_messages: list[dict[str, Any]] = []
@@ -63,8 +61,13 @@ class LLMRecoveryMixin:
                     "finish_reason": None,
                 }
 
-                async for chunk in llm_client.invoke_stream(
-                    messages, tools, timeout=cfg.llm_stream_timeout_seconds
+                # P1：重试/降级/熔断由韧性层负责（含 agent 配置模型 → fallback 链）
+                async for chunk in resilient_invoke_stream(
+                    SCENARIO_AGENT,
+                    messages,
+                    tools=tools,
+                    primary_model=agent_model,
+                    timeout=cfg.llm_stream_timeout_seconds,
                 ):
                     self._raise_if_stop_requested(session_state)
                     if chunk["type"] == "content":
@@ -114,7 +117,6 @@ class LLMRecoveryMixin:
                         continuation_attempts,
                     )
 
-                transport_attempts = 0  # reset on clean success
                 round_response["content"] = accumulated_content + round_response["content"]
                 return round_response
 
@@ -122,7 +124,8 @@ class LLMRecoveryMixin:
                 raise
 
             except Exception as exc:
-                # P0-3 修复：按 SDK 类型化异常分类（原为 str(exc) 关键词匹配，会误判重试）
+                # 按 SDK 类型化异常分类；瞬态错误的重试已在韧性层完成（含首 chunk 前窗口），
+                # 这里只保留业务语义恢复：上下文超长 → 压缩历史后重试
                 err_class = classify_llm_error(exc)
 
                 # Strategy 2: context too long — compact and retry
@@ -132,7 +135,7 @@ class LLMRecoveryMixin:
                         self._record_recovery(
                             turn_state,
                             "compact",
-                            continuation_attempts + compact_attempts + transport_attempts,
+                            continuation_attempts + compact_attempts,
                         )
                         log.warning(
                             "[Recovery] Context too long, compacting history "
@@ -148,32 +151,6 @@ class LLMRecoveryMixin:
                         continue
                     raise
 
-                # Strategy 3: transient transport error — exponential backoff and retry
-                if err_class is LLMErrorClass.RETRYABLE:
-                    if transport_attempts < cfg.max_transport_attempts:
-                        delay = _recovery_backoff_delay(
-                            transport_attempts,
-                            cfg.transport_backoff_base_seconds,
-                            cfg.transport_backoff_max_seconds,
-                        )
-                        transport_attempts += 1
-                        self._record_recovery(
-                            turn_state,
-                            "backoff",
-                            continuation_attempts + compact_attempts + transport_attempts,
-                        )
-                        log.warning(
-                            "[Recovery] Transport error: {}. Backing off {:.1f}s "
-                            "(attempt {}/{})",
-                            exc,
-                            delay,
-                            transport_attempts,
-                            cfg.max_transport_attempts,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    raise
-
                 raise
 
     # ------------------------------------------------------------------ helpers
@@ -184,7 +161,3 @@ class LLMRecoveryMixin:
     ) -> None:
         turn_state.llm_recovery_count = total_count
         turn_state.last_recovery_kind = kind
-
-
-def _recovery_backoff_delay(attempt: int, base: float, max_delay: float) -> float:
-    return min(base * (2**attempt), max_delay) + random.uniform(0, 1)

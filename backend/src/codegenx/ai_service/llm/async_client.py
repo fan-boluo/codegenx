@@ -77,6 +77,30 @@ async def _stream_chunk_generator(agen, timeout_seconds: float):
                 await pump_task
         raise
 
+def _record_usage(model_name: str, usage: Any) -> None:
+    """P1 用量采集：结构化日志 + prometheus 计数（守卫式，绝不阻断调用）。
+
+    覆盖韧性层各场景（compact/summary/memory 等）的 token 用量；
+    agent 在线链路另有 record_llm_call 按 telemetry 记账。
+    """
+    if not usage:
+        return
+    prompt = getattr(usage, "prompt_tokens", 0) or 0
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    log.debug(
+        "[llm_usage] model={} prompt_tokens={} completion_tokens={}",
+        model_name, prompt, completion,
+    )
+    try:
+        from codegenx.ai_service.monitor import prometheus_metrics as m
+        if prompt:
+            m.llm_prompt_tokens_total.labels(app_id="", model=model_name).inc(prompt)
+        if completion:
+            m.llm_completion_tokens_total.labels(app_id="", model=model_name).inc(completion)
+    except Exception:  # noqa: BLE001 — 埋点失败静默
+        pass
+
+
 class AsyncLLMClient:
     """Async LLM Client wrapping OpenAI's Async interface."""
     def __init__(self, model_name: Optional[str] = None):
@@ -110,7 +134,10 @@ class AsyncLLMClient:
 
         try:
             completion = await self.client.chat.completions.create(**kwargs)
+            _record_usage(self.model_name, getattr(completion, "usage", None))
             if not completion.choices:
+                # 空 choices：与"模型返回空串"无法区分会掩盖内容过滤/上游异常，至少留痕
+                log.warning("[llm] model={} 返回空 choices", self.model_name)
                 return ""
 
             message = completion.choices[0].message
@@ -151,11 +178,14 @@ class AsyncLLMClient:
 
             tool_calls_buffer = {}
             finish_reason = None
+            captured_usage: Any = None  # P1：机会性采集 usage（部分 provider 在末尾 chunk 携带）
 
             try:
                 async def _consume_stream():
-                    nonlocal finish_reason
+                    nonlocal finish_reason, captured_usage
                     async for chunk in stream:
+                        if getattr(chunk, "usage", None) is not None:
+                            captured_usage = chunk.usage
                         if not chunk.choices:
                             continue
                         choice = chunk.choices[0]
@@ -196,6 +226,9 @@ class AsyncLLMClient:
                 if finish_reason:
                     yield {"type": "response_info", "data": {"finish_reason": finish_reason}}
                 raise
+
+            # 流正常结束：记录采集到的 usage（若有）
+            _record_usage(self.model_name, captured_usage)
 
             # Yield accumulated tools at the end of stream
             if tool_calls_buffer:

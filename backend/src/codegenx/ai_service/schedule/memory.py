@@ -35,7 +35,7 @@ from datetime import datetime
 from shared import log
 
 from codegenx.ai_service.utils.config import config
-from codegenx.ai_service.llm.async_client import AsyncLLMClient, get_llm
+from codegenx.ai_service.llm.resilience import SCENARIO_MEMORY, resilient_invoke
 from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.prompts import (
     MEMORY_CONFLICT_SYSTEM_PROMPT,
@@ -89,8 +89,6 @@ class MemoryScheduler:
         self._online_busy = online_busy_fn
         self._poll_interval = poll_interval
         self._batch_size = batch_size
-        # 离线小模型客户端（惰性创建，独立于在线对话模型）
-        self._llm: AsyncLLMClient | None = None
         # 离线 LLM 并发上限：避免挤占在线对话资源
         self._sem = asyncio.Semaphore(config.memory.store.extract_max_concurrency or 2)
         self._stop = asyncio.Event()
@@ -531,26 +529,22 @@ class MemoryScheduler:
 
     # === LLM 调用（小模型 + 并发管控）===
 
-    def _get_llm(self) -> AsyncLLMClient:
-        """惰性获取离线提取小模型客户端（memory.model_name → model_roles.memory → 默认模型）。"""
-        if self._llm is None:
-            llm_model = (
-                config.memory.store.model_name
-                or config.get_model_for_scenario("memory")
-                or config.get_default_model()
-            )
-            self._llm = get_llm(llm_model)
-            log.info("离线记忆小模型已初始化: {}", llm_model)
-        return self._llm
-
     async def _invoke_llm(self, messages: list[dict], max_tokens: int = 1024) -> str:
-        """受控 LLM 调用：信号量限并发 + 在线让位（有活跃会话先等 1 秒）。"""
+        """受控 LLM 调用：信号量限并发 + 在线让位（有活跃会话先等 1 秒）。
+
+        P1：走韧性层（memory 场景模型链 + 熔断/重试/降级）；
+        memory.store.model_name 仍为最高优先级（向后兼容）。
+        """
         async with self._sem:
             if self._online_busy is not None and self._online_busy():
                 # 在线对话优先：短暂让位后再调用（只延迟一次，不无限等待）
                 await asyncio.sleep(1.0)
-            return await self._get_llm().invoke(
-                messages=messages, max_tokens=max_tokens, temperature=0.0
+            return await resilient_invoke(
+                SCENARIO_MEMORY,
+                messages,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                primary_model=config.memory.store.model_name or None,
             )
 
 

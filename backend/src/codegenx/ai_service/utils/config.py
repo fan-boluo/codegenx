@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import ClassVar, Dict, List
+from typing import ClassVar, Dict, List, Union
 from functools import lru_cache
 from pydantic import AliasChoices, ConfigDict, Field, BaseModel
 from pydantic.alias_generators import to_camel
@@ -53,9 +53,7 @@ class AgentConfig(Base):
     max_same_tool_calls: ClassVar[int] = 3
     max_continuation_attempts: ClassVar[int] = 3
     max_compact_attempts: ClassVar[int] = 2
-    max_transport_attempts: ClassVar[int] = 3
-    transport_backoff_base_seconds: ClassVar[float] = 1.0
-    transport_backoff_max_seconds: ClassVar[float] = 8.0
+    # 传输层重试参数已上移至 llm.*（LLMConfig，P1 韧性层），此处不再保留
     llm_stream_timeout_seconds: ClassVar[float] = 300.0  # 单次 LLM 流式调用总超时（秒）
     max_steps: int = Field(
         default=50,
@@ -336,16 +334,49 @@ class ModelsConfig(Base):
     name: str = Field(default="qwen3.8-flash")
     provider: str = Field(default="dashscope")
 
+class LLMConfig(Base):
+    """LLM 调用韧性层参数（P1：重试/熔断/降级，见 docs/LLM调用设计方案.md §5-§6）"""
+    max_attempts: int = Field(
+        default=2,
+        validation_alias=AliasChoices("maxAttempts", "max_attempts"),
+    )  # 单模型瞬态错误重试上限（不含首次）；重试耗尽后切 fallback 模型
+    backoff_base_seconds: float = Field(
+        default=0.5,
+        validation_alias=AliasChoices("backoffBaseSeconds", "backoff_base_seconds"),
+    )  # 指数退避基数
+    backoff_max_seconds: float = Field(
+        default=8.0,
+        validation_alias=AliasChoices("backoffMaxSeconds", "backoff_max_seconds"),
+    )  # 退避上限（Retry-After 超过该值时按该值封顶）
+    breaker_failure_threshold: int = Field(
+        default=5,
+        validation_alias=AliasChoices("breakerFailureThreshold", "breaker_failure_threshold"),
+    )  # 连续失败阈值（CLOSED→OPEN）
+    breaker_recovery_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("breakerRecoveryTimeoutSeconds", "breaker_recovery_timeout_seconds"),
+    )  # OPEN 冷却期，到期转 HALF_OPEN 放行探测
+    breaker_half_open_max_calls: int = Field(
+        default=2,
+        validation_alias=AliasChoices("breakerHalfOpenMaxCalls", "breaker_half_open_max_calls"),
+    )  # 半开态并发探测数上限
+    breaker_half_open_success_rate: float = Field(
+        default=0.5,
+        validation_alias=AliasChoices("breakerHalfOpenSuccessRate", "breaker_half_open_success_rate"),
+    )  # 探测成功率达标则闭合
+
 class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     models:List[ModelsConfig] = Field(default_factory=lambda: [ModelsConfig()])
-    # 场景→模型名路由（P0-2）：agent_main/compact/summary/memory；
-    # 未配置的场景回落默认模型，memory.store.model_name 优先级更高（向后兼容）
-    model_roles: Dict[str, str] = Field(
+    # 场景→模型路由（P0-2/P1）：agent_main/compact/summary/memory；
+    # 值为模型名或模型链列表（[主模型, fallback1, ...]）；未配置的场景回落默认模型，
+    # memory.store.model_name 优先级更高（向后兼容）
+    model_roles: Dict[str, Union[str, List[str]]] = Field(
         default_factory=dict,
         validation_alias=AliasChoices("modelRoles", "model_roles"),
     )
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
@@ -399,7 +430,31 @@ class Config(BaseSettings):
 
     def get_model_for_scenario(self, scenario: str) -> str | None:
         """场景→模型路由（P0-2）；未配置返回 None，由调用方回落默认模型。"""
-        return (self.model_roles or {}).get(str(scenario).strip().lower()) or None
+        value = (self.model_roles or {}).get(str(scenario).strip().lower())
+        if isinstance(value, list):
+            return str(value[0]).strip() or None if value else None
+        return str(value).strip() or None if value else None
+
+    def get_model_chain(self, scenario: str, primary_override: str | None = None) -> list[str]:
+        """场景→模型链 [主模型, fallback...]（P1 降级链）。
+
+        - primary_override：替换主模型（如 agent_config.model / memory.store.model_name）；
+        - 场景未配置时回落 [默认模型]。
+        """
+        value = (self.model_roles or {}).get(str(scenario).strip().lower())
+        if isinstance(value, list):
+            chain = [str(m).strip() for m in value if str(m).strip()]
+        elif value:
+            chain = [str(value).strip()]
+        else:
+            chain = []
+        if not chain:
+            chain = [self.get_default_model()]
+        override = str(primary_override or "").strip()
+        if override:
+            # override 只替换主模型，fallback 链保留（去掉与 override 重复的项）
+            chain = [override] + [m for m in chain[1:] if m != override]
+        return chain
 
     def get_default_model(self) -> str:
         if not self.models:
