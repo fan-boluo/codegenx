@@ -61,7 +61,12 @@ class SessionListItem(BaseModel):
 
 
 @chat_router.post("/chat/gen")
-async def generate_code_stream(request: AiServiceGenerateRequest):
+async def generate_code_stream(
+    request: AiServiceGenerateRequest,
+    login_user: JWTUser = Depends(require_login),
+):
+    # 身份一律取 JWT 登录态，请求体 userId 不可信（防会话/工作区挂错用户）
+    request.user_id = str(login_user.user_id)
     trace_id, request_id, session_id = _validate_call_context(request)
     log.info(
         "ai-service public stream request traceId={} requestId={} appId={} messageLen={} preview={}",
@@ -91,8 +96,13 @@ async def generate_code_stream(request: AiServiceGenerateRequest):
 
 
 @chat_router.post("/chat/stop")
-async def stop_code_stream(request: AiServiceStopRequest):
+async def stop_code_stream(
+    request: AiServiceStopRequest,
+    login_user: JWTUser = Depends(require_login),
+):
     trace_id, request_id, session_id = _validate_stop_context(request)
+    # 同 chat/gen：停止请求身份也以 JWT 登录态为准
+    user_id = str(login_user.user_id)
     log.info(
         "ai-service public stop request traceId={} requestId={} appId={} sessionId={} reason={} graceSeconds={}",
         trace_id,
@@ -105,7 +115,7 @@ async def stop_code_stream(request: AiServiceStopRequest):
     try:
         result = await agent_service.stop_session(
             app_id=request.app_id,
-            user_id=request.user_id,
+            user_id=user_id,
             session_id=session_id,
             trace_id=trace_id,
             request_id=request_id,
