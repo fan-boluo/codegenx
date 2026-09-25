@@ -16,6 +16,13 @@ class Base(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class AgentMemoryPolicy(Base):
+    """智能体记忆读写策略（P4 §10.5，hot/warm 仍按 app+user 全局共享，起步不分片）。"""
+    read_types: List[str] | None = None   # 注入时允许的记忆类型过滤；None=全部
+    write_enabled: bool = True            # 是否参与记忆提炼（纯执行类智能体可关写，防污染）
+    write_types: List[str] | None = None  # 允许提炼成的记忆类型；None=不限
+
+
 class AgentConfig(Base):
     id: str = ""
     token: str = ""
@@ -61,7 +68,20 @@ class AgentConfig(Base):
     )  # 一次turn的最大llm推理步数
     session_cleanup_interval_seconds: ClassVar[int] = 300 # 每隔5分钟就进行闲置sessioni清理一次
     session_idle_timeout_seconds : ClassVar[int] = 1800 # session空闲时间 30分钟就清除
+    session_swap_idle_seconds: int = Field(
+        default=300,
+        validation_alias=AliasChoices("swapIdleSeconds", "session_swap_idle_seconds"),
+    )  # P3：闲置超过该秒数且无在途任务的会话卸载 chat_messages（须远小于 session_idle_timeout_seconds）
     max_sessions : ClassVar[int] = 100  # sessoion pool的session的最多个数
+
+    # ── P4 多智能体（docs/SystemApp架构设计.md §10）：AgentConfig 扩展为 AgentSpec 超集，
+    #    旧配置无新字段时与现状完全等价 ──────────────────────────────────────────
+    persona: str = ""                      # system prompt 模板；空=默认 DEFAULT_PROMPT_TEMPLATE
+    description: str = ""                  # 给规划智能体的派活描述（subagent 工具 description 来源）
+    tools: List[str] | None = None         # 工具 allowlist；None=全部
+    skills: List[str] | None = None        # skill allowlist；None=全部
+    model_override: Dict[str, Union[str, List[str]]] | None = None  # 场景→模型/链覆盖（§10.4）
+    memory: AgentMemoryPolicy = Field(default_factory=AgentMemoryPolicy)
 
     @property
     def context_window_tokens(self) -> int:
@@ -435,19 +455,35 @@ class Config(BaseSettings):
             return str(value[0]).strip() or None if value else None
         return str(value).strip() or None if value else None
 
-    def get_model_chain(self, scenario: str, primary_override: str | None = None) -> list[str]:
-        """场景→模型链 [主模型, fallback...]（P1 降级链）。
+    def get_model_chain(
+        self,
+        scenario: str,
+        primary_override: str | None = None,
+        *,
+        agent: str | None = None,
+        agent_override: Dict[str, Union[str, List[str]]] | None = None,
+    ) -> list[str]:
+        """场景→模型链 [主模型, fallback...]（P1 降级链；P4 §10.4 增加智能体维度）。
 
         - primary_override：替换主模型（如 agent_config.model / memory.store.model_name）；
+        - agent / agent_override：智能体名与 spec.model_override，解析顺序（§10.4）：
+          spec.model_override[scenario] → model_roles["{agent}:{scenario}"] →
+          model_roles[scenario] → [默认模型]；前两级命中为**整链替换**（primary_override 不叠加）；
         - 场景未配置时回落 [默认模型]。
         """
-        value = (self.model_roles or {}).get(str(scenario).strip().lower())
-        if isinstance(value, list):
-            chain = [str(m).strip() for m in value if str(m).strip()]
-        elif value:
-            chain = [str(value).strip()]
-        else:
-            chain = []
+        scenario_key = str(scenario).strip().lower()
+
+        # P4：智能体维度覆盖（spec.model_override 最高 → model_roles["{agent}:{scenario}"]）
+        agent_chain = self._parse_chain((agent_override or {}).get(scenario_key))
+        if not agent_chain and agent:
+            agent_chain = self._parse_chain(
+                (self.model_roles or {}).get(f"{str(agent).strip().lower()}:{scenario_key}")
+            )
+        if agent_chain:
+            return agent_chain
+
+        value = (self.model_roles or {}).get(scenario_key)
+        chain = self._parse_chain(value)
         if not chain:
             chain = [self.get_default_model()]
         override = str(primary_override or "").strip()
@@ -455,6 +491,15 @@ class Config(BaseSettings):
             # override 只替换主模型，fallback 链保留（去掉与 override 重复的项）
             chain = [override] + [m for m in chain[1:] if m != override]
         return chain
+
+    @staticmethod
+    def _parse_chain(value: Union[str, List[str], None]) -> list[str]:
+        """model_roles / model_override 条目值 → 模型链（非法/空值 → 空链）。"""
+        if isinstance(value, list):
+            return [str(m).strip() for m in value if str(m).strip()]
+        if value:
+            return [str(value).strip()]
+        return []
 
     def get_default_model(self) -> str:
         if not self.models:

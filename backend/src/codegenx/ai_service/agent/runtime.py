@@ -24,8 +24,6 @@ from codegenx.ai_service.agent.tool_executor import ToolExecutor
 from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from codegenx.ai_service.bus import MessageBus, RuntimeTurnEvent
 from codegenx.ai_service.utils.config import AgentConfig, config
-from codegenx.ai_service.session.manager import SessionManager
-from codegenx.ai_service.task.task_manager import TaskManager
 from codegenx.ai_service.context.session_context import SessionContext
 from shared import log
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
@@ -62,6 +60,7 @@ class AgentRuntime(LLMRecoveryMixin):
             max_sessions=int(self.agent_config.max_sessions or 1000),
             idle_timeout_seconds=int(self.agent_config.session_idle_timeout_seconds or 3600),
             cleanup_interval_seconds=int(self.agent_config.session_cleanup_interval_seconds or 300),
+            swap_idle_seconds=int(getattr(self.agent_config, "session_swap_idle_seconds", 0) or 300),
         )
 
     # ------------------------------------------------------------------ lifecycle
@@ -230,7 +229,7 @@ class AgentRuntime(LLMRecoveryMixin):
     ) -> RuntimeSessionState:
         """Get existing session or create new one using pool."""
         session_id = str(request.session_id or "")
-        session_state, is_new = await self.session_pool.get_or_create(session_id, request, self)
+        session_state, is_new = await self.session_pool.get_or_create(session_id, request)
 
         if is_new:
             await hook_manager.emit(
@@ -238,7 +237,27 @@ class AgentRuntime(LLMRecoveryMixin):
                 HookContext(event=HookEvent.SESSION_START, session=session_state),
             )
             log.debug("新建一个session_state")
+        else:
+            # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
+            # （复用 on_session_start 已有的快照重载逻辑，docs/SystemApp架构设计.md §7）
+            await self._restore_swapped_session(session_state)
         return session_state
+
+    async def _restore_swapped_session(self, session_state: RuntimeSessionState) -> None:
+        if not getattr(session_state, "swapped_out", False):
+            return
+        session_state.swapped_out = False
+        cm = session_state.context_manager
+        if cm is not None and not cm.chat_messages:
+            from codegenx.ai_service.system_app import get_app
+
+            cm.chat_messages = await get_app().session_io.get_turn_chat_message_snapshot(
+                user_id=session_state.user_id,
+                app_id=session_state.app_id,
+                session_id=session_state.session_id,
+            ) or []
+            log.info("swapped-out session {} 已从快照恢复（{} 条消息）",
+                     session_state.session_id, len(cm.chat_messages))
 
     async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
         """Wait for request cleanup using event notification (avoids busy-wait polling)."""
@@ -915,14 +934,14 @@ class AgentRuntime(LLMRecoveryMixin):
 
 
 # ── Hook 监听器：会话/turn 生命周期编排（docs/Hook设计.md §4.2） ─────────────
-# 跨模块对象创建（SessionManager/TaskManager/SessionContext）属 agent 运行时组合根职责
+# 会话级对象只剩 SessionContext（纯状态）；落盘/任务看板走 SystemApp 无状态服务
 
 
 @on(HookEvent.SESSION_START, name="init_session_objects", priority=10)
 async def init_session_objects(ctx: HookContext) -> None:
     """初始化会话级对象（迁自 handlers.on_session_start）：
 
-    SessionManager / TaskManager / SessionContext、加载聊天历史快照、
+    SessionContext（纯会话状态）、加载聊天历史快照、
     用户消息入库、更新会话索引、state→RUNNING。
     """
     session = ctx.session
@@ -930,21 +949,24 @@ async def init_session_objects(ctx: HookContext) -> None:
     if req is None:
         log.warning("on_session_start: request is None, skipping")
         return
-    session_manager = SessionManager(session.user_id, str(req.app_id), session.session_id)
-    session.session_manager = session_manager
+    from codegenx.ai_service.system_app import get_app
 
-    task_manager = TaskManager(app_id=session.app_id, session_id=session.session_id, user_id=session.user_id)
-    session.task_manager = task_manager
+    session_io = get_app().session_io
+
+    # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体）
+    session.agent_name = str((getattr(req, "metadata", None) or {}).get("agent_name", "") or "")
 
     session.context_manager = SessionContext(
         session_id=session.session_id,
         app_id=session.app_id,
         user_id=session.user_id,
         db_name=session.db_name,
-        task_manager=task_manager,
+        agent_name=session.agent_name,
     )
     # 加载上次聊天时的历史记录到内存
-    session.context_manager.chat_messages = await session_manager.get_turn_chat_message_snapshot() or []
+    session.context_manager.chat_messages = await session_io.get_turn_chat_message_snapshot(
+        user_id=session.user_id, app_id=session.app_id, session_id=session.session_id
+    ) or []
     user_dict = {"role": "user", "content": req.message}
     # 聊天消息入库（MySQL chat_message 表；失败不阻断对话）
     try:
@@ -956,7 +978,10 @@ async def init_session_objects(ctx: HookContext) -> None:
         log.warning("user 消息入库失败（不影响对话）: {}", exc)
 
     # 更新会话索引，供快速列出历史会话
-    await session_manager.upsert_session_index(req.message)
+    await session_io.upsert_session_index(
+        req.message,
+        user_id=session.user_id, app_id=session.app_id, session_id=session.session_id,
+    )
 
     session.state = AgentState.RUNNING
     session.started_at = datetime.utcnow()
@@ -966,7 +991,12 @@ async def init_session_objects(ctx: HookContext) -> None:
 async def persist_chat_snapshot(ctx: HookContext) -> None:
     """保留上下文快照（迁自 handlers.on_turn_end 前半）。"""
     session = ctx.session
-    if session.session_manager is not None and session.context_manager is not None:
-        await session.session_manager.save_turn_chat_message_snapshot(
-            session.context_manager.chat_messages
+    if session.context_manager is not None:
+        from codegenx.ai_service.system_app import get_app
+
+        await get_app().session_io.save_turn_chat_message_snapshot(
+            session.context_manager.chat_messages,
+            user_id=session.user_id,
+            app_id=session.app_id,
+            session_id=session.session_id,
         )

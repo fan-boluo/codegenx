@@ -1,9 +1,11 @@
-"""Persistent task graph (s12).
+"""Persistent task graph (s12, P2 服务化 docs/SystemApp架构设计.md §4.3)。
 
-Upgrades the session-only Planner (s03) to a durable, dependency-aware task
-board stored on disk. One JSON file per task under:
+原 TaskManager（每会话一个实例、只持磁盘路径，且被 SessionContext 兜底重复创建）
+改为全局无状态服务 TaskBoardService：方法保留，实例消失，
+ids（user_id/app_id/session_id）进方法签名，路径每次调用推导。
 
-    ~/.bot/workspace/{app_id}/.tasks/task_{id}.json
+One JSON file per task under:
+    .data/{user_id}/{app_id}/session/{session_id}/.tasks/task_{id}.json
 
 Key concepts
 ------------
@@ -33,63 +35,64 @@ _STATUS_MARKER: dict[str, str] = {
 }
 
 
-# ------------------------------------------------------------------ TaskManager
+def _tasks_dir(user_id: str, app_id: str, session_id: str) -> Path:
+    """任务看板目录：随会话目录按 用户/项目 两级隔离。"""
+    tasks_dir = get_current_session_dir(user_id, app_id, session_id) / ".tasks"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    return tasks_dir
 
 
-class TaskManager:
-    """Per-app-id persistent task graph.
+# ------------------------------------------------------------------ TaskBoardService
 
-    Scope: one ``TaskManager`` per ``app_id``/``session_id``; disk-backed so tasks survive
-    session restarts.  Multiple sessions for the same ``app_id`` share the
-    same board transparently.
+
+class TaskBoardService:
+    """Per-(user, app, session) persistent task graph（全局单例，ids 走参数）。
+
+    Disk-backed so tasks survive session restarts.  Multiple sessions for
+    the same ``app_id`` are isolated by their session directories.
     """
-
-    def __init__(self, app_id: str, session_id: str = "", user_id: str = "") -> None:
-        # 任务看板随会话目录按 用户/项目 两级隔离
-        self._tasks_dir: Path = get_current_session_dir(user_id, app_id, session_id) / ".tasks"
-        self._tasks_dir.mkdir(parents=True, exist_ok=True)
-        self._counter_file: Path = self._tasks_dir / "_counter.json"
 
     # ------------------------------------------------------------------ ID management
 
-    def _next_id(self) -> int:
-        if self._counter_file.exists():
-            data = json.loads(self._counter_file.read_text(encoding="utf-8"))
+    def _next_id(self, tasks_dir: Path) -> int:
+        counter_file = tasks_dir / "_counter.json"
+        if counter_file.exists():
+            data = json.loads(counter_file.read_text(encoding="utf-8"))
             next_id = int(data.get("next_id", 1))
         else:
             next_id = 1
-        self._counter_file.write_text(
+        counter_file.write_text(
             json.dumps({"next_id": next_id + 1}), encoding="utf-8"
         )
         return next_id
 
     # ------------------------------------------------------------------ persistence
 
-    def _task_file(self, task_id: int) -> Path:
-        return self._tasks_dir / f"task_{task_id}.json"
+    def _task_file(self, tasks_dir: Path, task_id: int) -> Path:
+        return tasks_dir / f"task_{task_id}.json"
 
-    def _save(self, task: dict[str, Any]) -> None:
-        self._task_file(task["id"]).write_text(
+    def _save(self, tasks_dir: Path, task: dict[str, Any]) -> None:
+        self._task_file(tasks_dir, task["id"]).write_text(
             json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    def _load(self, task_id: int) -> dict[str, Any] | None:
-        f = self._task_file(task_id)
+    def _load(self, tasks_dir: Path, task_id: int) -> dict[str, Any] | None:
+        f = self._task_file(tasks_dir, task_id)
         if not f.exists():
             return None
         try:
             return json.loads(f.read_text(encoding="utf-8"))
         except Exception as exc:
-            log.warning("[TaskManager] Failed to load task {}: {}", task_id, exc)
+            log.warning("[TaskBoard] Failed to load task {}: {}", task_id, exc)
             return None
 
-    def _all_tasks(self) -> list[dict[str, Any]]:
+    def _all_tasks(self, tasks_dir: Path) -> list[dict[str, Any]]:
         tasks: list[dict[str, Any]] = []
-        for f in sorted(self._tasks_dir.glob("task_*.json"), key=lambda p: p.name):
+        for f in sorted(tasks_dir.glob("task_*.json"), key=lambda p: p.name):
             try:
                 tasks.append(json.loads(f.read_text(encoding="utf-8")))
             except Exception as exc:
-                log.warning("[TaskManager] Skipping unreadable task file {}: {}", f, exc)
+                log.warning("[TaskBoard] Skipping unreadable task file {}: {}", f, exc)
         return tasks
 
     # ------------------------------------------------------------------ ready rule (s12)
@@ -106,9 +109,14 @@ class TaskManager:
         subject: str,
         description: str = "",
         depends_on: list[int] | None = None,
+        *,
+        user_id: str = "",
+        app_id: str = "",
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Create a new task, optionally waiting on ``depends_on`` task IDs."""
-        task_id = self._next_id()
+        tasks_dir = _tasks_dir(user_id, app_id, session_id)
+        task_id = self._next_id(tasks_dir)
         blocked_by = list(depends_on or [])
         task: dict[str, Any] = {
             "id": task_id,
@@ -119,16 +127,16 @@ class TaskManager:
             "blocks": [],
             "owner": "",
         }
-        self._save(task)
+        self._save(tasks_dir, task)
 
         # Maintain bidirectional dependency (s12)
         for upstream_id in blocked_by:
-            upstream = self._load(upstream_id)
+            upstream = self._load(tasks_dir, upstream_id)
             if upstream is not None and task_id not in upstream["blocks"]:
                 upstream["blocks"].append(task_id)
-                self._save(upstream)
+                self._save(tasks_dir, upstream)
 
-        log.info("[TaskManager] Created task {} — {}", task_id, subject)
+        log.info("[TaskBoard] Created task {} — {}", task_id, subject)
         return task
 
     def update(
@@ -139,9 +147,13 @@ class TaskManager:
         owner: str | None = None,
         subject: str | None = None,
         description: str | None = None,
+        user_id: str = "",
+        app_id: str = "",
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Update mutable fields of an existing task."""
-        task = self._load(task_id)
+        tasks_dir = _tasks_dir(user_id, app_id, session_id)
+        task = self._load(tasks_dir, task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
@@ -156,30 +168,39 @@ class TaskManager:
         if description is not None:
             task["description"] = description
 
-        self._save(task)
+        self._save(tasks_dir, task)
 
         # Auto-unlock downstream tasks when this one completes (s12)
         if status == "completed":
-            self._unlock_downstream(task_id)
+            self._unlock_downstream(tasks_dir, task_id)
 
         return task
 
-    def complete(self, task_id: int) -> dict[str, Any]:
+    def complete(
+        self, task_id: int, *, user_id: str = "", app_id: str = "", session_id: str = ""
+    ) -> dict[str, Any]:
         """Convenience wrapper — marks task completed and unlocks dependents."""
-        return self.update(task_id, status="completed")
+        return self.update(task_id, status="completed", user_id=user_id, app_id=app_id, session_id=session_id)
 
-    def get(self, task_id: int) -> dict[str, Any] | None:
-        return self._load(task_id)
+    def get(
+        self, task_id: int, *, user_id: str = "", app_id: str = "", session_id: str = ""
+    ) -> dict[str, Any] | None:
+        return self._load(_tasks_dir(user_id, app_id, session_id), task_id)
 
-    def list_all(self, status: str | None = None) -> list[dict[str, Any]]:
-        tasks = self._all_tasks()
+    def list_all(
+        self, status: str | None = None, *, user_id: str = "", app_id: str = "", session_id: str = ""
+    ) -> list[dict[str, Any]]:
+        tasks = self._all_tasks(_tasks_dir(user_id, app_id, session_id))
         if status:
             tasks = [t for t in tasks if t.get("status") == status]
         return tasks
 
-    def get_board(self) -> str:
+    def get_board(self, *, user_id: str = "", app_id: str = "", session_id: str = "") -> str:
         """Render a compact text board for the system prompt."""
-        tasks = [t for t in self._all_tasks() if t.get("status") != "deleted"]
+        tasks = [
+            t for t in self._all_tasks(_tasks_dir(user_id, app_id, session_id))
+            if t.get("status") != "deleted"
+        ]
         if not tasks:
             return "No active tasks."
 
@@ -203,14 +224,14 @@ class TaskManager:
 
     # ------------------------------------------------------------------ private
 
-    def _unlock_downstream(self, completed_id: int) -> None:
+    def _unlock_downstream(self, tasks_dir: Path, completed_id: int) -> None:
         """Remove completed_id from blockedBy of all tasks that were waiting on it."""
-        for task in self._all_tasks():
+        for task in self._all_tasks(tasks_dir):
             if completed_id in task.get("blockedBy", []):
                 task["blockedBy"].remove(completed_id)
-                self._save(task)
+                self._save(tasks_dir, task)
                 log.debug(
-                    "[TaskManager] Task {} unblocked after task {} completed",
+                    "[TaskBoard] Task {} unblocked after task {} completed",
                     task["id"],
                     completed_id,
                 )

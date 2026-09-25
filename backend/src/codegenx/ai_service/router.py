@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
-from codegenx.ai_service.session.manager import SessionManager
+from codegenx.ai_service.session.manager import SessionPersistence
 from codegenx.ai_service.chat_message import get_chat_message_store
 from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import validate_prompt_safety
 from codegenx.ai_service.monitor.monitor_query_service import get_monitor_query_service
@@ -134,7 +134,7 @@ async def list_sessions(
 ):
     """列出「当前用户 + app」下最近的 session（会话按用户隔离）。"""
     await require_participant_by_id(db, app_id, login_user)
-    entries = SessionManager.read_session_index(str(login_user.user_id), str(app_id))
+    entries = SessionPersistence.read_session_index(str(login_user.user_id), str(app_id))
     return success([
         SessionListItem(
             session_id=e.get("session_id", ""),

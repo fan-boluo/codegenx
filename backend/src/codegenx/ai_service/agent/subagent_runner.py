@@ -22,6 +22,7 @@ class SubagentContext:
     app_id: str = "main"
     user_id: str = ""
     description: str = ""
+    agent_name: str = ""                   # P4 §10.6：目标智能体（空=默认）
     max_turns: int = 15
     allowed_tools: list[str] | None = None
     plan_summary: str = ""
@@ -29,20 +30,33 @@ class SubagentContext:
     parent_session_id: str = ""
     parent_turn_id: str = ""
 
-    def get_tools(self, tools_handler: ToolRegistry | None = None) -> list[Any]:
-        handler = tools_handler or ToolRegistry()
-        child_tools = [tool for tool in handler.tools if tool.name not in DEFAULT_CHILD_EXCLUDED_TOOLS]
-        if not self.allowed_tools:
-            return child_tools
-
-        allowed = {str(name).strip() for name in self.allowed_tools if str(name).strip()}
-        return [tool for tool in child_tools if tool.name in allowed]
-
 
 class SubagentRunner:
     async def run(self, subagent_context: SubagentContext) -> dict[str, Any]:
-        tools_handler = ToolRegistry()
-        tools_handler.tools = subagent_context.get_tools(tools_handler)
+        # P3 复用（docs/SystemApp架构设计.md §6）：全局注册表产出过滤子视图，
+        # 不再 new ToolRegistry() 触发目录重扫；
+        # P4 §10.6：从注册表取 spec → 工具 allowlist / 限额 / persona（经 metadata 下发）
+        from codegenx.ai_service.system_app import get_app
+
+        app = get_app()
+        spec = app.agents.get(subagent_context.agent_name) if app.agents is not None else None
+
+        tools_handler = app.tools.child_view(
+            excluded=DEFAULT_CHILD_EXCLUDED_TOOLS,
+            allowed=subagent_context.allowed_tools or (spec.tools if spec is not None else None),
+        )
+
+        app_code_dir = get_code_dir(subagent_context.user_id or "main", subagent_context.app_id)
+        app_code_dir.mkdir(parents=True, exist_ok=True)
+
+        runtime = AgentRuntime(
+            tool_executor=ToolExecutor(tools_handler),
+        )
+        runtime.max_tool_iterations = max(1, int(subagent_context.max_turns or 15))
+        # P4 §10.3：spec.limits 覆盖限额（max_steps / temperature 沿用 AgentConfig 字段）
+        if spec is not None and spec.limits is not None:
+            if getattr(spec.limits, "max_steps", None):
+                runtime.max_steps = int(spec.limits.max_steps)
 
         app_code_dir = get_code_dir(subagent_context.user_id or "main", subagent_context.app_id)
         app_code_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +81,8 @@ class SubagentRunner:
                 "subagent_parent_session_id": subagent_context.parent_session_id,
                 "subagent_parent_turn_id": subagent_context.parent_turn_id,
                 "is_subagent": True,
+                # P4 §10.6：目标智能体随请求下发，init_session_objects 据此设置 session.agent_name
+                "agent_name": subagent_context.agent_name,
             },
         )
 

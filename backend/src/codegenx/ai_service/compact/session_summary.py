@@ -107,95 +107,111 @@ def _format_messages_for_extraction(messages: list[dict]) -> str:
     return "\n".join(parts)
 
 
+class SummaryState:
+    """会话摘要阈值状态（原 SessionSummaryService 实例字段，迁入 SessionContext 持有）。
+
+    这是真·会话状态（非伪会话对象）：服务全局一份，此状态随会话生灭。
+    """
+
+    def __init__(self) -> None:
+        # 阈值状态
+        self.initialized = False
+        self.tokens_at_last_extract = 0
+        self.extract_msg_idx = 0
+        # 并发保护：同一会话的提取任务不重叠
+        self.extracting = False
+        self.extract_task: asyncio.Task | None = None
+
+
 class SessionSummaryService:
     """
-    会话级后台摘要器（每个 session 一个实例，随 SessionContext 生命周期）。
+    全局无状态会话摘要服务（P2 服务化，docs/SystemApp架构设计.md §4.3）。
 
     生命周期：
-      1. SessionContext.__post_init__ 创建。
-      2. compact_after_turn() 判定 should_extract() 后 fire_extract()。
-      3. CompactionEngine 压缩前调用 load() 取最新摘要。
+      1. compact_after_turn() 判定 should_extract(state, messages) 后 fire_extract()。
+      2. CompactionService 压缩前调用 load(ids) 取最新摘要（Path A 快速通道）。
+    阈值状态由调用方（SessionContext.summary_state: SummaryState）持有。
     """
-
-    def __init__(
-        self,
-        app_id: str,
-        session_id: str,
-        summary_path: Path | None = None,
-        user_id: str = "",
-    ) -> None:
-        self.app_id = app_id
-        self.session_id = session_id
-        self.user_id = user_id
-        self._path = summary_path or get_session_summary_path(user_id, app_id, session_id)
-
-        # 阈值状态
-        self._initialized = False
-        self._tokens_at_last_extract = 0
-        self._extract_msg_idx = 0
-
-        # 并发保护：同一会话的提取任务不重叠
-        self._extracting = False
-        self._extract_task: asyncio.Task | None = None
 
     # ── 对外接口 ──────────────────────────────────────────────────────────────
 
-    def should_extract(self, messages: list[dict]) -> bool:
+    def should_extract(self, state: SummaryState, messages: list[dict]) -> bool:
         """是否应触发一次后台摘要提取。"""
-        if self._extracting:
+        if state.extracting:
             return False  # 永不重叠
 
         current = rough_tokens(messages)
 
-        if not self._initialized:
+        if not state.initialized:
             if current < MIN_TOKENS_TO_INIT:
                 return False
-            self._initialized = True
+            state.initialized = True
 
-        growth = current - self._tokens_at_last_extract
+        growth = current - state.tokens_at_last_extract
         if growth < MIN_TOKENS_BETWEEN_UPDATES:
             return False
 
-        tool_calls = _count_tool_calls_since(messages, self._extract_msg_idx)
+        tool_calls = _count_tool_calls_since(messages, state.extract_msg_idx)
         return (
             tool_calls >= TOOL_CALLS_BETWEEN_UPDATES
             or growth >= MIN_TOKENS_BETWEEN_UPDATES * 3
         )
 
-    def fire_extract(self, messages: list[dict]) -> None:
+    def fire_extract(
+        self,
+        state: SummaryState,
+        messages: list[dict],
+        *,
+        user_id: str,
+        app_id: str,
+        session_id: str,
+    ) -> None:
         """调度非阻塞后台摘要任务（快照消息列表，主对话可继续变更）。"""
-        if self._extracting:
+        if state.extracting:
             return
-        self._extracting = True
-        self._extract_msg_idx = len(messages)
-        self._tokens_at_last_extract = rough_tokens(messages)
-        self._extract_task = asyncio.create_task(self._extract(list(messages)))
+        state.extracting = True
+        state.extract_msg_idx = len(messages)
+        state.tokens_at_last_extract = rough_tokens(messages)
+        path = get_session_summary_path(user_id, app_id, session_id)
+        state.extract_task = asyncio.create_task(
+            self._extract(state, list(messages), path)
+        )
 
-    def load(self) -> str:
+    def load(self, *, user_id: str, app_id: str, session_id: str) -> str:
         """同步读取当前会话摘要文件。"""
-        if not self._path.exists():
+        path = get_session_summary_path(user_id, app_id, session_id)
+        if not path.exists():
             return ""
         try:
-            return self._path.read_text(encoding="utf-8").strip()
+            return path.read_text(encoding="utf-8").strip()
         except OSError:
             return ""
 
     # ── 内部提取 ──────────────────────────────────────────────────────────────
 
-    async def _extract(self, messages: list[dict]) -> None:
+    async def _extract(self, state: SummaryState, messages: list[dict], path: Path) -> None:
         """后台任务：摘要 messages → 覆盖写 SUMMARY.md；失败非致命。"""
         try:
-            current_notes = self.load()
-            summary = await self._summarize(messages, current_notes, str(self._path))
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(summary, encoding="utf-8")
-            log.debug("session summary 压缩完成:{}", self._path)
+            current_notes = self._load_from_path(path)
+            summary = await self._summarize(messages, current_notes, str(path))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(summary, encoding="utf-8")
+            log.debug("session summary 压缩完成:{}", path)
         except Exception:
             log.error("session summary 压缩异常")
             log.error(traceback.format_exc())
         finally:
-            self._extracting = False
-            self._extract_task = None
+            state.extracting = False
+            state.extract_task = None
+
+    @staticmethod
+    def _load_from_path(path: Path) -> str:
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
 
     async def _summarize(
         self,
@@ -225,8 +241,3 @@ class SessionSummaryService:
             return current_notes if current_notes else ""
 
         return updated_notes.strip()
-
-
-# ── 兼容别名：压缩引擎内部对「会话记忆」概念的旧称 ────────────────────────────
-
-SessionMemory = SessionSummaryService

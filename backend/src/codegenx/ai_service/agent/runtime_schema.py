@@ -10,14 +10,9 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from codegenx.ai_service.agent.agent_schema import AgentState
-from codegenx.ai_service.task.task_manager import TaskManager
 from codegenx.ai_service.context.session_context import SessionContext
 from codegenx.ai_service.monitor.telemetry_schema import SpanRecord
-from codegenx.ai_service.session.manager import SessionManager
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
-
-if TYPE_CHECKING:
-    from codegenx.ai_service.agent.runtime import AgentRuntime
 
 
 class TurnStoppedError(Exception):
@@ -50,13 +45,17 @@ class ActivateTurn:
 
 @dataclass
 class RuntimeSessionState:
-    """Persistent session state. Per-request fields are reset by _reset_request_state."""
+    """Persistent session state. Per-request fields are reset by _reset_request_state.
+
+    P2 瘦身：runtime/session_manager/task_manager 成员对象已删除——
+    引擎是全局组件（get_app().runtime），落盘与任务看板是无状态服务
+    （get_app().session_io / get_app().tasks），ids 一律作调用参数。
+    """
     session_id: str
     request: AiServiceGenerateRequest | None
-    runtime: AgentRuntime
     context_manager: SessionContext | None = None  # 整个会话的上下文管理（由 on_session_start hook 初始化）
-    session_manager: SessionManager | None = None  # TODO 转移到后台监控模块，负责落盘的
-    task_manager: TaskManager | None = None  # 任务看板，跟随 session 生命周期
+    # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体，现行为不变）
+    agent_name: str = ""
 
 
     # Monitoring (initialised by on_session_start hook)
@@ -83,6 +82,9 @@ class RuntimeSessionState:
     state: AgentState = AgentState.IDLE
     processing: bool = False
     closed: bool = False
+    # P3 swap-out：闲置卸载标记——chat_messages 已清空（快照在 turn_end 落盘），
+    # 下次请求到来时由 runtime 从快照按需恢复
+    swapped_out: bool = False
     close_signal: asyncio.Event = field(default_factory=asyncio.Event)  # 用于 event 通知替代忙等轮询
     stop_signal: asyncio.Event = field(default_factory=asyncio.Event)
     stop_reason: str = ""

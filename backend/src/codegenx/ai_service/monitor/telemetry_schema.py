@@ -162,13 +162,17 @@ class SessionTelemetry(BaseTelemetry):
 
     @staticmethod
     def new_tel(session: RuntimeSessionState) -> SessionTelemetry:
+        # P2：RuntimeSessionState 不再持有 runtime/agent_config，
+        # token 预算取全局默认智能体配置（P4 多智能体时按 spec 覆盖）
+        from codegenx.ai_service.utils.config import config as app_config
+
         return SessionTelemetry(
             trace_id=session.trace_id,
             session_id=session.session_id,
             turn_id = session.request_id,
             app_id=session.app_id,
             user_id=session.user_id,
-            token_budget=getattr(session.runtime.agent_config, "context_max_tokens", 0),
+            token_budget=getattr(app_config.get_default_agent(), "context_max_tokens", 0),
             started_at=session.started_at,
         )
 

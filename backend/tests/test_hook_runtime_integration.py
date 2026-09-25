@@ -27,7 +27,7 @@ from codegenx.ai_service.hook import (
     HookManager,
 )
 from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import output_safety_check
-from codegenx.ai_service.context.assembler import inject_dynamic_prompts
+from codegenx.ai_service.context.context_service import inject_dynamic_prompts
 
 
 class FakeContextManager:
@@ -123,9 +123,8 @@ def _make_session() -> RuntimeSessionState:
         request_id="req-1", message="你好", app_id="app", user_id="u1",
         session_id="s1", trace_id="t1",
     )
-    session = RuntimeSessionState(session_id="s1", request=request, runtime=None)
+    session = RuntimeSessionState(session_id="s1", request=request)
     session.context_manager = FakeContextManager()
-    session.session_manager = None
     session.activate_turn = ActivateTurn()
     return session
 

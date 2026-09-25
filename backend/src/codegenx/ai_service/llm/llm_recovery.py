@@ -43,9 +43,20 @@ class LLMRecoveryMixin:
         """Invoke the LLM with error recovery (s11)."""
         cfg = self.agent_config
         context = session_state.context_manager
-        tools = session_state.runtime.tools
+        # P2：RuntimeSessionState 不再持有 runtime；本 Mixin 混入 AgentRuntime，
+        # 工具目录直接取 self.tools（start() 时构建）
+        tools = self.tools
         # P0-2 修复：使用 agent 配置的模型（原实现漏传 → 永远回落默认模型，AgentConfig.model 成死配置）
         agent_model = (cfg.resolved_model_name or "").strip() or None
+        # P4 §10.4：智能体维度模型覆盖（spec.model_override 最高 → {agent}:{scenario} → scenario → 默认）
+        agent_name = (getattr(session_state, "agent_name", "") or "").strip() or None
+        agent_override = None
+        if agent_name:
+            from codegenx.ai_service.system_app import get_app
+
+            registry = get_app().agents
+            if registry is not None:
+                agent_override = registry.get(agent_name).model_override
         continuation_attempts = 0
         compact_attempts = 0
         accumulated_content = ""
@@ -68,6 +79,8 @@ class LLMRecoveryMixin:
                     tools=tools,
                     primary_model=agent_model,
                     timeout=cfg.llm_stream_timeout_seconds,
+                    agent=agent_name,
+                    agent_override=agent_override,
                 ):
                     self._raise_if_stop_requested(session_state)
                     if chunk["type"] == "content":

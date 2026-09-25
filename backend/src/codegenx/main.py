@@ -22,7 +22,6 @@ from codegenx.ai_service.router import (
     monitor_router,
     get_agent_service,
 )
-from codegenx.ai_service.llm.client_registry import close_llm_clients
 from codegenx.ai_service.memory.admin import memory_admin_router
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.app_service.router import router as app_router
@@ -57,16 +56,15 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动 AgentRuntime（构建工具目录，不调 LLM）与监控定时维护任务
+    # 启动 SystemApp 全局容器（hook 冻结/基础设施/注册表/runtime/后台任务，docs/SystemApp架构设计.md §3.3）
     agent_service: AgentAdapterService = get_agent_service()
     await agent_service.startup()
     log.info("codegenx monolith startup completed")
     try:
         yield
     finally:
-        # 停止维护任务 -> 停止 runtime -> 关闭 LLM 共享连接池 -> 关闭 redis 与 mysql 引擎
+        # 关闭顺序由 SystemApp.shutdown 统一保证：后台任务 → runtime → LLM 连接池 → redis/qdrant/mysql
         await agent_service.shutdown()
-        await close_llm_clients()
         log.info("codegenx monolith shutdown completed")
 
 
