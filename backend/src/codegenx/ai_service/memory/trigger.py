@@ -27,6 +27,7 @@ import time
 
 from shared import log
 from codegenx.ai_service.memory import metrics
+from codegenx.ai_service.hook import HookContext, HookEvent, on
 
 # ── 第一级：轻量信号正则（§4.1 四类）────────────────────────────────────────────
 _SIGNAL_PATTERNS: list[re.Pattern] = [
@@ -172,3 +173,43 @@ def _idle_expired(last_extract_at, minutes: int) -> bool:
 def config_memory_trigger():
     from codegenx.ai_service.utils.config import config
     return config.memory.trigger
+
+
+# ── Hook 监听器：记忆信号接入事件总线（docs/Hook设计.md §4.2） ───────────────
+
+
+@on(HookEvent.TURN_END, name="memory_turn_signal", priority=20,
+    depends_on=["persist_chat_snapshot"])
+async def memory_turn_signal(ctx: HookContext) -> None:
+    """本轮消息送入记忆提炼漏斗（P1-2，迁自 handlers._funnel_turn_signal）。
+
+    depends_on persist_chat_snapshot：快照保存后再读末两条消息发信号。
+    """
+    session = ctx.session
+    try:
+        chat = (session.context_manager.chat_messages if session.context_manager else None) or []
+        round_messages = [m for m in chat[-2:] if isinstance(m, dict)]
+        if not round_messages:
+            return
+        await process_turn_signal(
+            str(session.app_id),
+            str(session.user_id or ""),
+            session.session_id,
+            round_messages,
+        )
+    except Exception as exc:
+        log.debug("记忆漏斗信号处理失败（非致命）: {}", exc)
+
+
+@on(HookEvent.SESSION_END, name="memory_session_end", priority=20)
+async def memory_session_end(ctx: HookContext) -> None:
+    """会话结束事件是提炼触发条件之一（P1-2 §4.1，迁自 handlers.on_session_end 前半）。"""
+    session = ctx.session
+    try:
+        await process_session_end(
+            str(getattr(session, "app_id", "") or ""),
+            str(getattr(session, "user_id", "") or ""),
+            str(getattr(session, "session_id", "") or ""),
+        )
+    except Exception as exc:
+        log.debug("会话结束记忆触发失败（非致命）: {}", exc)

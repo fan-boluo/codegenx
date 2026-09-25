@@ -19,12 +19,14 @@ from codegenx.ai_service.agent.runtime_schema import (
 )
 from codegenx.ai_service.agent.session_pool import SessionPool
 from codegenx.ai_service.llm.llm_recovery import LLMRecoveryMixin
-from codegenx.ai_service.hook.registry import register_all_hooks
-from codegenx.ai_service.hook.runner import HookRunner
+from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager, on
 from codegenx.ai_service.agent.tool_executor import ToolExecutor
 from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from codegenx.ai_service.bus import MessageBus, RuntimeTurnEvent
 from codegenx.ai_service.utils.config import AgentConfig, config
+from codegenx.ai_service.session.manager import SessionManager
+from codegenx.ai_service.task.task_manager import TaskManager
+from codegenx.ai_service.context.session_context import SessionContext
 from shared import log
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.compact.thresholds import estimate_tokens as _thresholds_estimate
@@ -35,7 +37,6 @@ class AgentRuntime(LLMRecoveryMixin):
 
     def __init__(
         self,
-        hook_runner: HookRunner | None = None,
         tool_executor: ToolExecutor | None = None,
         message_bus: MessageBus | None = None,
     ):
@@ -45,15 +46,13 @@ class AgentRuntime(LLMRecoveryMixin):
         self.max_same_tool_calls = 3
         self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
         self.max_steps = self.agent_config.max_steps
-        
+
         self.message_bus = message_bus or MessageBus()
         self.tool_registry = get_tool_registry()
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
-        self.hook_runner = hook_runner or HookRunner()
-        if hook_runner is None:
-            register_all_hooks(self.hook_runner)
+        # hook 监听器由服务启动时 discover.load_hooks() 统一装载（docs/Hook设计.md §6）
         self._dispatcher_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
         
@@ -234,7 +233,10 @@ class AgentRuntime(LLMRecoveryMixin):
         session_state, is_new = await self.session_pool.get_or_create(session_id, request, self)
 
         if is_new:
-            await self.hook_runner.dispatch("OnSessionStart", session_state)
+            await hook_manager.emit(
+                HookEvent.SESSION_START,
+                HookContext(event=HookEvent.SESSION_START, session=session_state),
+            )
             log.debug("新建一个session_state")
         return session_state
 
@@ -342,7 +344,14 @@ class AgentRuntime(LLMRecoveryMixin):
         if session_state.worker_task is not None and session_state.worker_task.cancelled():
             session_state.worker_task = None
         
-        await self.hook_runner.dispatch("OnSessionEnd", session_state, end_reason=end_reason)
+        await hook_manager.emit(
+            HookEvent.SESSION_END,
+            HookContext(
+                event=HookEvent.SESSION_END,
+                session=session_state,
+                data={"end_reason": end_reason},
+            ),
+        )
         
         # Pool will automatically remove closed sessions during cleanup
         log.info("Session {} closed: end_reason={}", session_state.session_id, end_reason)
@@ -379,121 +388,146 @@ class AgentRuntime(LLMRecoveryMixin):
         activate_turn.state = AgentState.RUNNING
         activate_turn.started_at = time.time()
 
-        try:
-            # 加入聊天历史
-            user_message = session_state.request.message
-            context_manager = session_state.context_manager
-            if context_manager is None:
-                raise RuntimeError("context_manager is not initialized — on_session_start hook may not have run")
-            context_manager.add_user_message(user_message)
-            await context_manager.build_system_prompt(user_message)
+        # turn 级 hook 上下文：整个 turn 复用同一 ctx，保证 span 栈跨事件连续（洋葱树 §8.2）
+        hook_ctx = HookContext(
+            event=HookEvent.TURN_START, session=session_state, turn=activate_turn
+        )
 
-            await self.hook_runner.dispatch("OnTurnStart", activate_turn, session=session_state)
-            await self._publish_runtime_event(
-                session_state,
-                AgentEvent(event_type=AgentEventType.ON_TURN_START, data={
-                    "request_id": request_id,
-                    "step_counter": activate_turn.step_counter,
-                }, state=activate_turn.state))
-            log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
-            # 执行turn的任务
-            while activate_turn.step_counter < self.max_steps:
-                self._raise_if_stop_requested(session_state)
-                # 聊天历史微压，清除工具执行结果
-                await context_manager.micro_compact(self.config.compact.maxToolResultTokens)
-                log.debug("{},{},{}",request_id, activate_turn.step_counter, " micro_compact")
-                # 初始化step_id step_counter
-
-                activate_turn.step_counter += 1
-                step_id = f"{session_state.request_id}_{activate_turn.step_counter}"  # reqid_1,2,3
-                activate_turn.active_step_id = step_id
-                activate_turn.active_steps.append(step_id)
-                activate_turn.state = AgentState.RUNNING
-
-                try:
-                    await self._execute_step(session_state, activate_turn)
-                finally:
-                    activate_turn.active_steps.pop()
-                    activate_turn.active_step_id = ""
-                    async for compact_event in context_manager.compact_after_step():
-                        activate_turn.last_step_compacted = True
-                        await self._publish_runtime_event(session_state, compact_event)
-                if not activate_turn.requires_followup:
-                    break
-            log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
+        async with hook_manager.span("turn", hook_ctx):
             try:
-                await context_manager.compact_after_turn()
-            except Exception as exc:
-                log.debug(traceback.format_exc())
-                log.exception("compact_after_turn 执行异常（非致命）")
-            await self._publish_runtime_event(
-                session_state,
-                AgentEvent(
-                    event_type=AgentEventType.REQUEST_COMPLETED,
-                    data={"request_id": request_id},
-                    state=AgentState.COMPLETED,
-                ),
-            )
-            activate_turn.finished_at = time.time()
-            activate_turn.state = AgentState.COMPLETED
+                # 加入聊天历史
+                user_message = session_state.request.message
+                context_manager = session_state.context_manager
+                if context_manager is None:
+                    raise RuntimeError("context_manager is not initialized — on_session_start hook may not have run")
+                context_manager.add_user_message(user_message)
+                await context_manager.build_system_prompt(user_message)
 
-        except TurnStoppedError as exc:
-            activate_turn.error_text = str(exc)
-            activate_turn.state = AgentState.STOPPED
-            await self._publish_runtime_event(
-                session_state,
-                AgentEvent(
-                    event_type=AgentEventType.REQUEST_STOPPED,
-                    data={"request_id": request_id, "reason": str(exc)},
-                    state=AgentState.STOPPED,
-                ),
-            )
-            log.debug("{},{},{}",request_id, activate_turn.step_counter, " TurnStoppedError：",exc)
-        except asyncio.CancelledError:
-            reason = self._stop_reason(session_state)
-            activate_turn.error_text = reason
-            activate_turn.state = AgentState.STOPPED
-            await self._publish_runtime_event(
-                session_state,
-                AgentEvent(
-                    event_type=AgentEventType.REQUEST_STOPPED,
-                    data={"request_id": request_id, "reason": reason},
-                    state=AgentState.STOPPED,
-                ),
-            )
-            log.debug("{},{},{}",request_id, activate_turn.step_counter, " CancelledError")
-            raise
-        except Exception as exc:
-            log.opt(exception=True).error("_execute_request failed: {}", exc)
-            activate_turn.error_text = str(exc)
-            activate_turn.state = AgentState.FAILED
-            await self.hook_runner.dispatch("OnError", activate_turn, session=session_state, error=exc)
-            await self._publish_runtime_event(
-                session_state,
-                AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
-            )
-            log.debug("{},{}, Exception:{}",request_id, activate_turn.step_counter,  exc)
-        finally:
-            activate_turn.finished_at = time.time()
-            await self.hook_runner.dispatch("OnTurnEnd", activate_turn, session=session_state)
-            log.debug("OnTurnEnd {},{}",request_id, activate_turn.step_counter)
+                await self._fire(HookEvent.TURN_START, hook_ctx)
+                await self._publish_runtime_event(
+                    session_state,
+                    AgentEvent(event_type=AgentEventType.ON_TURN_START, data={
+                        "request_id": request_id,
+                        "step_counter": activate_turn.step_counter,
+                    }, state=activate_turn.state))
+                log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
+                # 执行turn的任务
+                while activate_turn.step_counter < self.max_steps:
+                    self._raise_if_stop_requested(session_state)
+                    # 聊天历史微压，清除工具执行结果
+                    await context_manager.micro_compact(self.config.compact.maxToolResultTokens)
+                    log.debug("{},{},{}",request_id, activate_turn.step_counter, " micro_compact")
+                    # 初始化step_id step_counter
+
+                    activate_turn.step_counter += 1
+                    step_id = f"{session_state.request_id}_{activate_turn.step_counter}"  # reqid_1,2,3
+                    activate_turn.active_step_id = step_id
+                    activate_turn.active_steps.append(step_id)
+                    activate_turn.state = AgentState.RUNNING
+
+                    try:
+                        # step 层洋葱 span：记录单个 step 用时与 trace 路径
+                        async with hook_manager.span(step_id, hook_ctx):
+                            await self._execute_step(session_state, activate_turn, hook_ctx)
+                    finally:
+                        activate_turn.active_steps.pop()
+                        activate_turn.active_step_id = ""
+                        async for compact_event in context_manager.compact_after_step():
+                            activate_turn.last_step_compacted = True
+                            await self._publish_runtime_event(session_state, compact_event)
+                    if not activate_turn.requires_followup:
+                        break
+                log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
+                try:
+                    await context_manager.compact_after_turn()
+                except Exception as exc:
+                    log.debug(traceback.format_exc())
+                    log.exception("compact_after_turn 执行异常（非致命）")
+                # 输出安全校验（on_complete）：blocked 时以安全提示替换最终回复
+                final_output = self._last_assistant_content(session_state)
+                await self._fire(HookEvent.ON_COMPLETE, hook_ctx, final_output=final_output)
+                if hook_ctx.action == HookAction.BLOCKED:
+                    self._replace_last_assistant_content(session_state, hook_ctx.message)
+                await self._publish_runtime_event(
+                    session_state,
+                    AgentEvent(
+                        event_type=AgentEventType.REQUEST_COMPLETED,
+                        data={"request_id": request_id},
+                        state=AgentState.COMPLETED,
+                    ),
+                )
+                activate_turn.finished_at = time.time()
+                activate_turn.state = AgentState.COMPLETED
+
+            except TurnStoppedError as exc:
+                activate_turn.error_text = str(exc)
+                activate_turn.state = AgentState.STOPPED
+                await self._publish_runtime_event(
+                    session_state,
+                    AgentEvent(
+                        event_type=AgentEventType.REQUEST_STOPPED,
+                        data={"request_id": request_id, "reason": str(exc)},
+                        state=AgentState.STOPPED,
+                    ),
+                )
+                log.debug("{},{},{}",request_id, activate_turn.step_counter, " TurnStoppedError：",exc)
+            except asyncio.CancelledError:
+                reason = self._stop_reason(session_state)
+                activate_turn.error_text = reason
+                activate_turn.state = AgentState.STOPPED
+                await self._publish_runtime_event(
+                    session_state,
+                    AgentEvent(
+                        event_type=AgentEventType.REQUEST_STOPPED,
+                        data={"request_id": request_id, "reason": reason},
+                        state=AgentState.STOPPED,
+                    ),
+                )
+                log.debug("{},{},{}",request_id, activate_turn.step_counter, " CancelledError")
+                raise
+            except Exception as exc:
+                log.opt(exception=True).error("_execute_request failed: {}", exc)
+                activate_turn.error_text = str(exc)
+                activate_turn.state = AgentState.FAILED
+                await self._fire(HookEvent.INTERNAL_ON_ERROR, hook_ctx, error=exc)
+                await self._publish_runtime_event(
+                    session_state,
+                    AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
+                )
+                log.debug("{},{}, Exception:{}",request_id, activate_turn.step_counter,  exc)
+            finally:
+                activate_turn.finished_at = time.time()
+                await self._fire(HookEvent.TURN_END, hook_ctx)
+                log.debug("OnTurnEnd {},{}",request_id, activate_turn.step_counter)
     # ------------------------------------------------------------------ turn execution
 
     async def _execute_step(
-        self, session_state: RuntimeSessionState, turn_state: ActivateTurn
+        self, session_state: RuntimeSessionState, turn_state: ActivateTurn, hook_ctx: HookContext
     ) -> None:
         self._raise_if_stop_requested(session_state)
-        messages = await session_state.context_manager.assemble()
+        # 上下文组装（before_build 洋葱分发：hook 可修改输入/短路产出，最内层为 assemble）
+        messages = await hook_manager.waterfall(
+            HookEvent.BEFORE_BUILD,
+            hook_ctx,
+            inner=session_state.context_manager.assemble,
+        )
         prompt_tokens = self._estimate_message_tokens(messages)
 
-        await self.hook_runner.dispatch(
-            "PreLLMCall",
-            turn_state,
-            session=session_state,
+        await self._fire(
+            HookEvent.BEFORE_LLM_INVOKE,
+            hook_ctx,
             messages=messages,
             prompt_tokens=prompt_tokens,
             projected_total_tokens=prompt_tokens,
         )
+        if hook_ctx.action == HookAction.BLOCKED:
+            # blocked：以拦截消息作为本轮回复并结束 turn（限流/预算控制场景）
+            log.warning("before_llm_invoke 拦截 LLM 调用: {}", hook_ctx.message)
+            session_state.context_manager.add_assistant_message(
+                {"role": "assistant", "content": hook_ctx.message or "LLM 调用被 hook 拦截"}
+            )
+            turn_state.requires_followup = False
+            return
         await self._publish_runtime_event(
             session_state,
             AgentEvent(
@@ -507,9 +541,11 @@ class AgentRuntime(LLMRecoveryMixin):
             ),
         )
         log.debug("PreLLMCALL {},{},{}",session_state.request_id, turn_state.step_counter,turn_state.active_step_id)
-        llm_response = await self._invoke_llm_with_recovery(
-            messages, turn_state, session_state
-        )
+        # LLM 调用层洋葱 span：记录用时与 trace 路径
+        async with hook_manager.span("llm_invoke", hook_ctx):
+            llm_response = await self._invoke_llm_with_recovery(
+                messages, turn_state, session_state
+            )
         log.debug(llm_response)
         completion_tokens = self._estimate_completion_tokens(llm_response)
         usage = {
@@ -519,10 +555,10 @@ class AgentRuntime(LLMRecoveryMixin):
             "first_token": 0,
             "is_error": False,
         }
-        await self.hook_runner.dispatch(
-            "PostLLMCall",
-            turn_state,
-            session=session_state,
+        await self._fire(
+            HookEvent.AFTER_LLM_INVOKE,
+            hook_ctx,
+            parallel=True,
             response=llm_response,
             usage=usage,
             messages=messages,
@@ -596,76 +632,34 @@ class AgentRuntime(LLMRecoveryMixin):
             }
             log.debug("PreToolUse {},{},{}", session_state.request_id, turn_state.step_counter,
                       turn_state.active_step_id)
-            pre_result = await self.hook_runner.dispatch(
-                "PreToolUse", turn_state, session=session_state, tool_call=tool_call
-            )
-            if pre_result.get("action") == "blocked":
+            # before_tool_call 顺序分发：安全/参数守卫可 blocked（含文件工具参数校验，
+            # 已迁移至 tools/base.py file_tool_param_guard）或 inject 注入提示
+            await self._fire(HookEvent.BEFORE_TOOL_CALL, hook_ctx, tool_call=tool_call)
+            if hook_ctx.action == HookAction.BLOCKED:
                 log.debug("PreToolUse blocked")
-                messages = pre_result.get("messages", "Blocked by hook")
-                tool_message["content"] = f"Tool blocked by PreToolUse hook :{messages}"
+                tool_message["content"] = f"Tool blocked by hook :{hook_ctx.message}"
                 tool_message['state'] = "blocked"
                 session_state.context_manager.add_tool_message(tool_message)
                 continue
-            if pre_result.get("action") == "inject":
+            if hook_ctx.action == HookAction.INJECT:
                 log.debug("PreToolUse inject")
-                messages = pre_result.get("messages", "")
-                tool_message["content"] = f" PreToolUse message :{messages}"
+                tool_message["content"] = f" PreToolUse message :{hook_ctx.message}"
                 session_state.context_manager.add_tool_message(tool_message)
 
-            # 文件工具参数校验：path 为空时跳过执行，注入纠正提示
-            _tool_name = tool_call.get("name", "")
-            _tool_args = tool_call.get("arguments", {}) or {}
-            if _tool_name in ("write_file", "read_file", "edit_file", "delete_file"):
-                _path = (_tool_args.get("path") or "").strip() if isinstance(_tool_args, dict) else ""
-                _content = (_tool_args.get("content") or "").strip() if isinstance(_tool_args, dict) else ""
-                if not _path:
-                    tool_message['content'] = (
-                        f"❌ {_tool_name} 调用失败: path 参数为空。\n"
-                        f"必须提供有效的文件路径，例如: path=\"train_model.py\"\n"
-                        f"如果需要了解目录结构，请先用 list_directory 查看。"
-                    )
-                    tool_message['state'] = "failure"
-                    tool_message['render'] = f"{_tool_name} 执行失败: path 为空"
-                    session_state.context_manager.add_tool_message(tool_message)
-                    await self._publish_runtime_event(
-                        session_state,
-                        AgentEvent(
-                            event_type=AgentEventType.TOOL_EXECUTION_END,
-                            data=tool_message,
-                            state=AgentState.RUNNING,
-                        ),
-                    )
-                    continue
-                if _tool_name == "write_file" and not _content:
-                    tool_message['content'] = (
-                        f"❌ write_file 调用失败: content 参数为空。\n"
-                        f"write_file 需要同时提供 path 和 content 两个参数。\n"
-                        f"请将完整的文件源代码填入 content 参数后重新调用 write_file。"
-                    )
-                    tool_message['state'] = "failure"
-                    tool_message['render'] = f"write_file 执行失败: content 为空"
-                    session_state.context_manager.add_tool_message(tool_message)
-                    await self._publish_runtime_event(
-                        session_state,
-                        AgentEvent(
-                            event_type=AgentEventType.TOOL_EXECUTION_END,
-                            data=tool_message,
-                            state=AgentState.RUNNING,
-                        ),
-                    )
-                    continue
             await self._publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
                 ),
             )
-            result = await self.tool_executor.execute(tool_call, turn_state, session_state)
+            # 工具层洋葱 span：记录单次工具执行用时与 trace 路径
+            async with hook_manager.span(f"tool_call:{tool_call.get('name', 'unknown')}", hook_ctx):
+                result = await self.tool_executor.execute(tool_call, turn_state, session_state)
             self._raise_if_stop_requested(session_state)
-            await self.hook_runner.dispatch(
-                "PostToolUse",
-                turn_state,
-                session=session_state,
+            await self._fire(
+                HookEvent.AFTER_TOOL_CALL,
+                hook_ctx,
+                parallel=True,
                 tool_call=tool_call,
                 result=result,
             )
@@ -838,6 +832,36 @@ class AgentRuntime(LLMRecoveryMixin):
             )
         )
 
+    async def _fire(
+        self, event: str, ctx: HookContext, *, parallel: bool = False, **data: Any
+    ) -> HookContext:
+        """复用 turn 级 ctx 触发 hook 事件：重置 event/data/action，保持 span 栈连续。"""
+        ctx.event = event
+        ctx.data = data
+        ctx.action = HookAction.CONTINUE
+        ctx.message = ""
+        if parallel:
+            return await hook_manager.emit_parallel(event, ctx)
+        return await hook_manager.emit(event, ctx)
+
+    @staticmethod
+    def _last_assistant_content(session_state: RuntimeSessionState) -> str:
+        """取最后一条 assistant 消息内容，作为 on_complete 的校验对象。"""
+        chat = getattr(session_state.context_manager, "chat_messages", None) or []
+        for message in reversed(chat):
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                return str(message.get("content") or "")
+        return ""
+
+    @staticmethod
+    def _replace_last_assistant_content(session_state: RuntimeSessionState, content: str) -> None:
+        """on_complete blocked 时以安全提示替换最终回复（后续 turn 的上下文同步净化）。"""
+        chat = getattr(session_state.context_manager, "chat_messages", None) or []
+        for message in reversed(chat):
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                message["content"] = content
+                return
+
     # ------------------------------------------------------------------ utility helpers
 
     def _stop_reason(self, session_state: RuntimeSessionState) -> str:
@@ -888,3 +912,61 @@ class AgentRuntime(LLMRecoveryMixin):
             "dispatcher_active": self._dispatcher_task is not None
             and not self._dispatcher_task.done(),
         }
+
+
+# ── Hook 监听器：会话/turn 生命周期编排（docs/Hook设计.md §4.2） ─────────────
+# 跨模块对象创建（SessionManager/TaskManager/SessionContext）属 agent 运行时组合根职责
+
+
+@on(HookEvent.SESSION_START, name="init_session_objects", priority=10)
+async def init_session_objects(ctx: HookContext) -> None:
+    """初始化会话级对象（迁自 handlers.on_session_start）：
+
+    SessionManager / TaskManager / SessionContext、加载聊天历史快照、
+    用户消息入库、更新会话索引、state→RUNNING。
+    """
+    session = ctx.session
+    req = session.request
+    if req is None:
+        log.warning("on_session_start: request is None, skipping")
+        return
+    session_manager = SessionManager(session.user_id, str(req.app_id), session.session_id)
+    session.session_manager = session_manager
+
+    task_manager = TaskManager(app_id=session.app_id, session_id=session.session_id, user_id=session.user_id)
+    session.task_manager = task_manager
+
+    session.context_manager = SessionContext(
+        session_id=session.session_id,
+        app_id=session.app_id,
+        user_id=session.user_id,
+        db_name=session.db_name,
+        task_manager=task_manager,
+    )
+    # 加载上次聊天时的历史记录到内存
+    session.context_manager.chat_messages = await session_manager.get_turn_chat_message_snapshot() or []
+    user_dict = {"role": "user", "content": req.message}
+    # 聊天消息入库（MySQL chat_message 表；失败不阻断对话）
+    try:
+        from codegenx.ai_service.chat_message import get_chat_message_store
+        await get_chat_message_store().append_message(
+            session.user_id, str(req.app_id), session.session_id, user_dict
+        )
+    except Exception as exc:
+        log.warning("user 消息入库失败（不影响对话）: {}", exc)
+
+    # 更新会话索引，供快速列出历史会话
+    await session_manager.upsert_session_index(req.message)
+
+    session.state = AgentState.RUNNING
+    session.started_at = datetime.utcnow()
+
+
+@on(HookEvent.TURN_END, name="persist_chat_snapshot", priority=10)
+async def persist_chat_snapshot(ctx: HookContext) -> None:
+    """保留上下文快照（迁自 handlers.on_turn_end 前半）。"""
+    session = ctx.session
+    if session.session_manager is not None and session.context_manager is not None:
+        await session.session_manager.save_turn_chat_message_snapshot(
+            session.context_manager.chat_messages
+        )

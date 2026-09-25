@@ -8,6 +8,7 @@ import aiofiles
 
 from shared import log
 from shared.constants import get_current_session_dir, get_session_dir
+from codegenx.ai_service.hook import HookContext, HookEvent, on
 
 
 PROJECT_DIR = Path(__file__).parent.parent
@@ -136,3 +137,36 @@ class SessionManager:
         except Exception:
             pass
         return []
+
+
+# ── Hook 监听器：工具日志接入事件总线（docs/Hook设计.md §4.2） ───────────────
+
+
+@on(HookEvent.AFTER_TOOL_CALL, name="persist_tool_log", priority=10)
+async def persist_tool_log(ctx: "HookContext") -> None:
+    """工具执行快照落盘（迁自 handlers.post_tool_use 前半）。"""
+    session = ctx.session
+    session_manager = getattr(session, "session_manager", None)
+    if session_manager is None:
+        return
+    tool_call = ctx.data.get("tool_call") or {}
+    result = ctx.data.get("result")
+    tool_name = tool_call.get("name")
+    try:
+        # 过滤掉运行时注入的不可序列化对象
+        tool_input = dict(tool_call.get("arguments", {}) or {})
+        loggable_input = {
+            k: v for k, v in tool_input.items()
+            if k not in {"context", "context_compactor"}
+        }
+        snapshot: dict[str, Any] = {
+            "request_id": session.request.request_id,
+            "ts": datetime.now(UTC).isoformat(),
+            "turn_id": ctx.turn.active_step_id if ctx.turn is not None else "",
+            "tool": tool_name,
+            "input": loggable_input,
+            "result": result,
+        }
+        await session_manager.append_tool_log(snapshot)
+    except Exception as exc:
+        log.debug(f"Session log write failed for tool '{tool_name}': {exc}")

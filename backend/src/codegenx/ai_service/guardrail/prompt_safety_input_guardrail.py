@@ -4,6 +4,7 @@ import re
 
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
+from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
 
 
 class PromptSafetyInputGuardrail:
@@ -44,3 +45,26 @@ class PromptSafetyInputGuardrail:
 
 def validate_prompt_safety(user_input: str) -> None:
     PromptSafetyInputGuardrail().validate(user_input)
+
+
+# ── Hook 监听器：输出安全校验接入事件总线（docs/Hook设计.md §4.2） ───────────
+
+
+@on(HookEvent.ON_COMPLETE, name="output_safety_check", priority=10)
+async def output_safety_check(ctx: "HookContext") -> "HookDecision | None":
+    """输出安全校验（on_complete 默认实现）：
+
+    对 turn 最终回复复用输入侧的敏感词/注入模式检测，
+    命中则 blocked，由触发方以安全提示替换最终回复。
+    """
+    text = str(ctx.data.get("final_output") or "")
+    if not text.strip():
+        return None
+    lowered = text.lower()
+    for word in PromptSafetyInputGuardrail.SENSITIVE_WORDS:
+        if word.lower() in lowered:
+            return HookDecision.block("回复内容未通过安全校验（命中敏感词），已替换为安全提示")
+    for pattern in PromptSafetyInputGuardrail.INJECTION_PATTERNS:
+        if pattern.search(text):
+            return HookDecision.block("回复内容未通过安全校验（疑似注入内容），已替换为安全提示")
+    return None

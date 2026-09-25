@@ -29,6 +29,7 @@ from codegenx.ai_service.monitor.telemetry_schema import (
     TurnTelemetry,
 )
 from shared import log
+from codegenx.ai_service.hook import HookContext, HookEvent, on
 
 _PIPELINE_SINGLETON: "MonitorPipeline | None" = None
 _PIPELINE_LOCK = Lock()
@@ -434,3 +435,58 @@ def get_monitor_pipeline() -> MonitorPipeline:
         if _PIPELINE_SINGLETON is None:
             _PIPELINE_SINGLETON = MonitorPipeline()
     return _PIPELINE_SINGLETON
+
+
+# ── Hook 监听器：监控上报接入事件总线（docs/Hook设计.md §4.2） ──────────────
+# 全部为薄封装：从 HookContext 取参转发 MonitorPipeline，priority=100 排在业务监听器之后
+
+
+@on(HookEvent.SESSION_START, name="report_session_start", priority=100)
+async def report_session_start(ctx: HookContext) -> None:
+    get_monitor_pipeline().on_session_start(ctx.session)
+
+
+@on(HookEvent.TURN_START, name="report_turn_start", priority=100)
+async def report_turn_start(ctx: HookContext) -> None:
+    await get_monitor_pipeline().on_turn_start(ctx.session, ctx.turn)
+
+
+@on(HookEvent.BEFORE_LLM_INVOKE, name="report_prompt_tokens", priority=100)
+async def report_prompt_tokens(ctx: HookContext) -> None:
+    get_monitor_pipeline().pre_llm_call(
+        ctx.session, ctx.turn,
+        prompt_tokens=ctx.data.get("prompt_tokens"),
+        projected_total_tokens=ctx.data.get("projected_total_tokens"),
+    )
+
+
+@on(HookEvent.AFTER_LLM_INVOKE, name="report_llm_usage", priority=100)
+async def report_llm_usage(ctx: HookContext) -> None:
+    await get_monitor_pipeline().post_llm_call(ctx.session, ctx.turn, usage=ctx.data.get("usage"))
+
+
+@on(HookEvent.BEFORE_TOOL_CALL, name="report_tool_start", priority=100)
+async def report_tool_start(ctx: HookContext) -> None:
+    get_monitor_pipeline().pre_tool_use(ctx.session, ctx.turn, ctx.data.get("tool_call") or {})
+
+
+@on(HookEvent.AFTER_TOOL_CALL, name="report_tool_end", priority=100)
+async def report_tool_end(ctx: HookContext) -> None:
+    await get_monitor_pipeline().post_tool_use(
+        ctx.session, ctx.turn, ctx.data.get("tool_call") or {}, ctx.data.get("result")
+    )
+
+
+@on(HookEvent.TURN_END, name="report_turn_end", priority=100)
+async def report_turn_end(ctx: HookContext) -> None:
+    await get_monitor_pipeline().on_turn_end(ctx.session, ctx.turn)
+
+
+@on(HookEvent.INTERNAL_ON_ERROR, name="report_error", priority=100)
+async def report_error(ctx: HookContext) -> None:
+    get_monitor_pipeline().on_error(ctx.session, ctx.turn)
+
+
+@on(HookEvent.SESSION_END, name="report_session_end", priority=100)
+async def report_session_end(ctx: HookContext) -> None:
+    await get_monitor_pipeline().on_session_end(ctx.session, end_reason=ctx.data.get("end_reason"))

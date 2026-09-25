@@ -5,6 +5,7 @@ from typing import Callable, Any
 from pydantic import BaseModel
 
 from shared import log
+from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
 
 
 class Tool(BaseModel):
@@ -99,3 +100,37 @@ class BaseTool(ABC):
                 raise ValueError(f"Parameter {key} must be object, got {type(value).__name__}")
 
         return params
+
+
+# ── Hook 监听器：工具参数守卫接入事件总线（docs/Hook设计.md §4.2） ───────────
+# 文件工具集合：这些工具依赖有效的 path 参数
+_FILE_TOOLS = {"write_file", "read_file", "edit_file", "delete_file"}
+
+
+@on(HookEvent.BEFORE_TOOL_CALL, name="file_tool_param_guard", priority=20)
+async def file_tool_param_guard(ctx: "HookContext") -> "HookDecision | None":
+    """文件工具参数守卫（迁自 runtime._execute_step 内联校验）：
+
+    path 为空直接 blocked；write_file 额外要求 content 非空。
+    """
+    tool_call = ctx.data.get("tool_call") or {}
+    tool_name = tool_call.get("name", "")
+    if tool_name not in _FILE_TOOLS:
+        return None
+    args = tool_call.get("arguments") or {}
+    path = (args.get("path") or "").strip() if isinstance(args, dict) else ""
+    content = (args.get("content") or "").strip() if isinstance(args, dict) else ""
+
+    if not path:
+        return HookDecision.block(
+            f"❌ {tool_name} 调用失败: path 参数为空。\n"
+            f"必须提供有效的文件路径，例如: path=\"train_model.py\"\n"
+            f"如果需要了解目录结构，请先用 list_directory 查看。"
+        )
+    if tool_name == "write_file" and not content:
+        return HookDecision.block(
+            f"❌ write_file 调用失败: content 参数为空。\n"
+            f"write_file 需要同时提供 path 和 content 两个参数。\n"
+            f"请将完整的文件源代码填入 content 参数后重新调用 write_file。"
+        )
+    return None

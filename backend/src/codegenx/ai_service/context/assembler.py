@@ -10,6 +10,7 @@ from codegenx.ai_service.utils.context_utils import ensure_app_workdir
 from shared import log
 from shared.constants import get_memory_dir
 from codegenx.ai_service.prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE
+from codegenx.ai_service.hook import HookContext, HookEvent, on
 
 
 class ContextAssembler:
@@ -220,3 +221,18 @@ class ContextAssembler:
 @lru_cache(maxsize=1)
 def get_context_assembler() -> ContextAssembler:
     return ContextAssembler()
+
+
+# ── Hook 监听器：上下文组装接入事件总线（docs/Hook设计.md §4.2） ─────────────
+
+
+@on(HookEvent.BEFORE_BUILD, name="inject_dynamic_prompts")
+async def inject_dynamic_prompts(ctx: "HookContext", call_next) -> Any:
+    """before_build 默认洋葱层（透传）。
+
+    动态 prompt（persona/memory_prompt/skill_prompt/task_prompt 等）仍由
+    SessionContext.build_system_prompt / assemble 读取 ContextAssembler 字段完成；
+    此监听器保留挂载点：后续扩展可在 call_next 前后修改组装输入/产物，
+    或不调用 call_next 直接短路给出组装结果。
+    """
+    return await call_next()
