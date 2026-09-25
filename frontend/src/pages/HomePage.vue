@@ -94,9 +94,10 @@ const handleCreateProject = async () => {
       message.error(`创建项目失败，${createRes.data.message ?? '请稍后重试'}`)
       return
     }
-    const createdAppId = String(createRes.data.data)
     createModalVisible.value = false
-    enterChat(createdAppId)
+    // 新建成功不自动进入聊天：项目已建好，避免页签满时出现"项目已创建却打不开"的尴尬；用户从列表点"继续生成"进入
+    message.success('项目创建成功')
+    await fetchMyApps()
   } catch (error) {
     console.error('创建项目失败:', error)
     message.error('创建项目失败')

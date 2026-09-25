@@ -47,11 +47,12 @@ const openedChatsStore = useOpenedChatsStore()
 
 const isChatRoute = computed(() => route.name === '项目对话')
 
-// 聊天路由统一入口：确保页签打开并激活（首页/编辑页/深链都汇聚到这里，幂等）
+// 聊天路由统一入口：确保页签打开并激活（首页/编辑页/深链都汇聚到这里，幂等）。
+// 注意必须监听 fullPath 而非 name：聊天页之间切换时 name 不变，监听 name 会导致页签无法切换
 watch(
-  () => route.name,
-  (name) => {
-    if (name !== '项目对话') return
+  () => route.fullPath,
+  () => {
+    if (route.name !== '项目对话') return
     const id = route.params.id as string | undefined
     if (!id) return
     if (!openedChatsStore.openChat(id)) {
