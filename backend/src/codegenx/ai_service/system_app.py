@@ -132,7 +132,15 @@ class SystemApp:
             # 1. config 校验（agent/model 必填项），带病配置快速失败
             self._validate_config()
 
-            # 2. 冻结 hook 注册表：内置监听器已随应用 import 链完成 @on 收集（docs/Hook设计.md §6）
+            # 2. 冻结 hook 注册表：先显式导入全部带内置 @on 的模块，确保收集完整再冻结
+            #    （docs/Hook设计.md §6）。这些模块多为延迟导入，缺席会导致：
+            #    depends_on 校验失败（如 memory_turn_signal→persist_chat_snapshot），
+            #    或更糟——冻结后导入触发 RuntimeError、hook 静默丢失。
+            from codegenx.ai_service.agent import runtime as _hook_runtime  # noqa: F401
+            from codegenx.ai_service.guardrail import prompt_safety_input_guardrail as _hook_guardrail  # noqa: F401
+            from codegenx.ai_service.memory import trigger as _hook_memory_trigger  # noqa: F401
+            from codegenx.ai_service.monitor import monitor_pipeline as _hook_monitor  # noqa: F401
+            from codegenx.ai_service.tools import base as _hook_tools_base  # noqa: F401
             self.hooks.load_and_freeze()
 
             # 3. 基础设施 warmup：qdrant 预热 + warm 库确保（失败降级不阻断主服务）
