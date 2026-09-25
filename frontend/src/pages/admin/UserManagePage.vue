@@ -95,7 +95,7 @@ const doSearch = () => {
   fetchData()
 }
 
-const doDelete = async (id: number | undefined) => {
+const doDelete = async (id: string | undefined) => {
   if (!id) return
   // 后端 DeleteRequest 只接收 id 字段，传 user_id 会报参数错误
   const res = await deleteUser({ id })

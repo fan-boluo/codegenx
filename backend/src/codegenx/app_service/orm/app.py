@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, func, text
-from sqlalchemy import BigInteger, DateTime, Index, String, func, text
+from sqlalchemy import DateTime, Index, String, func, text
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,10 +17,10 @@ class App(Base):
         Index("idx_owner", "owner"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # app_xxxx，插入前由服务层生成
     app_name: Mapped[str] = mapped_column("appName", String(128), nullable=False)
     db_name: Mapped[str | None] = mapped_column("dbName", String(128), nullable=True)
-    owner: Mapped[int] = mapped_column(BigInteger, nullable=False)  # 项目属主即创建人
+    owner: Mapped[str] = mapped_column(String(32), nullable=False)  # 项目属主即创建人（user_xxxx）
     create_time: Mapped[datetime] = mapped_column(
         "createTime",
         DateTime,

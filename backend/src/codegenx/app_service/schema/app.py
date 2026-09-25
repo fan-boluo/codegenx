@@ -23,13 +23,13 @@ class AppAdminUpdateRequest(CamelBaseModel):
 
 
 class AppQueryRequest(PageRequest):
-    id: int | None = None
+    id: str | None = None
     app_name: str | None = Field(default=None, alias="appName")
 
 
 class AppVO(LongIdModel, TimeModel):
     app_name: str | None = Field(default=None, alias="appName")
-    owner: int | None = None
+    owner: str | None = None  # 属主用户ID（user_xxxx）
     owner_name: str | None = Field(default=None, alias="ownerName")  # 属主用户名，前端直接展示
     db_name: str | None = Field(default=None, alias="dbName")
 
@@ -37,20 +37,20 @@ class AppVO(LongIdModel, TimeModel):
 # ---------------------- 项目成员管理 ----------------------
 
 class AppMemberAddRequest(CamelBaseModel):
-    app_id: int = Field(alias="appId")
-    user_id: int | None = Field(default=None, alias="userId")
+    app_id: str = Field(alias="appId")
+    user_id: str | None = Field(default=None, alias="userId")
     # 邀请时可传用户账号，二选一
     user_account: str | None = Field(default=None, alias="userAccount")
 
 
 class AppMemberRemoveRequest(CamelBaseModel):
-    app_id: int = Field(alias="appId")
-    user_id: int = Field(alias="userId")
+    app_id: str = Field(alias="appId")
+    user_id: str = Field(alias="userId")
 
 
 class AppMemberVO(CamelBaseModel):
-    app_id: int = Field(default=None, alias="appId")
-    user_id: int = Field(default=None, alias="userId")
+    app_id: str = Field(default=None, alias="appId")
+    user_id: str = Field(default=None, alias="userId")
     user_name: str | None = Field(default=None, alias="userName")
     user_account: str | None = Field(default=None, alias="userAccount")
     create_time: datetime | None = Field(default=None, alias="createTime")

@@ -46,7 +46,7 @@ class ChatMessageStore:
     # === 写入 ===
 
     async def append_message(
-        self, user_id: int | str, app_id: int | str, session_id: str, message: dict
+        self, user_id: str, app_id: str, session_id: str, message: dict
     ) -> int:
         """追加一条聊天消息，返回分配的会话内 seq。不改动传入的 message 对象。"""
         stored = _storage_view(message)
@@ -85,7 +85,7 @@ class ChatMessageStore:
                 ),
                 {
                     "uid": str(uuid.uuid4()),
-                    "u": int(user_id),
+                    "u": str(user_id),
                     "s": session_id,
                     "a": str(app_id),
                     "q": seq,
@@ -155,7 +155,7 @@ class ChatMessageStore:
         return result
 
     async def get_recent(
-        self, user_id: int | str, session_id: str, limit: int = 50
+        self, user_id: str, session_id: str, limit: int = 50
     ) -> list[dict]:
         """读取会话最近 N 条消息（按 seq 升序返回），供前端会话历史展示。
 
@@ -170,7 +170,7 @@ class ChatMessageStore:
                             "WHERE session_id = :s AND user_id = :u "
                             "ORDER BY seq DESC LIMIT :l"
                         ),
-                        {"s": session_id, "u": int(user_id), "l": int(limit)},
+                        {"s": session_id, "u": str(user_id), "l": int(limit)},
                     )
                 )
                 .all()

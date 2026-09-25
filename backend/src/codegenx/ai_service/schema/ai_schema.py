@@ -8,7 +8,7 @@ from shared.schema.common import CamelBaseModel
 
 
 class AiServiceGenerateRequest(CamelBaseModel):
-    app_id: int = Field(alias="appId")
+    app_id: str = Field(alias="appId")
     user_id: str = Field(default="userx", alias="userId")
     message: str
     session_id: str = Field(default="", alias="sessionId")
@@ -20,7 +20,7 @@ class AiServiceGenerateRequest(CamelBaseModel):
 
 
 class AiServiceStopRequest(CamelBaseModel):
-    app_id: int = Field(alias="appId")
+    app_id: str = Field(alias="appId")
     user_id: str | None = Field(default=None, alias="userId")
     session_id: str = Field(alias="sessionId")
     trace_id: str | None = Field(default=None, alias="traceId")

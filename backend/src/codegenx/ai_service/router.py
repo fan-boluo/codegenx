@@ -127,7 +127,7 @@ async def stop_code_stream(request: AiServiceStopRequest):
 
 @chat_router.get("/sessions/{app_id}")
 async def list_sessions(
-    app_id: int,
+    app_id: str,
     limit: int = Query(default=5, ge=1, le=20),
     login_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
@@ -147,7 +147,7 @@ async def list_sessions(
 
 @chat_router.get("/sessions/{app_id}/{session_id}/messages")
 async def get_session_messages(
-    app_id: int,
+    app_id: str,
     session_id: str,
     limit: int = Query(default=50, ge=1, le=200),
     login_user: JWTUser = Depends(require_login),
@@ -168,7 +168,7 @@ async def get_session_messages(
 
 @chat_router.get("/sessions/{app_id}/{session_id}/alive")
 async def check_session_alive(
-    app_id: int,
+    app_id: str,
     session_id: str,
     login_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),

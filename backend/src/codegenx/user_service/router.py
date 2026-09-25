@@ -97,7 +97,7 @@ async def get_login(
 
 @router.get("/get", response_model=BaseResponse[UserVO])
 async def get_user_by_id(
-    id: int = Query(...),
+    id: str = Query(...),
     jwt_user: JWTUser = Depends(require_login),
     db=Depends(get_db_session),
 ) -> BaseResponse[UserVO]:
@@ -109,7 +109,7 @@ async def get_user_by_id(
 
 @router.get("/get/vo", response_model=BaseResponse[UserVO])
 async def get_user_vo_by_id(
-    id: int = Query(...),
+    id: str = Query(...),
     jwt_user: JWTUser = Depends(require_login),
     db=Depends(get_db_session),
 ) -> BaseResponse[UserVO]:
@@ -129,7 +129,6 @@ async def add_user(
         payload.user_account,
         payload.user_password or "",
         payload.user_name,
-        payload.user_avatar,
         payload.user_profile,
         payload.user_role,
     )
@@ -145,7 +144,6 @@ async def update_user(
     ok = await UserService(db).update_user(
         payload.id,
         payload.user_name,
-        payload.user_avatar,
         payload.user_profile,
         payload.user_role,
     )

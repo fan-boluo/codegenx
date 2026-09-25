@@ -1,8 +1,8 @@
 declare namespace API {
   type AppVO = {
-    id?: number | null
+    id?: string | null
     appName?: string | null
-    owner?: number | null
+    owner?: string | null
     /** 属主用户名 */
     ownerName?: string | null
     dbName?: string | null
@@ -11,8 +11,8 @@ declare namespace API {
   }
 
   type AppMemberVO = {
-    appId?: number | null
-    userId?: number | null
+    appId?: string | null
+    userId?: string | null
     userName?: string | null
     userAccount?: string | null
     createTime?: string | null
@@ -69,7 +69,7 @@ declare namespace API {
   }
 
   type chatToGenCodeGetApiAppChatGenCodeGetParams = {
-    appId: number
+    appId: string
     message: string
     sessionId?: string
     requestId?: string
@@ -77,35 +77,35 @@ declare namespace API {
 
   type DeleteRequest = {
     /** Id */
-    id: number
+    id: string
   }
 
   type downloadAppCodeApiAppDownloadAppIdGetParams = {
-    app_id: number
+    app_id: string
   }
 
   type getAppApiAppAppIdGetParams = {
-    app_id: number
+    app_id: string
   }
 
   type getAppVoApiAppGetVoGetParams = {
-    id: number
+    id: string
   }
 
   type listAppMembersApiAppMemberListAppIdGetParams = {
-    app_id: number
+    app_id: string
   }
 
   type getAppVoByAdminApiAppAdminGetVoGetParams = {
-    id: number
+    id: string
   }
 
   type getUserByIdApiUserGetGetParams = {
-    id: number
+    id: string
   }
 
   type getUserVoByIdApiUserGetVoGetParams = {
-    id: number
+    id: string
   }
 
   type HTTPValidationError = {
@@ -120,8 +120,6 @@ declare namespace API {
     userAccount?: string | null
     /** Username */
     userName?: string | null
-    /** Useravatar */
-    userAvatar?: string | null
     /** Userprofile */
     userProfile?: string | null
     /** Userrole */
@@ -152,8 +150,6 @@ declare namespace API {
     userName: string
     /** User Account */
     user_account: string
-    /** Useravatar */
-    userAvatar?: string | null
     /** Userprofile */
     userProfile?: string | null
     /** Userrole */
@@ -177,7 +173,7 @@ declare namespace API {
     /** Sortorder */
     sortOrder?: string | null
     /** Id */
-    id?: number | null
+    id?: string | null
     /** Username */
     userName?: string | null
     /** Useraccount */
@@ -197,8 +193,6 @@ declare namespace API {
     userPassword?: string | null
     /** Username */
     userName?: string | null
-    /** Useravatar */
-    userAvatar?: string | null
     /** Userprofile */
     userProfile?: string | null
     /** Userrole */
@@ -232,11 +226,9 @@ declare namespace API {
 
   type UserUpdateRequest = {
     /** Id */
-    id: number
+    id: string
     /** Username */
     userName?: string | null
-    /** Useravatar */
-    userAvatar?: string | null
     /** Userprofile */
     userProfile?: string | null
     /** Userrole */
@@ -250,8 +242,6 @@ declare namespace API {
     userAccount?: string | null
     /** Username */
     userName?: string | null
-    /** Useravatar */
-    userAvatar?: string | null
     /** Userprofile */
     userProfile?: string | null
     /** Userrole */

@@ -17,7 +17,7 @@
       <div class="user-info">
         <a-dropdown>
           <div class="user-dropdown-trigger">
-            <a-avatar :src="loginUserStore.loginUser.userAvatar || undefined" :size="28">
+            <a-avatar :size="28">
               {{ loginUserStore.loginUser.userName?.charAt(0) || 'U' }}
             </a-avatar>
             <span class="user-name">{{ loginUserStore.loginUser.userName }}</span>

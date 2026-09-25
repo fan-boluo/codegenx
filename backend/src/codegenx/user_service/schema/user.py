@@ -25,21 +25,19 @@ class UserAddRequest(CamelBaseModel):
     user_name: str = Field(alias="userName", min_length=1)  # 添加用户时用户名必填，不再默认"无名"
     user_account: str
     user_password: str | None = Field(default=None, alias="userPassword")
-    user_avatar: str | None = Field(default=None, alias="userAvatar")
     user_profile: str | None = Field(default=None, alias="userProfile")
     user_role: str | None = Field(default=None, alias="userRole")
 
 
 class UserUpdateRequest(CamelBaseModel):
-    id: int
+    id: str  # user_xxxx
     user_name: str | None = Field(default=None, alias="userName")
-    user_avatar: str | None = Field(default=None, alias="userAvatar")
     user_profile: str | None = Field(default=None, alias="userProfile")
     user_role: str | None = Field(default=None, alias="userRole")
 
 
 class UserQueryRequest(PageRequest):
-    id: int | None = None
+    id: str | None = None
     user_name: str | None = Field(default=None, alias="userName")
     user_account: str | None = Field(default=None, alias="userAccount")
     user_profile: str | None = Field(default=None, alias="userProfile")
@@ -49,7 +47,6 @@ class UserQueryRequest(PageRequest):
 class LoginUserVO(LongIdModel):
     user_account: str | None = Field(default=None, alias="userAccount")
     user_name: str | None = Field(default=None, alias="userName")
-    user_avatar: str | None = Field(default=None, alias="userAvatar")
     user_profile: str | None = Field(default=None, alias="userProfile")
     user_role: str | None = Field(default=None, alias="userRole")
     create_time: datetime | None = Field(default=None, alias="createTime")
@@ -59,7 +56,6 @@ class LoginUserVO(LongIdModel):
 class UserVO(LongIdModel):
     user_account: str | None = Field(default=None, alias="userAccount")
     user_name: str | None = Field(default=None, alias="userName")
-    user_avatar: str | None = Field(default=None, alias="userAvatar")
     user_profile: str | None = Field(default=None, alias="userProfile")
     user_role: str | None = Field(default=None, alias="userRole")
     create_time: datetime | None = Field(default=None, alias="createTime")
@@ -67,7 +63,6 @@ class UserRawVO(LongIdModel):
     user_account: str | None = Field(default=None, alias="userAccount")
     user_password: str | None = Field(default=None, alias="userPassword")
     user_name: str | None = Field(default=None, alias="userName")
-    user_avatar: str | None = Field(default=None, alias="userAvatar")
     user_profile: str | None = Field(default=None, alias="userProfile")
     user_role: str | None = Field(default=None, alias="userRole")
     user_status: str | None = Field(default=None, alias="userStatus")

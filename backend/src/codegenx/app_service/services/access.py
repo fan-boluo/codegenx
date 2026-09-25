@@ -20,7 +20,7 @@ from codegenx.app_service.orm.app_member import AppMember
 from codegenx.gateway.middleware.jwt_auth import JWTUser
 
 
-async def get_active_member(db: AsyncSession, app_id: int, user_id: int) -> AppMember | None:
+async def get_active_member(db: AsyncSession, app_id: str, user_id: str) -> AppMember | None:
     """查询未删除的成员记录。"""
     result = await db.execute(
         select(AppMember).where(
@@ -57,9 +57,9 @@ async def require_manager(db: AsyncSession, app: App, login_user: JWTUser) -> st
     return role
 
 
-async def require_participant_by_id(db: AsyncSession, app_id: int, login_user: JWTUser) -> App:
+async def require_participant_by_id(db: AsyncSession, app_id: str, login_user: JWTUser) -> App:
     """按项目 id 取记录并校验参与权限（gateway chat / 会话历史接口共用）。"""
-    if app_id <= 0:
+    if not app_id:
         raise BusinessException(ErrorCode.PARAMS_ERROR, "appId 错误")
     app = await db.get(App, app_id)
     if app is None:

@@ -19,6 +19,7 @@ from codegenx.user_service.security_utils import encrypt_password
 from shared.exceptions.business_exception import BusinessException
 from codegenx.user_service.models.user import User
 from shared.schema.common import PageData
+from shared.utils.id_utils import generate_user_id
 from codegenx.user_service.schema.user import LoginUserVO, UserVO
 
 
@@ -26,7 +27,7 @@ class UserService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def register(self, user_account: str, user_password: str, check_password: str, user_name: str) -> int:
+    async def register(self, user_account: str, user_password: str, check_password: str, user_name: str) -> str:
         self._validate_register_params(user_account, user_password, check_password, user_name)
         exists_stmt = select(User).where(User.user_account == user_account)
         exists = await self.db.scalar(select(func.count()).select_from(exists_stmt.subquery()))
@@ -34,6 +35,7 @@ class UserService:
             raise BusinessException(ErrorCode.PARAMS_ERROR, f"账号重复：{user_account}")
 
         user = User(
+            id=await self._generate_unique_user_id(),
             user_account=user_account,
             user_password=encrypt_password(user_password),
             user_name=user_name.strip(),
@@ -43,6 +45,14 @@ class UserService:
         await self.db.commit()
         await self.db.refresh(user)
         return user.id
+
+    async def _generate_unique_user_id(self) -> str:
+        """生成 user_xxxx 前缀 ID，撞主键时重试"""
+        for _ in range(5):
+            new_id = generate_user_id()
+            if not await self.db.scalar(select(User.id).where(User.id == new_id)):
+                return new_id
+        raise BusinessException(ErrorCode.SYSTEM_ERROR, "用户ID生成失败，请重试")
 
     async def login(self, user_account: str, user_password: str) -> User:
         if not user_account or not user_password:
@@ -62,7 +72,7 @@ class UserService:
         # await save_login_session(response, redis, user)
         return user
 
-    async def get_by_id(self, user_id: int) -> User | None:
+    async def get_by_id(self, user_id: str) -> User | None:
         stmt = self._base_query().where(User.id == user_id)
         return await self.db.scalar(stmt)
 
@@ -71,10 +81,9 @@ class UserService:
         user_account: str,
         user_password: str,
         user_name: str,
-        user_avatar: str | None,
         user_profile: str | None,
         user_role: str | None,
-    ) -> int:
+    ) -> str:
         # 用户名必填：为空或全空白直接拒绝，不再回退默认"无名"
         if not user_name or not user_name.strip():
             raise BusinessException(ErrorCode.PARAMS_ERROR, "用户名为必填项")
@@ -83,10 +92,10 @@ class UserService:
         if exists and exists > 0:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "账号重复")
         user = User(
+            id=await self._generate_unique_user_id(),
             user_account=user_account,
             user_password=encrypt_password(user_password),
             user_name=user_name.strip(),
-            user_avatar=user_avatar,
             user_profile=user_profile,
             user_role=user_role or UserRole.USER.value,
         )
@@ -97,9 +106,8 @@ class UserService:
 
     async def update_user(
         self,
-        user_id: int,
+        user_id: str,
         user_name: str | None,
-        user_avatar: str | None,
         user_profile: str | None,
         user_role: str | None,
     ) -> bool:
@@ -107,14 +115,13 @@ class UserService:
         if user is None:
             raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "用户不存在")
         user.user_name = user_name
-        user.user_avatar = user_avatar
         user.user_profile = user_profile
         if user_role:
             user.user_role = user_role
         await self.db.commit()
         return True
 
-    async def delete_user(self, user_id: int) -> bool:
+    async def delete_user(self, user_id: str) -> bool:
         user = await self.get_by_id(user_id)
         if user is None:
             raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "用户不存在")
@@ -126,7 +133,7 @@ class UserService:
         self,
         page_num: int,
         page_size: int,
-        user_id: int | None = None,
+        user_id: str | None = None,
         user_account: str | None = None,
         user_name: str | None = None,
         user_profile: str | None = None,

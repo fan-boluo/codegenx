@@ -9,11 +9,10 @@ use codegenx;
 -- 用户表
 create table if not exists user
 (
-    id           bigint auto_increment comment 'id' primary key,
+    id           varchar(32)                            not null comment 'id（user_ + 4位随机，由服务层生成）' primary key,
     userAccount  varchar(256)                           not null comment '账号',
     userPassword varchar(512)                           not null comment '密码',
     userName     varchar(256)                           null comment '用户昵称',
-    userAvatar   varchar(1024)                          null comment '用户头像',
     userProfile  varchar(512)                           null comment '用户简介',
     userRole     varchar(256) default 'user'            not null comment '用户角色：user/admin',
     editTime     datetime     default CURRENT_TIMESTAMP not null comment '编辑时间',
@@ -27,10 +26,10 @@ create table if not exists user
 -- 应用表（项目）
 create table if not exists app
 (
-    id           bigint auto_increment comment 'id' primary key,
+    id           varchar(32)                            not null comment 'id（app_ + 4位随机，由服务层生成）' primary key,
     appName      varchar(128)                           not null comment '应用名称',
     dbName       varchar(128)                           null comment '项目关联的数据库名（一个项目一个库）',
-    owner       bigint                                 not null comment '创建用户id（项目属主）',
+    owner       varchar(32)                            not null comment '创建用户id（项目属主，user_xxxx）',
     createTime   datetime     default CURRENT_TIMESTAMP not null comment '创建时间',
     updateTime   datetime     default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
     isDelete     tinyint      default 0                 not null comment '是否删除',
@@ -42,8 +41,8 @@ create table if not exists app
 create table if not exists app_member
 (
     id         bigint auto_increment comment 'id' primary key,
-    appId      bigint                                not null comment '项目id',
-    userId     bigint                                not null comment '成员用户id',
+    appId      varchar(32)                           not null comment '项目id（app_xxxx）',
+    userId     varchar(32)                           not null comment '成员用户id（user_xxxx）',
     createTime datetime    default CURRENT_TIMESTAMP not null comment '创建时间',
     updateTime datetime    default CURRENT_TIMESTAMP not null on update CURRENT_TIMESTAMP comment '更新时间',
     isDelete   tinyint     default 0                 not null comment '是否删除',
@@ -53,8 +52,8 @@ create table if not exists app_member
 
 CREATE TABLE `spans` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `app_id` varchar(10) NOT NULL DEFAULT '',
-  `user_id` varchar(10) DEFAULT '',
+  `app_id` varchar(32) NOT NULL DEFAULT '',
+  `user_id` varchar(32) DEFAULT '',
   `trace_id` VARCHAR(32) NOT NULL,
   `span_id` VARCHAR(32) NOT NULL,
   `parent_span_id` VARCHAR(32) DEFAULT NULL,
@@ -78,8 +77,8 @@ CREATE TABLE session_metrics (
     session_id VARCHAR(32) PRIMARY KEY,
     trace_id VARCHAR(32) NOT NULL,
     request_id VARCHAR(32) NOT NULL DEFAULT '',
-    app_id VARCHAR(10) NOT NULL DEFAULT '',
-    user_id VARCHAR(10),
+    app_id VARCHAR(32) NOT NULL DEFAULT '',
+    user_id VARCHAR(32),
     model VARCHAR(32) NOT NULL DEFAULT 'unknown',
     span_id VARCHAR(32) NOT NULL DEFAULT '',
 
@@ -116,8 +115,8 @@ CREATE TABLE turn_metrics (
     session_id VARCHAR(32) NOT NULL,
     trace_id VARCHAR(32) NOT NULL,
     request_id VARCHAR(32) NOT NULL DEFAULT '',
-    app_id VARCHAR(10) NOT NULL DEFAULT '',
-    user_id VARCHAR(10) NOT NULL DEFAULT '',
+    app_id VARCHAR(32) NOT NULL DEFAULT '',
+    user_id VARCHAR(32) NOT NULL DEFAULT '',
     model VARCHAR(32) NOT NULL DEFAULT 'unknown',
     span_id VARCHAR(32) NOT NULL DEFAULT '',
 
