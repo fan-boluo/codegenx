@@ -10,10 +10,12 @@ import {
 } from '@ant-design/icons-vue'
 import { addApp, listMyAppVoByPage } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
+import { useOpenedChatsStore } from '@/stores/openedChats'
 import { formatRelativeTime, formatTime } from '@/utils/time'
 
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
+const openedChatsStore = useOpenedChatsStore()
 
 const loading = ref(false)
 const apps = ref<API.AppVO[]>([])
@@ -94,7 +96,7 @@ const handleCreateProject = async () => {
     }
     const createdAppId = String(createRes.data.data)
     createModalVisible.value = false
-    router.push(`/app/chat/${createdAppId}`)
+    enterChat(createdAppId)
   } catch (error) {
     console.error('创建项目失败:', error)
     message.error('创建项目失败')
@@ -107,9 +109,19 @@ const selectPromptExample = (_example: string) => {
   openCreateChat()
 }
 
-const goToChat = (appId?: string | null) => {
+// 进聊天页统一走这里：先开页签（带项目名避免"加载中"闪烁），超限则提示并留在当前页
+const enterChat = (appId?: string | null, appName?: string) => {
   if (!appId) return
+  if (!openedChatsStore.openChat(String(appId), appName)) {
+    message.warning('最多同时打开3个项目，请先关闭一个页签')
+    return
+  }
   router.push(`/app/chat/${appId}`)
+}
+
+const goToChat = (appId?: string | null) => {
+  const app = apps.value.find((a) => String(a.id) === String(appId))
+  enterChat(appId, app?.appName)
 }
 
 watch(

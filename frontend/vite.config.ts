@@ -50,6 +50,8 @@ export default defineConfig({
     },
   },
   resolve: {
+    // src/ 下存在 vue-tsc 误提交的 .js 编译产物（与 .ts 同名），默认顺序 .js 优先会吞掉 .ts 源码改动，这里强制 .ts 优先
+    extensions: ['.ts', '.mts', '.mjs', '.js', '.jsx', '.tsx', '.json'],
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },

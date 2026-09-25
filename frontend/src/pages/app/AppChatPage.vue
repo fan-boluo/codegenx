@@ -250,16 +250,6 @@
         </a-spin>
       </div>
       <div class="messages-container" ref="messagesContainer">
-        <div v-if="!appId && !messages.length" class="create-mode-hint">
-          <div class="hint-icon">
-            <MessageOutlined />
-          </div>
-          <p class="hint-title">开始新项目对话</p>
-          <p class="hint-description">
-            请先在首页点击「创建项目」新建项目，或从项目列表进入已有项目。
-          </p>
-        </div>
-
         <div v-for="(messageItem, index) in messages" :key="index" class="message-item">
           <div v-if="messageItem.type === 'user'" class="user-message">
             <div class="message-bubble user-bubble">
@@ -383,14 +373,14 @@
             :placeholder="getInputPlaceholder()"
             :maxlength="1000"
             @keydown.enter.prevent="sendMessage"
-            :disabled="isGenerating || isCreatingApp || !canOperateApp"
+            :disabled="isGenerating || !canOperateApp"
             class="chat-input"
           />
           <div class="input-actions">
             <a-button v-if="isGenerating" danger @click="stopGeneration" :loading="isStoppingGeneration" size="small">
               <template #icon><StopOutlined /></template>
             </a-button>
-            <a-button v-else type="primary" @click="sendMessage" :loading="isCreatingApp" :disabled="!canOperateApp" size="small">
+            <a-button v-else type="primary" @click="sendMessage" :disabled="!canOperateApp" size="small">
               <template #icon><SendOutlined /></template>
             </a-button>
           </div>
@@ -435,10 +425,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
-import { deleteApp as deleteAppApi, getAppVoById } from '@/api/appController'
+import { useOpenedChatsStore } from '@/stores/openedChats'
+import { getAppVoById } from '@/api/appController'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
@@ -467,7 +458,6 @@ import {
   FolderOutlined,
   HistoryOutlined,
   LoadingOutlined,
-  MessageOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
   SendOutlined,
@@ -531,14 +521,16 @@ interface OutputLine {
 
 const MAX_OPEN_TABS = 5
 
-const route = useRoute()
+// 聊天页在 BasicLayout 工作区以多实例常驻（每个项目一个实例），appId/active 由父组件传入
+const props = defineProps<{ appId?: string; active?: boolean }>()
+
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
+const openedChatsStore = useOpenedChatsStore()
 
 const appInfo = ref<API.AppVO>({})
 const appId = ref<string>()
 const sessionId = ref('')
-const isCreatingApp = ref(false)
 
 const messages = ref<MessageItem[]>([])
 const userInput = ref('')
@@ -1469,6 +1461,7 @@ const finishStream = () => {
   isGenerating.value = false
   isStoppingGeneration.value = false
   stopRequested.value = false
+  if (appId.value) openedChatsStore.setGenerating(appId.value, false)
   clearActiveGeneration(activeGenerationRequestId.value)
   setTimeout(async () => { await refreshAfterGeneration() }, 1000)
 }
@@ -1611,6 +1604,25 @@ watch(
   { deep: true },
 )
 
+// 有无未保存文件更改同步到页签栏（关闭页签时的确认提示依据）
+watch(
+  () => fileTabs.value.some((t) => t.isDirty),
+  (dirty) => {
+    if (appId.value) openedChatsStore.setDirty(appId.value, dirty)
+  },
+)
+
+// 页签激活时：新消息滚到底部、Monaco 重排（v-show 切换无生命周期钩子，靠 prop 感知）
+watch(
+  () => props.active,
+  async (val) => {
+    if (!val) return
+    await nextTick()
+    scrollToBottom()
+    monacoEditor.value?.layout()
+  },
+)
+
 // 后端 get/vo 已校验参与者身份（owner/成员/管理员），能加载出项目即可操作
 const canOperateApp = computed(() => Boolean(appId.value))
 
@@ -1631,19 +1643,16 @@ const clearActiveGeneration = (requestId?: string) => {
   isStoppingGeneration.value = false
 }
 
-const fetchAppInfo = async (options?: { appId?: string }) => {
-  const id = options?.appId ?? (route.params.id as string | undefined)
-  if (!id) {
-    appId.value = undefined; clearChatSessionId(); appInfo.value = {}
-    messages.value = []; sourceFileTree.value = []
-    return
-  }
+const fetchAppInfo = async () => {
+  const id = props.appId
+  if (!id) return
   appId.value = id; ensureChatSessionId(id)
   try {
     const res = await getAppVoById({ id: id as unknown as number })
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
-      if (messages.value.length >= 2) { /* generated */ }
+      // 同步页签名称
+      openedChatsStore.renameTab(id, res.data.data.appName || '')
       if (messages.value.length === 0) {
         // 尝试恢复本地存储的 session
         const storageKey = getAppSessionStorageKey(id)
@@ -1663,15 +1672,26 @@ const fetchAppInfo = async (options?: { appId?: string }) => {
       await loadDbTables()
       return
     }
-    message.error('获取项目信息失败'); router.push('/')
+    handleAppLoadFailure()
   } catch (error) {
     console.error('获取项目信息失败：', error)
-    message.error('获取项目信息失败'); router.push('/')
+    handleAppLoadFailure()
+  }
+}
+
+// 项目不存在/无权限：关自己的页签；只有失败的是当前激活页签才导航，避免把别的页签里的用户拽走
+const handleAppLoadFailure = () => {
+  if (!appId.value) return
+  const wasActive = openedChatsStore.activeAppId === appId.value
+  const newActive = openedChatsStore.closeChat(appId.value)
+  if (wasActive) {
+    message.error('项目不存在或无权限访问')
+    router.replace(newActive ? `/app/chat/${newActive}` : '/')
   }
 }
 
 const sendMessage = async () => {
-  if (!canOperateApp.value || !userInput.value.trim() || isGenerating.value || isCreatingApp.value) return
+  if (!canOperateApp.value || !userInput.value.trim() || isGenerating.value) return
   let outgoingMessage = userInput.value.trim()
   if (selectedElementInfo.value) {
     let elementContext = `\n\n选中元素信息：`
@@ -1700,6 +1720,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
   activeGenerationRequestId.value = requestId; activeGenerationSessionId.value = currentSessionId
   activeGenerationMessageIndex.value = aiMessageIndex
   stopRequested.value = false; isStoppingGeneration.value = false
+  if (appId.value) openedChatsStore.setGenerating(appId.value, true)
   const controller = new AbortController(); abortController.value = controller
   try {
     const baseURL = request.defaults.baseURL || API_BASE_URL
@@ -1737,7 +1758,9 @@ const handleError = (error: unknown, aiMessageIndex: number, requestId?: string)
   console.error('执行失败：', error)
   const targetMessage = getMessageAt(aiMessageIndex)
   if (targetMessage) { targetMessage.content = '抱歉，执行中出现了错误，请重试。'; targetMessage.loading = false }
-  message.error('执行失败，请重试'); isGenerating.value = false; clearActiveGeneration(requestId)
+  message.error('执行失败，请重试'); isGenerating.value = false
+  if (appId.value) openedChatsStore.setGenerating(appId.value, false)
+  clearActiveGeneration(requestId)
 }
 
 const stopGeneration = async () => {
@@ -1775,25 +1798,6 @@ const getInputPlaceholder = () => {
   return '请描述你的需求，越详细效果越好哦'
 }
 
-// Route navigation guard for unsaved changes
-onBeforeUnmount(() => {
-  const dirtyTabs = fileTabs.value.filter(t => t.isDirty)
-  if (dirtyTabs.length > 0) {
-    const names = dirtyTabs.map(t => t.name).join(', ')
-    const leave = window.confirm(`以下文件有未保存的更改：\n${names}\n\n确定要离开吗？`)
-    if (!leave) { throw new Error('Navigation blocked') }
-  }
-})
-
-watch(() => route.params.id, async (newId, oldId) => {
-  if (newId === oldId) return
-  fileTabs.value = []
-  activeFileTab.value = ''
-  sidePanelTab.value = 'files'
-  sidePanelVisible.value = true
-  await fetchAppInfo({ appId: typeof newId === 'string' ? newId : undefined })
-})
-
 onMounted(() => {
   sidePanelTab.value = 'files'
   fetchAppInfo()
@@ -1808,7 +1812,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 #appChatPage.ide-layout {
-  height: calc(100vh - 56px);
+  height: 100%;
   display: flex;
   overflow: hidden;
   background: var(--bg-page);
@@ -2621,35 +2625,6 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   background: #fef3c7;
   color: #92400e;
-}
-
-.create-mode-hint {
-  margin-bottom: 20px;
-  padding: 24px;
-  border-radius: var(--radius-card);
-  background: var(--bg-page);
-  border: 1px solid var(--border-light);
-  text-align: center;
-}
-
-.hint-icon {
-  font-size: 28px;
-  color: var(--accent-primary);
-  margin-bottom: 12px;
-}
-
-.hint-title {
-  margin: 0 0 8px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.hint-description {
-  margin: 0;
-  line-height: 1.6;
-  font-size: 13px;
-  color: var(--text-secondary);
 }
 
 .input-container {
