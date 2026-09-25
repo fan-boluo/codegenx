@@ -18,7 +18,7 @@ from sqlalchemy import text
 
 from db.mysql.session import session_maker
 from shared import log
-from codegenx.ai_service.memory.models import MemoryEntry, LAYER_WARM
+from codegenx.ai_service.memory.models import MemoryEntry, LAYER_WARM, LAYER_HOT
 
 # 行选取列（from_row 的输入契约，所有 SELECT 复用）
 _ROW_COLS = (
