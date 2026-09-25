@@ -8,8 +8,14 @@
           <a-input v-model:value="formState.userAccount" placeholder="请输入账号" size="large" />
         </a-form-item>
 
-        <a-form-item name="userName" :rules="[{ max: 20, message: '用户名不能超过20个字符' }]">
-          <a-input v-model:value="formState.userName" placeholder="请输入用户名（可选）" size="large" />
+        <a-form-item
+          name="userName"
+          :rules="[
+            { required: true, whitespace: true, message: '请输入用户名' },
+            { max: 20, message: '用户名不能超过20个字符' },
+          ]"
+        >
+          <a-input v-model:value="formState.userName" placeholder="请输入用户名" size="large" />
         </a-form-item>
 
         <a-form-item
@@ -55,7 +61,7 @@ import { reactive } from 'vue'
 const router = useRouter()
 
 type RegisterFormState = API.UserRegisterRequest & {
-  userName?: string
+  userName: string
 }
 
 const formState = reactive<RegisterFormState>({
@@ -78,6 +84,7 @@ const handleSubmit = async (values: RegisterFormState) => {
     userAccount: values.userAccount,
     userPassword: values.userPassword,
     checkPassword: values.checkPassword,
+    userName: values.userName.trim(), // 用户名必填，去除首尾空白后提交
   }
   const res = await userRegister(registerPayload)
   if (res.data.code === 0) {

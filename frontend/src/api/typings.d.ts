@@ -226,8 +226,8 @@ declare namespace API {
     userPassword: string
     /** Checkpassword */
     checkPassword: string
-    /** Username */
-    userName?: string | null
+    /** Username（必填） */
+    userName: string
   }
 
   type UserUpdateRequest = {
