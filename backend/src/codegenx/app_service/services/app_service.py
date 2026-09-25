@@ -91,7 +91,8 @@ class AppService:
 
     async def get_app_vo_by_id(self, app_id: int, login_user: JWTUser) -> AppVO:
         app = await self._get_viewable_app(app_id, login_user)
-        return self._to_app_vo(app)
+        owner_names = await self._get_owner_names([app.owner])
+        return self._to_app_vo(app, owner_names.get(app.owner))
 
     async def update_app(self, request: AppUpdateRequest, login_user: JWTUser) -> bool:
         app = await self._get_existing_app(request.id)
@@ -438,7 +439,10 @@ class AppService:
         total_row = int((await self.db.scalar(total_stmt)) or 0)
         page_stmt = stmt.offset((page_num - 1) * page_size).limit(page_size)
         result = await self.db.execute(page_stmt)
-        records = [self._to_app_vo(item) for item in result.scalars().all()]
+        rows = result.scalars().all()
+        # 批量查属主用户名，一次 IN 查询避免逐条 N+1
+        owner_names = await self._get_owner_names({row.owner for row in rows})
+        records = [self._to_app_vo(item, owner_names.get(item.owner)) for item in rows]
         return PageData[AppVO](
             records=records,
             pageNumber=page_num,
@@ -467,12 +471,21 @@ class AppService:
         stmt = stmt.order_by(order_field if query_request.sort_order == "ascend" else desc(order_field))
         return stmt
 
-    def _to_app_vo(self, app: App) -> AppVO:
+    async def _get_owner_names(self, owner_ids) -> dict[int, str | None]:
+        """按属主 ID 批量查用户名，返回 {userId: userName} 映射"""
+        ids = [i for i in set(owner_ids) if i is not None]
+        if not ids:
+            return {}
+        rows = await self.db.execute(select(User.id, User.user_name).where(User.id.in_(ids)))
+        return {uid: name for uid, name in rows.all()}
+
+    def _to_app_vo(self, app: App, owner_name: str | None = None) -> AppVO:
         return AppVO.model_validate(
             {
                 "id": app.id,
                 "appName": app.app_name,
                 "owner": app.owner,
+                "ownerName": owner_name,
                 "dbName": app.db_name,
                 "createTime": app.create_time,
                 "updateTime": app.update_time,

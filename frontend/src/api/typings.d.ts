@@ -3,6 +3,8 @@ declare namespace API {
     id?: number | null
     appName?: string | null
     owner?: number | null
+    /** 属主用户名 */
+    ownerName?: string | null
     dbName?: string | null
     createTime?: string | null
     updateTime?: string | null
@@ -146,8 +148,8 @@ declare namespace API {
   }
 
   type UserAddRequest = {
-    /** Username */
-    userName?: string | null
+    /** Username（必填，不再默认"无名"） */
+    userName: string
     /** User Account */
     user_account: string
     /** Useravatar */

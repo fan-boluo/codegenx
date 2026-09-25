@@ -30,6 +30,7 @@ class AppQueryRequest(PageRequest):
 class AppVO(LongIdModel, TimeModel):
     app_name: str | None = Field(default=None, alias="appName")
     owner: int | None = None
+    owner_name: str | None = Field(default=None, alias="ownerName")  # 属主用户名，前端直接展示
     db_name: str | None = Field(default=None, alias="dbName")
 
 

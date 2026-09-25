@@ -25,7 +25,7 @@
           {{ formatTime(record.createTime) }}
         </template>
         <template v-else-if="column.dataIndex === 'owner'">
-          {{ record.owner ? `用户 ${record.owner}` : '未知用户' }}
+          {{ record.ownerName || (record.owner ? `用户 ${record.owner}` : '未知用户') }}
         </template>
         <template v-else-if="column.key === 'action'">
           <a-space>
@@ -50,7 +50,7 @@
         <a-descriptions :column="2" bordered style="margin-bottom: 24px">
           <a-descriptions-item label="项目ID">{{ currentApp?.id }}</a-descriptions-item>
           <a-descriptions-item label="创建者">
-            {{ currentApp?.owner ? `用户 ${currentApp.owner}` : '未知用户' }}
+            {{ currentApp?.ownerName || (currentApp?.owner ? `用户 ${currentApp.owner}` : '未知用户') }}
           </a-descriptions-item>
           <a-descriptions-item label="创建时间">{{
             formatTime(currentApp?.createTime)

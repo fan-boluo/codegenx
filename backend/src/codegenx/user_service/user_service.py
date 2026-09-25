@@ -71,11 +71,14 @@ class UserService:
         self,
         user_account: str,
         user_password: str,
-        user_name: str | None,
+        user_name: str,
         user_avatar: str | None,
         user_profile: str | None,
         user_role: str | None,
     ) -> int:
+        # 用户名必填：为空或全空白直接拒绝，不再回退默认"无名"
+        if not user_name or not user_name.strip():
+            raise BusinessException(ErrorCode.PARAMS_ERROR, "用户名为必填项")
         exists_stmt = self._base_query().where(User.user_account == user_account)
         exists = await self.db.scalar(select(func.count()).select_from(exists_stmt.subquery()))
         if exists and exists > 0:
@@ -83,7 +86,7 @@ class UserService:
         user = User(
             user_account=user_account,
             user_password=encrypt_password(user_password),
-            user_name=user_name or DEFAULT_USER_NAME,
+            user_name=user_name.strip(),
             user_avatar=user_avatar,
             user_profile=user_profile,
             user_role=user_role or UserRole.USER.value,

@@ -2,6 +2,7 @@ declare namespace API {
   type AppVO = {
     id?: number
     owner?: number | string
+    ownerName?: string | null
     appName?: string
     dbName?: string
     createTime?: string

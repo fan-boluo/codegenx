@@ -404,7 +404,7 @@ watch(
             <a-descriptions :column="2" bordered style="margin-bottom: 24px">
               <a-descriptions-item label="项目ID">{{ currentApp?.id }}</a-descriptions-item>
               <a-descriptions-item label="创建者">
-                {{ currentApp?.owner || '未知' }}
+                {{ currentApp?.ownerName || (currentApp?.owner ? `用户 ${currentApp.owner}` : '未知') }}
               </a-descriptions-item>
               <a-descriptions-item label="创建时间">{{
                 formatTime(currentApp?.createTime)
