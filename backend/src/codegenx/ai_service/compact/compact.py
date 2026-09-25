@@ -17,19 +17,21 @@ Path B — LLM summarization
     up to MAX_COMPACT_RETRIES times
   • Falls back gracefully if the LLM itself is unavailable
 
-Circuit breaker
-  • After MAX_CONSECUTIVE_FAILURES consecutive path-B failures, compaction is
-    disabled for the session (mirrors autoCompact.ts circuit-breaker logic)
-  • Path A is not gated by the circuit breaker (it's always safe)
+Circuit breaker（P1 统一：复用韧性层三态熔断器，llm/resilience.py）
+  • After MAX_CONSECUTIVE_FAILURES consecutive failures (path B failed or
+    compaction ineffective), the LLM path opens its circuit and is skipped;
+    it recovers via half-open probing after the cooldown.
+  • Path A is NOT gated by the circuit breaker (it's always safe and free) —
+    熔断只挡 Path B（LLM 压缩），零成本快速路径永远可用（修 P1-6）
 """
 from __future__ import annotations
 
-import asyncio
 from shared import log
-from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from dataclasses import dataclass
+from typing import Any
 
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
+from codegenx.ai_service.llm.resilience import CircuitBreaker
 from codegenx.ai_service.compact.thresholds import (
     MAX_CONSECUTIVE_FAILURES,
     estimate_tokens,
@@ -54,6 +56,10 @@ MIN_TOKENS_AFTER  = 200      # don't truncate below this even if over budget
 MAX_COMPACT_RETRIES  = 3     # PTL retry attempts
 PTL_TRUNCATE_RATIO   = 0.20  # remove this fraction of oldest messages per retry
 
+# 压缩熔断（复用韧性层三态 CircuitBreaker）：连续失败打开后，冷却 5 分钟放行探测。
+# 原两态实现是"会话内存续期内永久禁用"，无恢复路径（P1-6）
+COMPACT_BREAKER_RECOVERY_SECONDS = 300.0
+
 
 # ── CompactResult type ────────────────────────────────────────────────────────
 
@@ -66,32 +72,6 @@ class CompactResult:
     messages_removed: int = 0
     tokens_before:    int = 0
     tokens_after:     int = 0
-
-
-# ── Circuit breaker state ──────────────────────────────────────────────────────
-
-@dataclass
-class _CircuitBreaker:
-    consecutive_failures: int = 0
-    disabled:             bool = False
-
-    def record_success(self) -> None:
-        self.consecutive_failures = 0
-        self.disabled = False
-
-    def record_failure(self) -> None:
-        self.consecutive_failures += 1
-        if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-            self.disabled = True
-            log.warning(
-                "Auto-compact circuit breaker opened after {} consecutive failures.",
-                self.consecutive_failures,
-            )
-
-
-# Module-level circuit breaker (one per process / session).
-# engine.py creates a CompactionEngine per session which carries its own.
-_default_breaker = _CircuitBreaker()
 
 
 # ── Path A — session-memory fast path ─────────────────────────────────────────
@@ -220,13 +200,12 @@ async def _call_llm_for_summary(
 async def _llm_compact(
     messages: list[dict],
     llm_fn: Any,
-    breaker: _CircuitBreaker,
 ) -> CompactResult | None:
     """
     Path B: ask the LLM to summarise the conversation, then rebuild messages.
     Retries up to MAX_COMPACT_RETRIES times, each time trimming the oldest
     PTL_TRUNCATE_RATIO of messages (PTL = Prompt Too Long).
-    Returns None on total failure (caller should record_failure on breaker).
+    Returns None on total failure (caller records breaker failure).
     """
     tokens_before = estimate_tokens(messages)
     work_messages = list(messages)
@@ -261,7 +240,6 @@ async def _llm_compact(
             new_messages = [user_context, assistant_ack]
             if kept_tail:
                 new_messages.extend(kept_tail)
-            breaker.record_success()
             return CompactResult(
                 messages=new_messages,
                 summary=summary,
@@ -325,7 +303,14 @@ class CompactionEngine:
         self.session_id = session_id
         self._llm_fn = llm_fn
         self._session_memory = session_memory
-        self._breaker = _CircuitBreaker()
+        # P1：复用韧性层通用三态熔断器（每会话一个，挡 Path B；阈值沿用 MAX_CONSECUTIVE_FAILURES）
+        self._breaker = CircuitBreaker(
+            f"compact:{session_id}",
+            failure_threshold=MAX_CONSECUTIVE_FAILURES,
+            recovery_timeout=COMPACT_BREAKER_RECOVERY_SECONDS,
+            half_open_max_calls=2,       # 闭合判定需 ≥2 次探测采样，至少给 2 个名额
+            half_open_success_rate=0.5,
+        )
 
     # ------------------------------------------------------------------ public
 
@@ -343,20 +328,17 @@ class CompactionEngine:
         if not should_auto_compact(messages):
             return messages, None
 
-        if self._breaker.disabled:
-            log.warning("Auto-compact disabled (circuit breaker open); skipping.")
-            return messages, None
-
         tokens_before = estimate_tokens(messages)
         result = await self._run_compaction(messages)
         if result is None or result.tokens_after >= result.tokens_before:
+            # P1：压缩失败/无效计入通用熔断器（挡的是 Path B，Path A 永远可用）
+            await self._breaker.record_failure()
             if result is not None:
                 log.info(
                     "Compaction ineffective ({}→{} tokens, +{:.0f}%); falling back to truncation.",
                     result.tokens_before, result.tokens_after,
                     (result.tokens_after - result.tokens_before) / max(1, result.tokens_before) * 100,
                 )
-            self._breaker.record_failure()
             # Conservative truncation: keep last messages that fit within the effective
             # context window to prevent API errors from overly large context.
 
@@ -375,6 +357,7 @@ class CompactionEngine:
                 tokens_after=estimate_tokens(truncated),
             )
 
+        await self._breaker.record_success()
         log.info(
             "Compaction complete via {}: {}→{} tokens, removed {} messages.",
             result.path_used,
@@ -400,12 +383,18 @@ class CompactionEngine:
             except Exception as exc:
                 log.warning("Session-memory fast-path failed: {}; trying LLM.", exc)
 
-        # Path B — LLM summarization
+        # Path B — LLM summarization（唯一受熔断门控的路径）
         if self._llm_fn is not None:
-            log.debug("setp 压缩：Using LLM compaction.")
-            result = await _llm_compact(messages, self._llm_fn, self._breaker)
-            if result is not None:
-                return result
+            if not await self._breaker.acquire():
+                log.warning(
+                    "[compact] LLM 压缩熔断打开，跳过 Path B（session={}，冷却后自动探测恢复）",
+                    self.session_id,
+                )
+            else:
+                log.debug("setp 压缩：Using LLM compaction.")
+                result = await _llm_compact(messages, self._llm_fn)
+                if result is not None:
+                    return result
 
         log.error("setp 压缩：All compaction paths failed.")
         return None
@@ -427,8 +416,7 @@ async def compact_conversation(
     if session_summary.strip():
         return _session_memory_compact(messages, session_summary)
 
-    breaker = _CircuitBreaker()
-    result = await _llm_compact(messages, llm_fn, breaker)
+    result = await _llm_compact(messages, llm_fn)
     if result is not None:
         return result
 
