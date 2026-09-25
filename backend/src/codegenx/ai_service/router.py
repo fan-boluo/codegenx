@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.ai_service.session.manager import SessionPersistence
+from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.chat_message import get_chat_message_store
 from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import validate_prompt_safety
 from codegenx.ai_service.monitor.monitor_query_service import get_monitor_query_service
@@ -175,7 +176,12 @@ async def check_session_alive(
 ):
     """检查 session 在内存池中是否活跃（仅限项目成员）。"""
     await require_participant_by_id(db, app_id, login_user)
-    alive = await agent_service._get_runtime().session_pool.exists(session_id)
+    # 容器未启动（lifespan 未跑完）时与 stop_session 一致：视为不活跃而非系统错误
+    try:
+        runtime = get_app().runtime
+    except RuntimeError:
+        runtime = None
+    alive = bool(runtime is not None and await runtime.session_pool.exists(session_id))
     return success({"alive": alive})
 
 

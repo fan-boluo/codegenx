@@ -137,6 +137,21 @@ def test_reset_app_unloads_container():
         get_app()
 
 
+def test_default_assembly_includes_all_stateless_services():
+    """回归：SystemApp 默认装配必须含全部无状态服务（防 context 未装配类启动故障）。"""
+    from codegenx.ai_service.utils.config import Config
+
+    app = SystemApp(config=Config(), hooks=_StubHooks([]))
+    assert app.context is not None
+    assert app.session_io is not None
+    assert app.tasks is not None
+    assert app.memory is not None
+    assert app.summary is not None
+    assert app.compaction is not None
+    assert app.skills is not None
+    assert app.agents is not None
+
+
 def test_startup_is_idempotent(monkeypatch):
     order: list[str] = []
     stub_runtime = _StubRuntime(order)

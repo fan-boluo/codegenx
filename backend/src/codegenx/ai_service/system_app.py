@@ -102,7 +102,7 @@ class SystemApp:
     agents: "AgentRegistry" = field(default_factory=AgentRegistry)
 
     # ── 无状态服务（ids 作参数；纯 Python 无外部依赖，default_factory 装配）────
-    context: "ContextService | None" = None           # workspace 元数据/骨架/组装
+    context: "ContextService" = field(default_factory=ContextService)  # workspace 元数据/骨架/组装
     session_io: "SessionPersistence" = field(default_factory=SessionPersistence)
     tasks: "TaskBoardService" = field(default_factory=TaskBoardService)
     memory: "MemoryFacade" = field(default_factory=MemoryFacade)
