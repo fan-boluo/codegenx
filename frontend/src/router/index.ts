@@ -34,6 +34,11 @@ const router = createRouter({
       component: () => import('@/pages/admin/MonitorManagePage.vue'),
     },
     {
+      // 裸 /app/chat（无项目 id）没有入口场景，统一回首页；带 id 的走下面的工作台路由
+      path: '/app/chat',
+      redirect: '/',
+    },
+    {
       path: '/app/chat/:id?',
       name: '项目对话',
       component: () => import('@/pages/app/AppChatPage.vue'),
