@@ -20,7 +20,7 @@ from pathlib import Path
 
 from shared import log
 from shared.constants import get_session_dir
-from codegenx.ai_service.llm.async_client import AsyncLLMClient
+from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.utils.context_utils import rough_tokens
 from codegenx.ai_service.utils.config import config
 
@@ -210,7 +210,8 @@ class SessionSummaryService:
             notes_path=notes_path,
         )
 
-        client = AsyncLLMClient()
+        # P0-1/P0-2 修复：共享客户端 + 场景模型路由（原实现每次调用即用即弃新建，且永远用默认模型）
+        client = get_llm(config.get_model_for_scenario("summary"))
         updated_notes = await client.invoke(
             messages=[
                 {"role": "system", "content": system_prompt},

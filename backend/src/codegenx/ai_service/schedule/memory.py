@@ -35,7 +35,7 @@ from datetime import datetime
 from shared import log
 
 from codegenx.ai_service.utils.config import config
-from codegenx.ai_service.llm.async_client import AsyncLLMClient
+from codegenx.ai_service.llm.async_client import AsyncLLMClient, get_llm
 from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.prompts import (
     MEMORY_CONFLICT_SYSTEM_PROMPT,
@@ -532,10 +532,14 @@ class MemoryScheduler:
     # === LLM 调用（小模型 + 并发管控）===
 
     def _get_llm(self) -> AsyncLLMClient:
-        """惰性创建离线提取小模型客户端（model_name 未配置则用默认模型）。"""
+        """惰性获取离线提取小模型客户端（memory.model_name → model_roles.memory → 默认模型）。"""
         if self._llm is None:
-            llm_model = config.memory.store.model_name or config.get_default_model()
-            self._llm = AsyncLLMClient(llm_model)
+            llm_model = (
+                config.memory.store.model_name
+                or config.get_model_for_scenario("memory")
+                or config.get_default_model()
+            )
+            self._llm = get_llm(llm_model)
             log.info("离线记忆小模型已初始化: {}", llm_model)
         return self._llm
 

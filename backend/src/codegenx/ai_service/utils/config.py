@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import ClassVar, List
+from typing import ClassVar, Dict, List
 from functools import lru_cache
 from pydantic import AliasChoices, ConfigDict, Field, BaseModel
 from pydantic.alias_generators import to_camel
@@ -340,6 +340,12 @@ class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     models:List[ModelsConfig] = Field(default_factory=lambda: [ModelsConfig()])
+    # 场景→模型名路由（P0-2）：agent_main/compact/summary/memory；
+    # 未配置的场景回落默认模型，memory.store.model_name 优先级更高（向后兼容）
+    model_roles: Dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("modelRoles", "model_roles"),
+    )
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
@@ -376,10 +382,24 @@ class Config(BaseSettings):
         if  normalized:
             for model in self.models:
                 if normalized == str(model.name or "").strip().lower():
-                    provider = model.provider
-                    return getattr(self.providers, provider)
+                    # get_provider 内部对无效 provider 名回落 custom，避免配置手误直接 AttributeError
+                    return self.get_provider(model.provider)
         return self.providers.custom
 
+    def get_provider_name_by_model_name(self, model_name: str | None = None) -> str:
+        """模型名 → provider 名（client_registry 用作共享客户端的键）；未命中回落 custom。"""
+        normalized = str(model_name or "").strip().lower()
+        if normalized:
+            for model in self.models:
+                if normalized == str(model.name or "").strip().lower():
+                    provider = str(model.provider or "").strip().lower()
+                    if provider and hasattr(self.providers, provider):
+                        return provider
+        return "custom"
+
+    def get_model_for_scenario(self, scenario: str) -> str | None:
+        """场景→模型路由（P0-2）；未配置返回 None，由调用方回落默认模型。"""
+        return (self.model_roles or {}).get(str(scenario).strip().lower()) or None
 
     def get_default_model(self) -> str:
         if not self.models:

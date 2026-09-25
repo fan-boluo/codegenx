@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from codegenx.ai_service.agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from codegenx.ai_service.agent.runtime_schema import  RuntimeSessionState, TurnStoppedError, \
     ActivateTurn
+from codegenx.ai_service.llm.async_client import get_llm
+from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
 from shared import log
 
 if TYPE_CHECKING:
@@ -38,11 +40,13 @@ class LLMRecoveryMixin:
         session_state: RuntimeSessionState,
     ) -> dict[str, Any]:
         """Invoke the LLM with error recovery (s11)."""
-        from codegenx.ai_service.llm.async_client import AsyncLLMClient
-
         cfg = self.agent_config
         context = session_state.context_manager
         tools = session_state.runtime.tools
+        # P0-2 修复：使用 agent 配置的模型（原实现漏传 → 永远回落默认模型，AgentConfig.model 成死配置）
+        agent_model = (cfg.resolved_model_name or "").strip() or None
+        # P0-1 修复：共享客户端在循环外创建一次（原实现在重试 while 循环内即用即弃，从不 close）
+        llm_client = get_llm(agent_model)
         continuation_attempts = 0
         compact_attempts = 0
         transport_attempts = 0
@@ -53,7 +57,6 @@ class LLMRecoveryMixin:
         while True:
             try:
                 self._raise_if_stop_requested(session_state)
-                llm_client = AsyncLLMClient()
                 round_response: dict[str, Any] = {
                     "content": "",
                     "tool_calls": [],
@@ -118,11 +121,12 @@ class LLMRecoveryMixin:
             except (TurnStoppedError, asyncio.CancelledError):
                 raise
 
-            except (asyncio.TimeoutError, Exception) as exc:
-                err_text = str(exc).lower()
+            except Exception as exc:
+                # P0-3 修复：按 SDK 类型化异常分类（原为 str(exc) 关键词匹配，会误判重试）
+                err_class = classify_llm_error(exc)
 
                 # Strategy 2: context too long — compact and retry
-                if self._is_context_too_long_error(err_text):
+                if err_class is LLMErrorClass.CONTEXT_OVERFLOW:
                     if compact_attempts < cfg.max_compact_attempts:
                         compact_attempts += 1
                         self._record_recovery(
@@ -145,7 +149,7 @@ class LLMRecoveryMixin:
                     raise
 
                 # Strategy 3: transient transport error — exponential backoff and retry
-                if self._is_transport_error(err_text):
+                if err_class is LLMErrorClass.RETRYABLE:
                     if transport_attempts < cfg.max_transport_attempts:
                         delay = _recovery_backoff_delay(
                             transport_attempts,
@@ -173,33 +177,6 @@ class LLMRecoveryMixin:
                 raise
 
     # ------------------------------------------------------------------ helpers
-
-    @staticmethod
-    def _is_context_too_long_error(err_text: str) -> bool:
-        keywords = {
-            "context_length_exceeded",
-            "overlong_prompt",
-            "too long",
-            "maximum context",
-        }
-        return any(kw in err_text for kw in keywords) or (
-            "prompt" in err_text and "long" in err_text
-        )
-
-    @staticmethod
-    def _is_transport_error(err_text: str) -> bool:
-        keywords = {
-            "timeout",
-            "rate limit",
-            "rate_limit",
-            "429",
-            "503",
-            "502",
-            "504",
-            "connection",
-            "unavailable",
-        }
-        return any(kw in err_text for kw in keywords)
 
     @staticmethod
     def _record_recovery(

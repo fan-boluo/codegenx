@@ -1,11 +1,11 @@
 import asyncio
 import contextlib
 import json
+from functools import lru_cache
 from shared import log
 from typing import AsyncGenerator, Dict, Any, List, Optional
-from openai import AsyncOpenAI
-import httpx
 from codegenx.ai_service.utils.config import config
+from codegenx.ai_service.llm.client_registry import get_openai_client
 
 
 def _safe_build_tool_calls(tool_calls_buffer: dict) -> list[dict[str, Any]]:
@@ -83,15 +83,13 @@ class AsyncLLMClient:
         # 默认选用第一个
         self.model_name = model_name or config.get_default_model()
         provider_config = config.get_provider_by_model_name(self.model_name)
+        provider_name = config.get_provider_name_by_model_name(self.model_name)
         self.api_key = provider_config.api_key
         self.model_base_url = provider_config.api_base
 
-        self.client = AsyncOpenAI(
-            api_key=self.api_key.strip(),
-            base_url=self.model_base_url.strip(),
-            timeout=httpx.Timeout(600.0, read=120.0, write=30.0, connect=30.0, pool=10.0),
-        )
-        log.info(f"Init AsyncLLMClient with base_url={self.model_base_url}, model={self.model_name}")
+        # P0-1 修复：复用 provider 级共享客户端（连接池复用），不再每次实例化新建 httpx 连接池
+        self.client = get_openai_client(provider_name, provider_config)
+        log.debug(f"Init AsyncLLMClient with model={self.model_name}")
 
     async def invoke(
         self,
@@ -211,3 +209,13 @@ class AsyncLLMClient:
         except Exception as e:
             log.error(f"LLM Stream Error: {e}")
             raise e
+
+
+@lru_cache(maxsize=8)
+def get_llm(model_name: Optional[str] = None) -> AsyncLLMClient:
+    """进程级 AsyncLLMClient 复用入口：相同 model_name 返回同一实例。
+
+    AsyncLLMClient 本身无状态（模型名 + 共享底层客户端），可安全并发使用；
+    各调用方应通过本入口获取，禁止再随手 `AsyncLLMClient()` 即用即弃。
+    """
+    return AsyncLLMClient(model_name)

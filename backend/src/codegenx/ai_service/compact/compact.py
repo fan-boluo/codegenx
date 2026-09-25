@@ -25,10 +25,12 @@ Circuit breaker
 from __future__ import annotations
 
 import asyncio
+import random
 from shared import log
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
 from codegenx.ai_service.compact.thresholds import (
     MAX_CONSECUTIVE_FAILURES,
     estimate_tokens,
@@ -271,11 +273,17 @@ async def _llm_compact(
             )
 
         except Exception as exc:
+            err_class = classify_llm_error(exc)
             log.warning(
-                "LLM compact attempt {}/{} failed: {}",
-                attempt, MAX_COMPACT_RETRIES, exc,
+                "LLM compact attempt {}/{} failed ({}): {}",
+                attempt, MAX_COMPACT_RETRIES, err_class.value, exc,
             )
-            if attempt < MAX_COMPACT_RETRIES:
+            # 确定性错误/本地 bug：重试无意义，直接放弃（上层走截断兜底路径）
+            if err_class in (LLMErrorClass.FATAL, LLMErrorClass.LOGIC):
+                return None
+            if attempt >= MAX_COMPACT_RETRIES:
+                return None
+            if err_class is LLMErrorClass.CONTEXT_OVERFLOW:
                 # PTL retry: drop oldest fraction, ensuring we don't split
                 # an assistant message from its follow-up tool messages.
                 n_drop = max(1, int(len(work_messages) * PTL_TRUNCATE_RATIO))
@@ -286,6 +294,11 @@ async def _llm_compact(
                     safe_idx += 1
                 work_messages = work_messages[safe_idx:]
                 log.info("PTL retry: dropped {} oldest messages (safe boundary at {})", safe_idx, safe_idx)
+            else:
+                # 瞬态错误（超时/429/5xx）：指数退避后原样重试，不再无间隔截断消息
+                delay = min(0.5 * (2 ** (attempt - 1)), 4.0) + random.uniform(0, 0.3)
+                log.info("LLM compact transient error, backing off {:.1f}s", delay)
+                await asyncio.sleep(delay)
 
     return None
 

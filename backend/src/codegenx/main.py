@@ -22,6 +22,7 @@ from codegenx.ai_service.router import (
     monitor_router,
     get_agent_service,
 )
+from codegenx.ai_service.llm.client_registry import close_llm_clients
 from codegenx.ai_service.memory.admin import memory_admin_router
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.app_service.router import router as app_router
@@ -63,8 +64,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # 停止维护任务 -> 停止 runtime -> 关闭 redis 与 mysql 引擎
+        # 停止维护任务 -> 停止 runtime -> 关闭 LLM 共享连接池 -> 关闭 redis 与 mysql 引擎
         await agent_service.shutdown()
+        await close_llm_clients()
         log.info("codegenx monolith shutdown completed")
 
 
