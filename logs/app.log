@@ -4239,3 +4239,389 @@ sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (2003, "Can't co
 20260925 11:13:32 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
 20260925 11:13:32 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2
 20260925 11:13:50 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1, 'before_tool_call': 2, 'after_tool_call': 2, 'on_session_start': 2, 'on_turn_end': 3, 'on_turn_start': 1, 'before_llm_invoke': 1, 'after_llm_invoke': 1, 'internal/on_error': 1, 'on_session_end': 2, 'on_complete': 1}
+20260925 12:26:26 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1, 'before_tool_call': 2, 'on_complete': 1, 'on_turn_end': 3, 'on_session_end': 2, 'after_tool_call': 2, 'on_session_start': 2, 'on_turn_start': 1, 'before_llm_invoke': 1, 'after_llm_invoke': 1, 'internal/on_error': 1}
+20260925 12:26:26 - MainProcess | MainThread | discover.load_hooks:90 - INFO -hook 自动扫描完成: 70 个模块, 注册表 11 个事件
+20260925 12:26:38 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:26:38 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:26:38 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 4}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'after_tool_call': 2}
+20260925 12:26:39 - MainProcess | MainThread | core._run:269 - ERROR -hook after_tool_call:boom 执行异常（并行）: boom
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 2}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.emit:240 - ERROR -hook before_tool_call:boom 执行异常: hook 挂了
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_session_start': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.emit:240 - ERROR -hook on_session_start:boom 执行异常: 初始化失败
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.emit:240 - ERROR -hook on_turn_end:boom 执行异常: 收尾失败
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 2}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_start': 2}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 2}
+20260925 12:26:39 - MainProcess | MainThread | core.run_layer:355 - ERROR -waterfall hook before_build:boom 执行异常，跳过该层: 层挂了
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:26:39 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:26:42 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: code_check.CodeCheckTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.DescribeCsvTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.SampleCsvRowsTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.DescribeCsvStatsTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.ListTablesTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.DescribeTableTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.SampleRowsTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.DescribeTableStatsTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_utils.GuessAnalysisTaskTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_utils.GetTableRelationshipsTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.ReadFileTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.WriteFileTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.EditFileTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.ListDirectoryTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.DeleteFileTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: find.FindTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: grep.GrepTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: skill.LoadSkillTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: subagent.SubagentTaskTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskCreateTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskUpdateTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskGetTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskListTool
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: code_check
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_csv
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: sample_csv_rows
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_csv_stats
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: list_tables
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_table
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: sample_rows
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_table_stats
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: guess_analysis_task
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: get_table_relationships
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: read_file
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: write_file
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: edit_file
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: list_directory
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: delete_file
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: find
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: grep
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: load_skill
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: subagent
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_create
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_update
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_get
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_list
+20260925 12:26:43 - MainProcess | MainThread | tool_handler.regist_tools:83 - INFO -
+🎉 工具加载完成，总计加载: 23 个工具
+20260925 12:26:43 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:525 - WARNING -before_llm_invoke 拦截 LLM 调用: 预算超限
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,1, 执行完一轮了
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,1
+20260925 12:26:43 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': '', 'tool_calls': [{'id': '1', 'name': 'write_file', 'arguments': {}}]}
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:633 - DEBUG -PreToolUse req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:639 - DEBUG -PreToolUse blocked
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,1, micro_compact
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,2,req-1_2
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'ok', 'tool_calls': []}
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,2,req-1_2
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_2, step_counter:2
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2
+20260925 12:26:43 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'final answer', 'tool_calls': []}
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,1, 执行完一轮了
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,1
+20260925 12:26:43 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': '', 'tool_calls': [{'id': '1', 'name': 'read_file', 'arguments': {'path': 'a.py'}}]}
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:633 - DEBUG -PreToolUse req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:666 - DEBUG -PostToolUse req-1,1,req-1_1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,1, micro_compact
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,2,req-1_2
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'done', 'tool_calls': []}
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,2,req-1_2
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_2, step_counter:2
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
+20260925 12:26:43 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2
+20260925 12:37:11 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1, 'on_turn_end': 3, 'on_session_end': 2, 'before_tool_call': 2, 'on_session_start': 2, 'on_turn_start': 1, 'before_llm_invoke': 1, 'after_llm_invoke': 1, 'after_tool_call': 2, 'internal/on_error': 1, 'on_complete': 1}
+20260925 12:37:11 - MainProcess | MainThread | discover.load_hooks:65 - INFO -hook 注册完成: 11 个事件, 17 个监听器
+20260925 12:37:21 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:37:21 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:37:21 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 4}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'after_tool_call': 2}
+20260925 12:37:22 - MainProcess | MainThread | core._run:278 - ERROR -hook after_tool_call:boom 执行异常（并行）: boom
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 2}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.emit:249 - ERROR -hook before_tool_call:boom 执行异常: hook 挂了
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_session_start': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.emit:249 - ERROR -hook on_session_start:boom 执行异常: 初始化失败
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.emit:249 - ERROR -hook on_turn_end:boom 执行异常: 收尾失败
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 2}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_start': 2}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 2}
+20260925 12:37:22 - MainProcess | MainThread | core.run_layer:364 - ERROR -waterfall hook before_build:boom 执行异常，跳过该层: 层挂了
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:37:22 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: code_check.CodeCheckTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.DescribeCsvTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.SampleCsvRowsTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.DescribeCsvStatsTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.ListTablesTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.DescribeTableTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.SampleRowsTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.DescribeTableStatsTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_utils.GuessAnalysisTaskTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_utils.GetTableRelationshipsTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.ReadFileTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.WriteFileTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.EditFileTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.ListDirectoryTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.DeleteFileTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: find.FindTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: grep.GrepTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: skill.LoadSkillTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: subagent.SubagentTaskTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskCreateTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskUpdateTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskGetTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskListTool
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: code_check
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_csv
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: sample_csv_rows
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_csv_stats
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: list_tables
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_table
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: sample_rows
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_table_stats
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: guess_analysis_task
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: get_table_relationships
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: read_file
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: write_file
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: edit_file
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: list_directory
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: delete_file
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: find
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: grep
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: load_skill
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: subagent
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_create
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_update
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_get
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_list
+20260925 12:37:26 - MainProcess | MainThread | tool_handler.regist_tools:83 - INFO -
+🎉 工具加载完成，总计加载: 23 个工具
+20260925 12:37:26 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_step:525 - WARNING -before_llm_invoke 拦截 LLM 调用: 预算超限
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,1, 执行完一轮了
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,1
+20260925 12:37:26 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': '', 'tool_calls': [{'id': '1', 'name': 'write_file', 'arguments': {}}]}
+20260925 12:37:26 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:633 - DEBUG -PreToolUse req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:639 - DEBUG -PreToolUse blocked
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,1, micro_compact
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,2,req-1_2
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'ok', 'tool_calls': []}
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,2,req-1_2
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_2, step_counter:2
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2
+20260925 12:37:27 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'final answer', 'tool_calls': []}
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,1, 执行完一轮了
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,1
+20260925 12:37:27 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': '', 'tool_calls': [{'id': '1', 'name': 'read_file', 'arguments': {'path': 'a.py'}}]}
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:633 - DEBUG -PreToolUse req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:666 - DEBUG -PostToolUse req-1,1,req-1_1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,1, micro_compact
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,2,req-1_2
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'done', 'tool_calls': []}
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,2,req-1_2
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_2, step_counter:2
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
+20260925 12:37:27 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2
+20260925 12:51:30 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1, 'on_turn_end': 3, 'on_session_end': 2, 'before_tool_call': 2, 'on_session_start': 2, 'on_turn_start': 1, 'before_llm_invoke': 1, 'after_llm_invoke': 1, 'after_tool_call': 2, 'internal/on_error': 1, 'on_complete': 1}
+20260925 12:52:24 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:52:24 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 4}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'after_tool_call': 2}
+20260925 12:52:25 - MainProcess | MainThread | core._run:278 - ERROR -hook after_tool_call:boom 执行异常（并行）: boom
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 2}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.emit:249 - ERROR -hook before_tool_call:boom 执行异常: hook 挂了
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_session_start': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.emit:249 - ERROR -hook on_session_start:boom 执行异常: 初始化失败
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_end': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.emit:249 - ERROR -hook on_turn_end:boom 执行异常: 收尾失败
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_tool_call': 2}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'on_turn_start': 2}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 2}
+20260925 12:52:25 - MainProcess | MainThread | core.run_layer:364 - ERROR -waterfall hook before_build:boom 执行异常，跳过该层: 层挂了
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:52:25 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1}
+20260925 12:52:28 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: code_check.CodeCheckTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.DescribeCsvTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.SampleCsvRowsTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_csv.DescribeCsvStatsTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.ListTablesTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.DescribeTableTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.SampleRowsTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_mysql.DescribeTableStatsTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_utils.GuessAnalysisTaskTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: data_utils.GetTableRelationshipsTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.ReadFileTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.WriteFileTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.EditFileTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.ListDirectoryTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: file.DeleteFileTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: find.FindTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: grep.GrepTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: skill.LoadSkillTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: subagent.SubagentTaskTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskCreateTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskUpdateTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskGetTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:52 - DEBUG -✅ 找到工具类: task.TaskListTool
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: code_check
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_csv
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: sample_csv_rows
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_csv_stats
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: list_tables
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_table
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: sample_rows
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: describe_table_stats
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: guess_analysis_task
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: get_table_relationships
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: read_file
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: write_file
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: edit_file
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: list_directory
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: delete_file
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: find
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: grep
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: load_skill
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: subagent
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_create
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_update
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_get
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:76 - INFO -🚀 注册工具成功: task_list
+20260925 12:52:29 - MainProcess | MainThread | tool_handler.regist_tools:83 - INFO -
+🎉 工具加载完成，总计加载: 23 个工具
+20260925 12:52:29 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:525 - WARNING -before_llm_invoke 拦截 LLM 调用: 预算超限
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,1, 执行完一轮了
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,1
+20260925 12:52:29 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': '', 'tool_calls': [{'id': '1', 'name': 'write_file', 'arguments': {}}]}
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:633 - DEBUG -PreToolUse req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:639 - DEBUG -PreToolUse blocked
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,1, micro_compact
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,2,req-1_2
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'ok', 'tool_calls': []}
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,2,req-1_2
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_2, step_counter:2
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2
+20260925 12:52:29 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'final answer', 'tool_calls': []}
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,1, 执行完一轮了
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,1
+20260925 12:52:29 - MainProcess | MainThread | runtime.__init__:53 - INFO -共加载23个工具
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:413 - DEBUG -req-1,0, 发送事件 OnTurnStart
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,0, micro_compact
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': '', 'tool_calls': [{'id': '1', 'name': 'read_file', 'arguments': {'path': 'a.py'}}]}
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:633 - DEBUG -PreToolUse req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:666 - DEBUG -PostToolUse req-1,1,req-1_1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_1, step_counter:1
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:419 - DEBUG -req-1,1, micro_compact
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:543 - DEBUG -PreLLMCALL req-1,2,req-1_2
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:549 - DEBUG -{'content': 'done', 'tool_calls': []}
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:566 - DEBUG -PostLLMCall req-1,2,req-1_2
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:592 - WARNING -assistant 消息入库失败（不影响对话）: (pymysql.err.OperationalError) (1045, "Access denied for user 'root'@'localhost' (using password: NO)")
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_step:693 - DEBUG -执行完一次step 迭代, step_id: req-1_2, step_counter:2
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
+20260925 12:52:29 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2

@@ -175,6 +175,15 @@ class HookManager:
         """已冻结的监听器列表（按执行序）。"""
         return list(self._registry.get(event, ()))
 
+    def summary(self) -> dict[str, int]:
+        """各事件监听器数量（冻结前看待注册列表，冻结后看注册表）。"""
+        if self._frozen:
+            return {event: len(regs) for event, regs in self._registry.items()}
+        counts: dict[str, int] = {}
+        for reg in self._pending:
+            counts[reg.event] = counts.get(reg.event, 0) + 1
+        return counts
+
     def _select(self, reg: HookRegistration, ctx: HookContext) -> bool:
         """condition 谓词过滤；谓词异常视为不匹配并记录。"""
         if reg.condition is None:

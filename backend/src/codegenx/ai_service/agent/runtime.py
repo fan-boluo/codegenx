@@ -52,7 +52,7 @@ class AgentRuntime(LLMRecoveryMixin):
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
-        # hook 监听器由服务启动时 discover.load_hooks() 统一装载（docs/Hook设计.md §6）
+        # hook 监听器随应用 import 链完成 @on 收集，由 AgentAdapterService.startup() 冻结（docs/Hook设计.md §6）
         self._dispatcher_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
         

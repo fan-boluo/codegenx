@@ -5,6 +5,7 @@
 
 from codegenx.ai_service.monitor.alert_evaluator import AlertStreakTracker, get_alert_streak_tracker
 from codegenx.ai_service.monitor.maintenance_service import MonitorMaintenanceService, get_monitor_maintenance_service
+from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline, get_monitor_pipeline
 from codegenx.ai_service.monitor.monitor_query_service import MonitorQueryService, get_monitor_query_service
 from codegenx.ai_service.monitor.monitor_store import MonitorStore, get_monitor_store
 from codegenx.ai_service.monitor.telemetry_schema import (
@@ -20,6 +21,8 @@ __all__ = [
 	"get_alert_streak_tracker",
 	"MonitorMaintenanceService",
 	"get_monitor_maintenance_service",
+	"MonitorPipeline",
+	"get_monitor_pipeline",
 	"MonitorQueryService",
 	"get_monitor_query_service",
 	"MonitorStore",

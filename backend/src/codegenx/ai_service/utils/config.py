@@ -40,10 +40,6 @@ class AgentConfig(Base):
     )
     temperature: float = 0.1
     max_tool_iterations: int = 20
-    hook_fail_fast: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("hookFailFast", "hook_fail_fast"),
-    )  # hook 注册表启动校验失败时是否阻断服务启动（docs/Hook设计.md §6）
     session_worker_idle_seconds: int = Field(
         default=1800,
         validation_alias=AliasChoices("sessionWorkerIdleSeconds", "session_worker_idle_seconds"),
