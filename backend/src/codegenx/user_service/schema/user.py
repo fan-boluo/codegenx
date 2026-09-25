@@ -22,7 +22,7 @@ class UserLoginRequest(CamelBaseModel):
 
 
 class UserAddRequest(CamelBaseModel):
-    user_name: str | None = Field(default=None, alias="userName")
+    user_name: str = Field(alias="userName", min_length=1)  # 添加用户时用户名必填，不再默认"无名"
     user_account: str
     user_password: str | None = Field(default=None, alias="userPassword")
     user_avatar: str | None = Field(default=None, alias="userAvatar")

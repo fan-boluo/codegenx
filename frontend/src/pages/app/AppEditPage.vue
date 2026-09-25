@@ -9,7 +9,7 @@
         <a-descriptions :column="2" bordered style="margin-bottom: 24px">
           <a-descriptions-item label="项目ID">{{ appInfo.id }}</a-descriptions-item>
           <a-descriptions-item label="创建者">
-            {{ appInfo.owner ? `用户 ${appInfo.owner}` : '未知用户' }}
+            {{ appInfo.ownerName || (appInfo.owner ? `用户 ${appInfo.owner}` : '未知用户') }}
           </a-descriptions-item>
           <a-descriptions-item label="创建时间">{{
             formatTime(appInfo.createTime)
