@@ -1,26 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   ArrowRightOutlined,
-  DeleteOutlined,
-  EditOutlined,
   MessageOutlined,
   PlusOutlined,
   RocketOutlined,
-  TeamOutlined,
-  UserAddOutlined,
 } from '@ant-design/icons-vue'
-import {
-  addApp,
-  addAppMember,
-  getAppVoById,
-  listAppMembers,
-  listMyAppVoByPage,
-  removeAppMember,
-  updateApp,
-} from '@/api/appController'
+import { addApp, listMyAppVoByPage } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { formatRelativeTime, formatTime } from '@/utils/time'
 
@@ -71,28 +59,6 @@ const fetchMyApps = async () => {
 const createModalVisible = ref(false)
 const createForm = ref({ appName: '', dbName: '' })
 const isCreating = ref(false)
-// 弹窗相关
-const editModalOpen = ref(false)
-const currentApp = ref<API.AppVO>({})
-const formData = reactive({
-  appName: '',
-})
-const formRef = ref()
-const submitting = ref(false)
-
-// 成员管理弹窗
-const memberModalOpen = ref(false)
-const memberApp = ref<API.AppVO>({})
-const members = ref<API.AppMemberVO[]>([])
-const memberLoading = ref(false)
-const inviteAccount = ref('')
-const addingMember = ref(false)
-
-const isMemberManager = computed(() => {
-  // 仅项目属主或管理员可管理成员（与后端权限一致）；id 已改为 user_xxxx 前缀字符串
-  const uid = String(loginUserStore.loginUser.id || '')
-  return Boolean(memberApp.value?.owner) && String(memberApp.value.owner) === uid
-})
 
 const openCreateChat = (prompt?: string) => {
   if (!isLoggedIn.value) {
@@ -145,137 +111,6 @@ const goToChat = (appId?: string | null) => {
   if (!appId) return
   router.push(`/app/chat/${appId}`)
 }
-
-const goToEdit = async (appId?: string | null) => {
-  if (!appId) return
-  try {
-    const res = await getAppVoById({ id: appId })
-    if (res.data.code === 0 && res.data.data) {
-      currentApp.value = res.data.data
-      formData.appName = res.data.data.appName || ''
-      editModalOpen.value = true
-    } else {
-      message.error('获取项目信息失败')
-    }
-  } catch (error) {
-    console.error('获取项目信息失败: ', error)
-    message.error('获取项目信息失败')
-  }
-}
-
-const handleSubmit = async () => {
-  if (!currentApp.value?.id) return
-  if (!formData.appName.trim()) {
-    message.warning('请输入项目名称')
-    return
-  }
-  submitting.value = true
-  try {
-    const res = await updateApp({
-      id: currentApp.value.id,
-      appName: formData.appName.trim(),
-    })
-    if (res.data.code === 0) {
-      message.success('保存成功')
-      editModalOpen.value = false
-      fetchMyApps()
-    } else {
-      message.error(`保存失败，${res.data.message ?? '请稍后重试'}`)
-    }
-  } catch (error) {
-    console.error('修改失败: ', error)
-    message.error('修改失败')
-  } finally {
-    submitting.value = false
-  }
-}
-
-const handleEditCancel = () => {
-  editModalOpen.value = false
-  currentApp.value = {}
-  formData.appName = ''
-}
-
-// ---------------------- 成员管理 ----------------------
-
-const openMemberModal = async (app?: API.AppVO) => {
-  if (!app?.id) return
-  memberApp.value = app
-  memberModalOpen.value = true
-  await fetchMembers()
-}
-
-const fetchMembers = async () => {
-  if (!memberApp.value?.id) return
-  memberLoading.value = true
-  try {
-    const res = await listAppMembers({ app_id: String(memberApp.value.id) })
-    if (res.data.code === 0 && res.data.data) {
-      members.value = res.data.data ?? []
-      return
-    }
-    message.error(`获取成员列表失败，${res.data.message ?? '请稍后重试'}`)
-  } catch (error) {
-    console.error('获取成员列表失败:', error)
-    message.error('获取成员列表失败')
-  } finally {
-    memberLoading.value = false
-  }
-}
-
-const handleInviteMember = async () => {
-  const account = inviteAccount.value.trim()
-  if (!account) {
-    message.warning('请输入要邀请的用户账号')
-    return
-  }
-  addingMember.value = true
-  try {
-    const res = await addAppMember({
-      appId: String(memberApp.value.id),
-      userAccount: account,
-    })
-    if (res.data.code === 0) {
-      message.success('已添加成员')
-      inviteAccount.value = ''
-      await fetchMembers()
-    } else {
-      message.error(`添加成员失败，${res.data.message ?? '请稍后重试'}`)
-    }
-  } catch (error) {
-    console.error('添加成员失败:', error)
-    message.error('添加成员失败')
-  } finally {
-    addingMember.value = false
-  }
-}
-
-const handleRemoveMember = async (userId?: string) => {
-  if (!userId) return
-  try {
-    const res = await removeAppMember({
-      appId: String(memberApp.value.id),
-      userId,
-    })
-    if (res.data.code === 0) {
-      message.success('已移除成员')
-      await fetchMembers()
-    } else {
-      message.error(`移除成员失败，${res.data.message ?? '请稍后重试'}`)
-    }
-  } catch (error) {
-    console.error('移除成员失败:', error)
-    message.error('移除成员失败')
-  }
-}
-
-watch(
-  () => loginUserStore.loginUser.id,
-  () => {
-    fetchMyApps()
-  },
-  { immediate: true },
-)
 
 watch(
   () => loginUserStore.loginUser.id,
@@ -380,121 +215,9 @@ watch(
                 <template #icon><MessageOutlined /></template>
                 继续生成
               </a-button>
-              <a-button size="small" @click="goToEdit(app.id)">
-                <template #icon><EditOutlined /></template>
-                编辑信息
-              </a-button>
-              <a-button size="small" @click="openMemberModal(app)">
-                <template #icon><TeamOutlined /></template>
-                成员
-              </a-button>
             </div>
           </div>
         </a-card>
-
-        <!-- 编辑弹窗 -->
-        <a-modal
-          v-model:open="editModalOpen"
-          :title="`编辑项目 - ${currentApp?.appName}`"
-          width="800px"
-          @cancel="handleEditCancel"
-          :footer="null"
-        >
-          <div class="edit-form-container">
-            <a-descriptions :column="2" bordered style="margin-bottom: 24px">
-              <a-descriptions-item label="项目ID">{{ currentApp?.id }}</a-descriptions-item>
-              <a-descriptions-item label="创建者">
-                {{ currentApp?.ownerName || (currentApp?.owner ? `用户 ${currentApp.owner}` : '未知') }}
-              </a-descriptions-item>
-              <a-descriptions-item label="创建时间">{{
-                formatTime(currentApp?.createTime)
-              }}</a-descriptions-item>
-              <a-descriptions-item label="更新时间">{{
-                formatTime(currentApp?.updateTime)
-              }}</a-descriptions-item>
-            </a-descriptions>
-
-            <a-form
-              :model="formData"
-              layout="vertical"
-              @finish="handleSubmit"
-              ref="formRef"
-            >
-              <a-form-item label="项目名称" name="appName">
-                <a-input
-                  v-model:value="formData.appName"
-                  placeholder="请输入项目名称"
-                  :maxlength="50"
-                  show-count
-                />
-              </a-form-item>
-
-              <a-form-item label="数据库" name="dbName">
-                <a-input :value="currentApp?.dbName" placeholder="数据库名称" disabled />
-              </a-form-item>
-
-              <a-form-item style="margin-bottom: 0">
-                <a-space>
-                  <a-button type="primary" html-type="submit" :loading="submitting"
-                    >保存修改</a-button
-                  >
-                  <a-button @click="handleEditCancel">关闭</a-button>
-                </a-space>
-              </a-form-item>
-            </a-form>
-          </div>
-        </a-modal>
-
-        <!-- 成员管理弹窗 -->
-        <a-modal
-          v-model:open="memberModalOpen"
-          :title="`项目成员 - ${memberApp?.appName}`"
-          :footer="null"
-          width="560px"
-        >
-          <div v-if="isMemberManager" class="member-invite">
-            <a-input
-              v-model:value="inviteAccount"
-              placeholder="输入用户账号邀请成员"
-              @pressEnter="handleInviteMember"
-            />
-            <a-button type="primary" :loading="addingMember" @click="handleInviteMember">
-              <template #icon><UserAddOutlined /></template>
-              邀请
-            </a-button>
-          </div>
-
-          <a-list
-            :loading="memberLoading"
-            :data-source="members"
-            item-layout="horizontal"
-          >
-            <template #renderItem="{ item }">
-              <a-list-item>
-                <a-list-item-meta>
-                  <template #title>
-                    {{ item.userName || item.userAccount || `用户 ${item.userId}` }}
-                  </template>
-                  <template #description>
-                    账号：{{ item.userAccount || '-' }} · 加入时间：{{ formatTime(item.createTime, 'YYYY-MM-DD') }}
-                  </template>
-                </a-list-item-meta>
-                <template #actions>
-                  <a-popconfirm
-                    v-if="isMemberManager"
-                    title="确定移除该成员？"
-                    @confirm="handleRemoveMember(item.userId)"
-                  >
-                    <a-button size="small" danger>
-                      <template #icon><DeleteOutlined /></template>
-                      移除
-                    </a-button>
-                  </a-popconfirm>
-                </template>
-              </a-list-item>
-            </template>
-          </a-list>
-        </a-modal>
 
         <a-card class="app-card add-app-card" :bordered="false" @click="openCreateChat()">
           <div class="add-app-content">

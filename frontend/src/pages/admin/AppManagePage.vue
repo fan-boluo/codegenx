@@ -67,17 +67,57 @@
           @finish="handleSubmit"
           ref="formRef"
         >
-          <a-form-item label="项目名称" name="appName">
-            <a-input
-              v-model:value="formData.appName"
-              placeholder="请输入项目名称"
-              :maxlength="50"
-              show-count
-            />
-          </a-form-item>
+          <!-- 项目名称与数据库同行展示 -->
+          <a-row :gutter="16">
+            <a-col :span="12">
+              <a-form-item label="项目名称" name="appName">
+                <a-input
+                  v-model:value="formData.appName"
+                  placeholder="请输入项目名称"
+                  :maxlength="50"
+                  show-count
+                />
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="数据库" name="dbName">
+                <a-input :value="currentApp?.dbName" placeholder="数据库名称" disabled />
+              </a-form-item>
+            </a-col>
+          </a-row>
 
-          <a-form-item label="数据库" name="dbName">
-            <a-input :value="currentApp?.dbName" placeholder="数据库名称" disabled />
+          <!-- 项目成员管理：展示普通成员（owner 不在其中），可添加/移除 -->
+          <a-form-item label="项目成员">
+            <div class="member-add-row">
+              <a-select
+                v-model:value="selectedUserId"
+                show-search
+                :options="userOptions"
+                :filter-option="filterUserOption"
+                :disabled="addingMember"
+                placeholder="选择要添加的用户（账号/用户名）"
+                style="flex: 1"
+              />
+              <a-button
+                type="primary"
+                :disabled="!selectedUserId"
+                :loading="addingMember"
+                @click="handleAddMember"
+              >
+                添加
+              </a-button>
+            </div>
+            <a-spin :spinning="memberLoading">
+              <div v-if="members.length" class="member-chips">
+                <span v-for="m in members" :key="m.userId" class="member-chip">
+                  {{ m.userName || m.userAccount || m.userId }}
+                  <a-popconfirm title="确定移除该成员？" @confirm="handleRemoveMember(m.userId)">
+                    <CloseOutlined class="chip-remove" />
+                  </a-popconfirm>
+                </span>
+              </div>
+              <div v-else class="member-empty">暂无其他成员，可通过上方下拉框添加</div>
+            </a-spin>
           </a-form-item>
 
           <a-form-item style="margin-bottom: 0">
@@ -96,12 +136,17 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
+import { CloseOutlined } from '@ant-design/icons-vue'
 import {
   listAppVoByPageByAdmin,
   deleteAppByAdmin,
   updateAppByAdmin,
   getAppVoById,
+  listAppMembers,
+  addAppMember,
+  removeAppMember,
 } from '@/api/appController'
+import { listUserVoByPage } from '@/api/userController'
 import { formatTime } from '@/utils/time'
 const router = useRouter()
 
@@ -129,6 +174,106 @@ const formData = reactive({
 })
 const formRef = ref()
 const submitting = ref(false)
+
+// ---------------------- 项目成员管理 ----------------------
+const members = ref<API.AppMemberVO[]>([])
+const memberLoading = ref(false)
+const users = ref<API.UserVO[]>([])
+const selectedUserId = ref<string | undefined>()
+const addingMember = ref(false)
+
+// 下拉选项：排除属主与已有成员，label 展示 账号（用户名）
+const userOptions = computed(() =>
+  users.value
+    .filter(
+      (u) =>
+        String(u.id) !== String(currentApp.value?.owner) &&
+        !members.value.some((m) => String(m.userId) === String(u.id)),
+    )
+    .map((u) => ({
+      value: String(u.id),
+      label: `${u.userAccount ?? ''}（${u.userName ?? ''}）`,
+      keywords: `${u.userAccount ?? ''} ${u.userName ?? ''}`.toLowerCase(),
+    })),
+)
+
+const filterUserOption = (input: string, option: any) => {
+  const keyword = input.trim().toLowerCase()
+  if (!keyword) return true
+  return String(option?.keywords ?? '').includes(keyword)
+}
+
+const fetchMembers = async () => {
+  if (!currentApp.value?.id) return
+  memberLoading.value = true
+  try {
+    const res = await listAppMembers({ app_id: String(currentApp.value.id) })
+    if (res.data.code === 0 && res.data.data) {
+      members.value = res.data.data ?? []
+    } else {
+      message.error('获取成员列表失败，' + res.data.message)
+    }
+  } catch (error) {
+    console.error('获取成员列表失败：', error)
+    message.error('获取成员列表失败')
+  } finally {
+    memberLoading.value = false
+  }
+}
+
+const fetchUsers = async () => {
+  try {
+    const res = await listUserVoByPage({ pageNum: 1, pageSize: 100 })
+    if (res.data.code === 0 && res.data.data) {
+      users.value = res.data.data.records ?? []
+    }
+  } catch (error) {
+    console.error('获取用户列表失败：', error)
+  }
+}
+
+const handleAddMember = async () => {
+  if (!currentApp.value?.id || !selectedUserId.value) return
+  addingMember.value = true
+  try {
+    const res = await addAppMember({
+      appId: String(currentApp.value.id),
+      userId: selectedUserId.value,
+    })
+    if (res.data.code === 0) {
+      message.success('已添加成员')
+      selectedUserId.value = undefined
+      await fetchMembers()
+    } else {
+      message.error('添加成员失败：' + res.data.message)
+    }
+  } catch (error) {
+    console.error('添加成员失败：', error)
+    message.error('添加成员失败')
+  } finally {
+    addingMember.value = false
+  }
+}
+
+const handleRemoveMember = async (userId?: string) => {
+  if (!currentApp.value?.id || !userId) return
+  try {
+    const res = await removeAppMember({
+      appId: String(currentApp.value.id),
+      userId,
+    })
+    if (res.data.code === 0) {
+      message.success('已移除成员')
+      await fetchMembers()
+    } else {
+      message.error('移除成员失败：' + res.data.message)
+    }
+  } catch (error) {
+    console.error('移除成员失败：', error)
+    message.error('移除成员失败')
+  }
+}
+
 const fetchData = async () => {
   try {
     const res = await listAppVoByPageByAdmin({ ...searchParams })
@@ -169,12 +314,16 @@ const doSearch = () => {
 
 const editApp = async (app: API.AppVO) => {
   try {
-    const res = await getAppVoById({ id: app.id as unknown as number })
+    const res = await getAppVoById({ id: app.id as string })
     console.log(res)
     if (res.data.code === 0 && res.data.data) {
       currentApp.value = res.data.data
       formData.appName = res.data.data.appName || ''
       editModalOpen.value = true
+      // 打开弹框时拉取成员列表与全量用户（下拉框数据源）
+      selectedUserId.value = undefined
+      fetchMembers()
+      fetchUsers()
     } else {
       message.error('获取项目信息失败')
     }
@@ -215,6 +364,8 @@ const handleEditCancel = () => {
   editModalOpen.value = false
   currentApp.value = {}
   formData.appName = ''
+  members.value = []
+  selectedUserId.value = undefined
 }
 
 const rules = {
@@ -263,5 +414,47 @@ const deleteApp = async (id: string | undefined) => {
 .edit-form-container :deep(.ant-descriptions-item-content) {
   background: transparent;
   color: var(--text-primary);
+}
+
+.member-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.member-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--radius-btn, 6px);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+}
+
+.chip-remove {
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.chip-remove:hover {
+  color: var(--error-color, #ff4d4f);
+}
+
+.member-empty {
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 </style>

@@ -13,12 +13,12 @@ class AppAddRequest(CamelBaseModel):
 
 
 class AppUpdateRequest(CamelBaseModel):
-    id: int
+    id: str  # app_xxxx 前缀字符串
     app_name: str | None = Field(default=None, alias="appName")
 
 
 class AppAdminUpdateRequest(CamelBaseModel):
-    id: int
+    id: str  # app_xxxx 前缀字符串
     app_name: str | None = Field(default=None, alias="appName")
 
 
