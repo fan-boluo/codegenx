@@ -13,7 +13,7 @@ class UserRegisterRequest(CamelBaseModel):
     user_account: str = Field(alias="userAccount")  # 别名适应前端参数
     user_password: str = Field(alias="userPassword")
     check_password: str = Field(alias="checkPassword")
-    user_name: str | None = Field(None, alias="userName")
+    user_name: str = Field(alias="userName", min_length=1)  # 注册用户名必填，不再默认"无名"
 
 
 class UserLoginRequest(CamelBaseModel):

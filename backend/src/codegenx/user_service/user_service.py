@@ -14,7 +14,6 @@ from shared.constants import (
 )
 from shared.exceptions.error_code import ErrorCode
 
-from codegenx.user_service.constants import DEFAULT_USER_NAME
 from codegenx.user_service.user_enums import UserRole
 from codegenx.user_service.security_utils import encrypt_password
 from shared.exceptions.business_exception import BusinessException
@@ -27,7 +26,7 @@ class UserService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def register(self, user_account: str, user_password: str, check_password: str, user_name: str | None = None) -> int:
+    async def register(self, user_account: str, user_password: str, check_password: str, user_name: str) -> int:
         self._validate_register_params(user_account, user_password, check_password, user_name)
         exists_stmt = select(User).where(User.user_account == user_account)
         exists = await self.db.scalar(select(func.count()).select_from(exists_stmt.subquery()))
@@ -37,7 +36,7 @@ class UserService:
         user = User(
             user_account=user_account,
             user_password=encrypt_password(user_password),
-            user_name=user_name or DEFAULT_USER_NAME,
+            user_name=user_name.strip(),
             user_role=UserRole.USER.value,
         )
         self.db.add(user)  # insert单个
@@ -193,14 +192,17 @@ class UserService:
         return stmt.order_by(order_field.asc() if sort_order == "ascend" else order_field.desc())
 
     @staticmethod
-    def _validate_register_params(user_account: str, user_password: str, check_password: str, user_name: str | None = None) -> None:
+    def _validate_register_params(user_account: str, user_password: str, check_password: str, user_name: str) -> None:
         if not user_account or not user_password or not check_password:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "参数为空")
+        # 用户名必填：为空或全空白直接拒绝
+        if not user_name or not user_name.strip():
+            raise BusinessException(ErrorCode.PARAMS_ERROR, "用户名为必填项")
         if len(user_account) < 4:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "账号长度过短")
         if len(user_password) < 8 or len(check_password) < 8:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "密码长度过短")
         if user_password != check_password:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "两次输入的密码不一致")
-        if user_name and len(user_name) > 20:
+        if len(user_name) > 20:
             raise BusinessException(ErrorCode.PARAMS_ERROR, "用户名长度过长")
