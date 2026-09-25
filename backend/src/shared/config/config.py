@@ -50,8 +50,6 @@ class Settings(BaseSettings):
 
     cors_allow_origin_patterns: str = "*"
     log_level: str = "INFO"
-    # hook 扩展监听器模块清单（逗号分隔的 import 路径），启动时装载（docs/Hook设计.md §6）
-    hook_extra_modules: str = ""
     # 会从.env里面直接读取覆盖吗
     ai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode"
     ai_api_key: str = ""

@@ -35,3 +35,7 @@ codegenx.ai_service.memory — 记忆系统（跨会话持久记忆，v2）。
   compliance.py    合规删除级联（MySQL → Qdrant，scope=all/memory_id/subject/source_msg_id）
   metrics.py       P1 指标安全门面（prometheus codegenx_memory_* + 结构化日志，不含正文）
 """
+
+# 包加载即装配本包 hook 监听器（trigger.py 内 @on 注册 turn/session 信号，
+# 随包被应用 import 链加载自动生效，无需手工清单）
+from codegenx.ai_service.memory import trigger  # noqa: F401,E402

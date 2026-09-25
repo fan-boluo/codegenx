@@ -4,9 +4,8 @@ import secrets
 import time
 from datetime import datetime
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, ActivateTurn
 from codegenx.ai_service.agent.agent_schema import AgentState
 from codegenx.ai_service.compact import AUTOCOMPACT_THRESHOLD
 from codegenx.ai_service.monitor.alert_evaluator import get_alert_streak_tracker
@@ -30,6 +29,11 @@ from codegenx.ai_service.monitor.telemetry_schema import (
 )
 from shared import log
 from codegenx.ai_service.hook import HookContext, HookEvent, on
+
+if TYPE_CHECKING:
+    # 仅类型注解使用；模块级导入会与 agent.runtime_schema 形成
+    # 循环（runtime_schema → monitor 包门面 → monitor_pipeline → runtime_schema）
+    from codegenx.ai_service.agent.runtime_schema import ActivateTurn, RuntimeSessionState
 
 _PIPELINE_SINGLETON: "MonitorPipeline | None" = None
 _PIPELINE_LOCK = Lock()

@@ -95,7 +95,6 @@
 │ 各功能模块原有文件内的监听器（归属见 §4.2）                    │
 │   monitor/ memory/ context/ tools/ session/ guardrail/   │
 │   agent/（生命周期编排）                                    │
-│ 业务扩展模块（通过配置 hook_extra_modules 加入装载清单）        │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -107,7 +106,7 @@ hook/
 ├── events.py          # 事件常量 + EVENT_DEFINITIONS（默认模式/payload/可短路声明）
 ├── core.py            # HookManager、HookRegistration、拓扑排序、三种分发、span
 ├── context.py         # HookContext 统一上下文、HookDecision 决策对象
-└── discover.py        # 启动装载：import 各模块的监听器所在文件 + 配置扩展模块，校验依赖图
+└── core.py            # （含启动冻结入口 load_and_freeze，由 AgentAdapterService.startup() 调用）
 ```
 
 ### 4.2 内置监听器归属（**不新建 builtin 目录，写进模块原有文件**）
@@ -126,19 +125,17 @@ monitor 层上报，互不相干）。仅当确实无模块归属时，才在 `h
 | 工具日志落盘：`persist_tool_log`（after_tool_call） | `session/manager.py` | append_tool_log 本就是 SessionManager 方法，监听器与其同文件 |
 | 输出安全校验：`output_safety_check`（on_complete） | `guardrail/prompt_safety_input_guardrail.py` | 与输入安全校验同文件；新增输出侧检测方法。若未来安全能力独立成模块，随迁 |
 
-装载清单（`discover.py`，均为 import 路径，启动时逐一 import 以触发 @on 收集）：
+装载机制：**零配置、无手工清单、无全量扫描**。`@on` 在模块 import 时即把监听器
+自动上报进全局 `hook_manager`（pending），而内置监听器都写在业务模块原有文件内，
+这些模块本就在应用正常 import 链上（router → services → runtime/…）——模块被加载，
+监听器即注册。仅两个惰性子模块由所属包的 `__init__` 门面装配（包加载即完成本包 hook 注册）：
 
-```python
-BUILTIN_HOOK_MODULES = [
-    "codegenx.ai_service.agent.runtime",
-    "codegenx.ai_service.monitor.monitor_pipeline",
-    "codegenx.ai_service.memory.trigger",
-    "codegenx.ai_service.context.assembler",
-    "codegenx.ai_service.tools.base",
-    "codegenx.ai_service.session.manager",
-    "codegenx.ai_service.guardrail.prompt_safety_input_guardrail",
-]
-```
+- `monitor/__init__.py` 装配 `monitor_pipeline`（监控上报监听器所在）
+- `memory/__init__.py` 装配 `trigger`（记忆漏斗信号监听器所在）
+
+因此**在任何被应用 import 链可达的文件里新写 `@on` 即完成注册**，框架与配置都不用动。
+唯一约束：不要放在无人 import 的孤立模块里
+——`backend/tests/test_hook_coverage.py` 以「应用 import 链加载后 11 类事件全覆盖」兜底防回归。
 
 删除：`hook/runner.py`（HookRunner）、`hook/registry.py`（register_all_hooks）、现 `hook/events.py`（cordis 移植死代码）。
 
@@ -190,25 +187,19 @@ async def file_tool_param_guard(ctx: HookContext) -> HookDecision | None:
 ```
 main.py lifespan
   └─ AgentAdapterService.startup()
-      ├─ hook_manager.load_and_freeze()     # ① 逐一 import BUILTIN_HOOK_MODULES（各模块
-      │                                     #    原有文件内的 @on 完成收集；多数模块 runtime
-      │                                     #    本就会 import，幂等）
-      │                                     # ② 按 settings.hook_extra_modules 追加业务扩展模块
-      │                                     # ③ 校验（任一失败 → 启动失败，fail-fast）：
+      ├─ hook_manager.load_and_freeze()
+      │                                     # ① 内置监听器已随应用 import 链完成 @on 收集
+      │                                     #    （惰性子模块由所属包 __init__ 门面装配）
+      │                                     # ② 校验（任一失败 → 启动失败）：
       │                                     #    - 事件名合法（在 EVENT_DEFINITIONS 中）
       │                                     #    - hook name 无重复
       │                                     #    - depends_on 指向存在的 hook
       │                                     #    - 依赖图无环（Kahn 拓扑排序成功）
-      │                                     # ④ 每个事件按 拓扑序(priority 决胜) 冻结监听器列表
+      │                                     # ③ 每个事件按 拓扑序(priority 决胜) 冻结监听器列表
       └─ runtime.start()
 ```
 
-配置项（遵循项目配置规范）：
-
-| 位置 | 键 | 默认 | 说明 |
-|---|---|---|---|
-| `.env` / `shared/config/config.py` | `HOOK_EXTRA_MODULES` | 空 | 额外装载的 hook 模块 import 路径列表，逗号分隔 |
-| `ai_service/utils/config.py`（AgentConfig） | `hook_fail_fast` | true | 启动校验失败是否阻断服务启动；false 则降级为告警 |
+配置项：**无**。注册收集靠 import 链自然完成，启动冻结内置于 `AgentAdapterService.startup()`，零配置。
 
 ## 7. 分发协议
 
@@ -345,9 +336,8 @@ AgentRuntime 构造函数中 `HookRunner` / `register_all_hooks` 相关代码删
 ## 11. 扩展示例
 
 ```python
-# 业务方自定义钩子（如 app 级审计），无需改框架任何代码：
-# 1. 写模块 my_project/hooks.py
-# 2. .env 配置 HOOK_EXTRA_MODULES=my_project.hooks
+# 业务方自定义钩子（如 app 级审计），无需改框架与配置：
+# 只要在应用 import 链可达的任意模块里写 @on 即自动注册
 
 from codegenx.ai_service.hook import on, HookContext
 
@@ -374,9 +364,8 @@ async def collect_tool_metrics(ctx: HookContext):
 
 ## 13. 实施步骤
 
-1. 新建 `hook/context.py`、`hook/events.py`（替换现 events.py 死代码）、`hook/core.py`、`hook/discover.py`
-2. 各模块原有文件内添加 @on 监听器（按 §4.2 归属表）：`agent/runtime.py`、`monitor/monitor_pipeline.py`、`memory/trigger.py`、`context/assembler.py`、`tools/base.py`、`session/manager.py`、`guardrail/prompt_safety_input_guardrail.py`
+1. 新建 `hook/context.py`、`hook/events.py`（替换现 events.py 死代码）、`hook/core.py`
+2. 各模块原有文件内添加 @on 监听器（按 §4.2 归属表）：`agent/runtime.py`、`monitor/monitor_pipeline.py`、`memory/trigger.py`、`context/assembler.py`、`tools/base.py`、`session/manager.py`、`guardrail/prompt_safety_input_guardrail.py`；包门面装配惰性子模块（`monitor/__init__.py`、`memory/__init__.py`）
 3. `AgentAdapterService.startup()` 接入 `load_and_freeze()`；`AgentRuntime` 11 处触发点替换 + 2 处新增（before_build / on_complete），删除 `register_all_hooks` / `HookRunner` 引用
 4. 删除 `hook/runner.py` / `hook/registry.py` / 旧 `hook/events.py`，清理 `hook/handlers.py`
-5. 配置项：`HOOK_EXTRA_MODULES`（.env + config.py）、`hook_fail_fast`（AgentConfig）
-6. 固化测试脚本并回归
+5. 固化测试脚本并回归

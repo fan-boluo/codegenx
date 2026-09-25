@@ -13,7 +13,7 @@ from db.qdrant.client import warm_up_qdrant_client, shutdown_qdrant_client
 from codegenx.ai_service.memory.vector_store import ensure_warm_collection
 from codegenx.ai_service.schedule.memory import get_memory_scheduler
 from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
-from codegenx.ai_service.hook.discover import load_hooks
+from codegenx.ai_service.hook import hook_manager
 from shared import log
 
 
@@ -35,8 +35,8 @@ class AgentAdapterService:
         async with self._startup_lock:
             if self._started:
                 return
-            # 装载 hook 监听器（内置模块 + HOOK_EXTRA_MODULES）并冻结注册表（docs/Hook设计.md §6）
-            load_hooks()
+            # 冻结 hook 注册表：内置监听器已随应用 import 链完成 @on 收集（docs/Hook设计.md §6）
+            hook_manager.load_and_freeze()
             # TODO 后台任务在哪里启动，现在有的是健康检查和session poll
             runtime = self._get_runtime()
             # runtime.start 启动runtime需要的任务
