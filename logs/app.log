@@ -4239,3 +4239,5 @@ sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (2003, "Can't co
 20260925 11:13:32 - MainProcess | MainThread | runtime._execute_request:440 - DEBUG -req-1,2, 执行完一轮了
 20260925 11:13:32 - MainProcess | MainThread | runtime._execute_request:501 - DEBUG -OnTurnEnd req-1,2
 20260925 11:13:50 - MainProcess | MainThread | core.load_and_freeze:135 - INFO -hook 注册表已冻结: {'before_build': 1, 'before_tool_call': 2, 'after_tool_call': 2, 'on_session_start': 2, 'on_turn_end': 3, 'on_turn_start': 1, 'before_llm_invoke': 1, 'after_llm_invoke': 1, 'internal/on_error': 1, 'on_session_end': 2, 'on_complete': 1}
+20260925 12:05:05 - MainProcess | MainThread | store._parse_content:249 - WARNING -chat_message.content 解析失败，跳过该行
+20260925 12:05:05 - MainProcess | MainThread | store._parse_content:259 - WARNING -超长消息 blob 读取失败（返回占位）: C:\Users\aa\.claude\jobs\1b96987c\_blob_test.json.gone | [Errno 2] No such file or directory: 'C:\\Users\\aa\\.claude\\jobs\\1b96987c\\_blob_test.json.gone'

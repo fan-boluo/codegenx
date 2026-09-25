@@ -157,7 +157,9 @@ class MemoryScheduler:
 
                 batch = await self.tasks.claim_due(limit=self._batch_size)
                 if not batch:
-                    await asyncio.wait(self._stop.wait(), timeout=self._poll_interval)
+                    # Python 3.12 起 asyncio.wait 只收 Task/Future，裸协程改用 wait_for
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(self._stop.wait(), timeout=self._poll_interval)
                     continue
                 for task in batch:
                     if self._stop.is_set():
@@ -167,7 +169,8 @@ class MemoryScheduler:
                 raise
             except Exception:  # noqa: BLE001 — 单轮异常不退出循环
                 log.error("MemoryScheduler 循环异常\n{}", traceback.format_exc())
-                await asyncio.wait(self._stop.wait(), timeout=self._poll_interval)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), timeout=self._poll_interval)
 
     # === 周期作业 ===
 
