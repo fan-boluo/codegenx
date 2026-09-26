@@ -22,8 +22,6 @@ from codegenx.gateway.middleware.jwt_auth import JWTUser
 from codegenx.gateway.services.rate_limit_service import RateLimitService
 from db.mysql.session import get_db_session
 from db.redis.redis_client import get_redis_client
-from shared.exceptions.business_exception import BusinessException
-from shared.exceptions.error_code import ErrorCode
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest, AiServiceStopRequest
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -40,10 +38,8 @@ async def chat_to_gen_code_post(
         login_user.user_id, "gen_code", 5
     )
 
-    try:
-        app_id = int(payload.get("appId") or 0)
-    except (TypeError, ValueError):
-        raise BusinessException(ErrorCode.PARAMS_ERROR, "appId 错误")
+    # ID 迁移后 appId 为 app_xxxx 字符串，直接透传（空值校验收口在 access 层）
+    app_id = str(payload.get("appId") or "").strip()
     # 登录用户必须是项目 owner/member/admin
     app = await require_participant_by_id(db, app_id, login_user)
 
@@ -63,10 +59,8 @@ async def chat_to_gen_code_stop(
     login_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ):
-    try:
-        app_id = int(payload.get("appId") or 0)
-    except (TypeError, ValueError):
-        raise BusinessException(ErrorCode.PARAMS_ERROR, "appId 错误")
+    # ID 迁移后 appId 为 app_xxxx 字符串，直接透传（空值校验收口在 access 层）
+    app_id = str(payload.get("appId") or "").strip()
     await require_participant_by_id(db, app_id, login_user)
 
     if "userId" not in payload:

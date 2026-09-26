@@ -151,11 +151,34 @@ class GatewayConfig(Base):
 
 
 #  tool -------------------------
+class ToolsMysqlConfig(Base):
+    """数据分析 MySQL 只读连接（F-4：原先硬编码 readonly/空密码，凭据无处配置）。
+
+    对应数据源账号需在 MySQL 侧预先建好，例如：
+      CREATE USER 'readonly'@'localhost' IDENTIFIED BY '***';
+      GRANT SELECT ON prj_ec.* TO 'readonly'@'localhost';
+    """
+    host: str = "127.0.0.1"
+    port: int = 3306
+    user: str = "readonly"
+    password: str = ""
+    databases: List[str] | None = None  # 白名单，None = 不限制
+    pool_size: int = Field(
+        default=5,
+        validation_alias=AliasChoices("poolSize", "pool_size"),
+    )
+    connect_timeout: int = Field(
+        default=10,
+        validation_alias=AliasChoices("connectTimeout", "connect_timeout"),
+    )
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
     excluded:list = Field(default_factory=list)
     persist_threshold: int = Field(default=30000)  # 持久化阈值
     preview_chars: int = Field(default=2000) # 展示长度
+    mysql: ToolsMysqlConfig = Field(default_factory=ToolsMysqlConfig)  # 数据分析工具的只读连接
     # exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     # restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     # mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)

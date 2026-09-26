@@ -6,6 +6,8 @@
 3. dbName 后端覆盖：gateway chat 以项目记录覆盖前端传值（防伪造 dbName 查任意库）；
 4. 成员增删：按账号邀请、重复/属主拒绝、移除为逻辑删除、重新加入恢复原记录。
 
+ID 体系：ID 迁移完成后全链路字符串（user_xxxx / app_xxxx），JWTUser/ORM 均为 str。
+
 运行：backend 目录下 `python -m tests.test_member_storage_isolation`
 （或用主工作区 backend/.venv 的 python 运行）。
 """
@@ -100,17 +102,17 @@ class FakeSession:
 
     # -- 数据装载 --
 
-    def add_user(self, uid: int, account: str, name: str, role: str = "user") -> User:
+    def add_user(self, uid: str, account: str, name: str, role: str = "user") -> User:
         u = User(id=uid, user_account=account, user_name=name, user_role=role)
         self.table_stores["user"].append(u)
         return u
 
-    def add_app(self, app_id: int, owner: int, name: str, db_name: str | None) -> App:
+    def add_app(self, app_id: str, owner: str, name: str, db_name: str | None) -> App:
         a = App(id=app_id, owner=owner, app_name=name, db_name=db_name)
         self.table_stores["app"].append(a)
         return a
 
-    def add_member_row(self, app_id: int, user_id: int, is_delete: int = 0) -> AppMember:
+    def add_member_row(self, app_id: str, user_id: str, is_delete: int = 0) -> AppMember:
         m = AppMember(id=self._next_id, app_id=app_id, user_id=user_id, is_delete=is_delete)
         self._next_id += 1
         m.create_time = datetime.now()
@@ -177,8 +179,12 @@ class FakeSession:
             name = getattr(cond.operator, "__name__", "")
             left, right = cond.left, cond.right
             if name in ("in_", "in_op"):
-                col_name = right.column_descriptions[0]["name"]
-                sub_ids = [getattr(r[0], col_name) for r in self.eval_select(right)]
+                if hasattr(right, "column_descriptions"):
+                    col_name = right.column_descriptions[0]["name"]
+                    sub_ids = [getattr(r[0], col_name) for r in self.eval_select(right)]
+                else:
+                    # 字面量列表 IN（expanding 绑定参数，如 User.id.in_({...})）
+                    sub_ids = list(getattr(right, "value", None) or [])
                 return self._col_val(left, ctx) in sub_ids
             lval = self._col_val(left, ctx)
             rval = getattr(right, "value", None)
@@ -231,28 +237,28 @@ class FakeSession:
 
 def build_session() -> FakeSession:
     db = FakeSession()
-    db.add_user(1, "alice", "Alice", "user")  # app 100 属主
-    db.add_user(2, "bob", "Bob", "user")  # app 100 / 101 成员
-    db.add_user(3, "carol", "Carol", "user")  # app 100 成员（隔离对照）
-    db.add_user(4, "dave", "Dave", "user")  # app 101 属主
-    db.add_user(9, "root", "Root", "admin")  # 平台管理员
-    db.add_app(100, 1, "项目甲", "proj_db")
-    db.add_app(101, 4, "项目乙", None)
-    db.add_member_row(100, 2)
-    db.add_member_row(100, 3)
-    db.add_member_row(101, 2)
+    db.add_user("user_alice", "alice", "Alice", "user")  # app_100 属主
+    db.add_user("user_bob", "bob", "Bob", "user")  # app_100 / app_101 成员
+    db.add_user("user_carol", "carol", "Carol", "user")  # app_100 成员（隔离对照）
+    db.add_user("user_dave", "dave", "Dave", "user")  # app_101 属主
+    db.add_user("user_root", "root", "Root", "admin")  # 平台管理员
+    db.add_app("app_100", "user_alice", "项目甲", "proj_db")
+    db.add_app("app_101", "user_dave", "项目乙", None)
+    db.add_member_row("app_100", "user_bob")
+    db.add_member_row("app_100", "user_carol")
+    db.add_member_row("app_101", "user_bob")
     return db
 
 
-def jwt(uid: int, account: str, role: str = "user") -> JWTUser:
+def jwt(uid: str, account: str, role: str = "user") -> JWTUser:
     return JWTUser(user_id=uid, user_account=account, user_role=role)
 
 
-OWNER = lambda: jwt(1, "alice")  # noqa: E731
-MEMBER = lambda: jwt(2, "bob")  # noqa: E731
-MEMBER2 = lambda: jwt(3, "carol")  # noqa: E731
-OUTSIDER = lambda: jwt(5, "eve")  # noqa: E731
-ADMIN = lambda: jwt(9, "root", "admin")  # noqa: E731
+OWNER = lambda: jwt("user_alice", "alice")  # noqa: E731
+MEMBER = lambda: jwt("user_bob", "bob")  # noqa: E731
+MEMBER2 = lambda: jwt("user_carol", "carol")  # noqa: E731
+OUTSIDER = lambda: jwt("user_eve", "eve")  # noqa: E731
+ADMIN = lambda: jwt("user_root", "root", "admin")  # noqa: E731
 
 
 # ────────────────────────── 1. 权限阶梯 ──────────────────────────
@@ -261,7 +267,7 @@ ADMIN = lambda: jwt(9, "root", "admin")  # noqa: E731
 def test_permission_ladder() -> None:
     print("[1] 权限阶梯（非参与者拒绝）")
     db = build_session()
-    app = db.table_stores["app"][0]  # app 100
+    app = db.table_stores["app"][0]  # app_100
 
     import asyncio
 
@@ -269,11 +275,14 @@ def test_permission_ladder() -> None:
     check("member 角色识别", asyncio.run(get_access_role(db, app, MEMBER())) == "member")
     check("admin 角色识别", asyncio.run(get_access_role(db, app, ADMIN())) == "admin")
     check("非参与者返回 None", asyncio.run(get_access_role(db, app, OUTSIDER())) is None)
-    check("软删成员不算 member", asyncio.run(get_access_role(db, _soft_delete_member(db, 100, 3), MEMBER2())) is None)
+    check(
+        "软删成员不算 member",
+        asyncio.run(get_access_role(db, _soft_delete_member(db, "app_100", "user_carol"), MEMBER2())) is None,
+    )
 
     expect_error(
         "非成员访问项目被拒(NO_AUTH 40101)",
-        lambda: asyncio.run(require_participant_by_id(db, 100, OUTSIDER())),
+        lambda: asyncio.run(require_participant_by_id(db, "app_100", OUTSIDER())),
         ErrorCode.NO_AUTH_ERROR,
     )
     expect_error(
@@ -282,23 +291,23 @@ def test_permission_ladder() -> None:
         ErrorCode.NO_AUTH_ERROR,
     )
     expect_error(
-        "appId<=0 参数错误",
-        lambda: asyncio.run(require_participant_by_id(db, 0, MEMBER())),
+        "appId 为空参数错误",
+        lambda: asyncio.run(require_participant_by_id(db, "", MEMBER())),
         ErrorCode.PARAMS_ERROR,
     )
     expect_error(
         "项目不存在",
-        lambda: asyncio.run(require_participant_by_id(db, 999, MEMBER())),
+        lambda: asyncio.run(require_participant_by_id(db, "app_999", MEMBER())),
         ErrorCode.NOT_FOUND_ERROR,
     )
     # 成员/属主/管理员可通过
-    got = asyncio.run(require_participant_by_id(db, 100, MEMBER()))
+    got = asyncio.run(require_participant_by_id(db, "app_100", MEMBER()))
     check("成员通过 require_participant_by_id", got is app)
-    got = asyncio.run(require_participant_by_id(db, 100, ADMIN()))
+    got = asyncio.run(require_participant_by_id(db, "app_100", ADMIN()))
     check("管理员通过 require_participant_by_id", got is app)
 
 
-def _soft_delete_member(db: FakeSession, app_id: int, user_id: int) -> App:
+def _soft_delete_member(db: FakeSession, app_id: str, user_id: str) -> App:
     for m in db.table_stores["app_member"]:
         if m.app_id == app_id and m.user_id == user_id:
             m.is_delete = 1
@@ -317,39 +326,36 @@ def test_file_isolation() -> None:
         constants_mod.DATA_ROOT_DIR = Path(tmp)
         svc = AppService(db)  # type: ignore[arg-type]
 
-        asyncio.run(svc.create_file(100, "a.txt", MEMBER()))
-        path_a = Path(tmp) / "2" / "100" / "code" / "a.txt"
+        asyncio.run(svc.create_file("app_100", "a.txt", MEMBER()))
+        path_a = Path(tmp) / "user_bob" / "app_100" / "code" / "a.txt"
         check("成员A文件落在 A 自己目录", path_a.exists())
 
-        tree_b = asyncio.run(svc.get_code_tree(100, MEMBER2()))
+        tree_b = asyncio.run(svc.get_code_tree("app_100", MEMBER2()))
         check("成员B看不到A的文件", tree_b == [])
 
         expect_error(
             "成员B读取A的文件被拒",
-            lambda: asyncio.run(svc.get_code_file(100, "a.txt", MEMBER2())),
+            lambda: asyncio.run(svc.get_code_file("app_100", "a.txt", MEMBER2())),
             ErrorCode.NOT_FOUND_ERROR,
         )
 
-        asyncio.run(svc.create_file(100, "b.txt", MEMBER2()))
-        tree_a = asyncio.run(svc.get_code_tree(100, MEMBER()))
+        asyncio.run(svc.create_file("app_100", "b.txt", MEMBER2()))
+        tree_a = asyncio.run(svc.get_code_tree("app_100", MEMBER()))
         names_a = sorted(n["name"] for n in tree_a)
         check("成员A目录只含自己的文件", names_a == ["a.txt"], f"got {names_a}")
 
         expect_error(
             "路径穿越被拒",
-            lambda: asyncio.run(svc.save_code_file(100, "../evil.txt", "x", MEMBER())),
+            lambda: asyncio.run(svc.save_code_file("app_100", "../evil.txt", "x", MEMBER())),
             ErrorCode.PARAMS_ERROR,
         )
 
         # 非成员连自己的"目录视角"都进不来
         expect_error(
             "非成员读取文件树被拒",
-            lambda: asyncio.run(svc.get_code_tree(100, OUTSIDER())),
+            lambda: asyncio.run(svc.get_code_tree("app_100", OUTSIDER())),
             ErrorCode.NO_AUTH_ERROR,
         )
-    import shutil
-
-    shutil.rmtree(Path("D:/Project/agent/CodeGenX/.claude/worktrees/project-member-storage-plan/.data"), ignore_errors=True)
 
 
 # ────────────────────────── 3. dbName 后端覆盖 ──────────────────────────
@@ -378,7 +384,7 @@ def test_db_name_override() -> None:
     db = build_session()
 
     payload = {
-        "appId": "100",
+        "appId": "app_100",
         "message": "hi",
         "dbName": "victim_db",
         "sessionId": "s1",
@@ -388,10 +394,10 @@ def test_db_name_override() -> None:
     asyncio.run(chat_mod.chat_to_gen_code_post(payload, login_user=MEMBER(), redis=None, db=db))  # type: ignore[arg-type]
     req = captured["request"]
     check("dbName 以项目记录覆盖前端伪造值", req.db_name == "proj_db", f"got {req.db_name!r}")
-    check("userId 注入当前登录人", req.user_id == "2", f"got {req.user_id!r}")
-    check("appId 解析为 int", req.app_id == 100)
+    check("userId 注入当前登录人", req.user_id == "user_bob", f"got {req.user_id!r}")
+    check("appId 透传为 str", req.app_id == "app_100", f"got {req.app_id!r}")
 
-    payload2 = {"appId": 101, "message": "hi", "dbName": "victim_db", "sessionId": "s", "traceId": "t", "requestId": "r"}
+    payload2 = {"appId": "app_101", "message": "hi", "dbName": "victim_db", "sessionId": "s", "traceId": "t", "requestId": "r"}
     asyncio.run(chat_mod.chat_to_gen_code_post(payload2, login_user=MEMBER(), redis=None, db=db))  # type: ignore[arg-type]
     check("未绑定库的项目 dbName 置空", captured["request"].db_name is None, f"got {captured['request'].db_name!r}")
 
@@ -399,7 +405,7 @@ def test_db_name_override() -> None:
         "非成员聊天被拒",
         lambda: asyncio.run(
             chat_mod.chat_to_gen_code_post(
-                {"appId": 100, "message": "hi", "sessionId": "s", "traceId": "t", "requestId": "r"},
+                {"appId": "app_100", "message": "hi", "sessionId": "s", "traceId": "t", "requestId": "r"},
                 login_user=OUTSIDER(),
                 redis=None,
                 db=db,  # type: ignore[arg-type]
@@ -419,68 +425,68 @@ def test_member_add_remove() -> None:
     db = build_session()
     svc = AppService(db)  # type: ignore[arg-type]
 
-    # eve(user 5) 不存在 → NOT_FOUND
+    # eve(user_eve) 不存在 → NOT_FOUND
     expect_error(
         "邀请不存在的账号报 NOT_FOUND",
-        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId=100, userAccount="eve"), OWNER())),
+        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId="app_100", userAccount="eve"), OWNER())),
         ErrorCode.NOT_FOUND_ERROR,
     )
     # 成员没有管理权
     expect_error(
         "普通成员不能邀请他人",
-        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId=100, userAccount="dave"), MEMBER())),
+        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId="app_100", userAccount="dave"), MEMBER())),
         ErrorCode.NO_AUTH_ERROR,
     )
     # 邀请属主本人
     expect_error(
         "不能邀请属主本人",
-        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId=100, userAccount="alice"), OWNER())),
+        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId="app_100", userAccount="alice"), OWNER())),
         ErrorCode.PARAMS_ERROR,
     )
     # 重复邀请
     expect_error(
         "重复邀请报已是成员",
-        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId=100, userAccount="bob"), OWNER())),
+        lambda: asyncio.run(svc.add_member(AppMemberAddRequest(appId="app_100", userAccount="bob"), OWNER())),
         ErrorCode.PARAMS_ERROR,
     )
 
-    # 正常按账号邀请 eve 先注册 → dave 邀请进 app 101
-    db.add_user(5, "eve", "Eve", "user")
-    ok = asyncio.run(svc.add_member(AppMemberAddRequest(appId=101, userAccount="eve"), jwt(4, "dave")))
+    # 正常按账号邀请 eve 先注册 → dave 邀请进 app_101
+    db.add_user("user_eve", "eve", "Eve", "user")
+    ok = asyncio.run(svc.add_member(AppMemberAddRequest(appId="app_101", userAccount="eve"), jwt("user_dave", "dave")))
     check("属主按账号邀请成功", ok is True)
-    rows = [m for m in db.table_stores["app_member"] if m.app_id == 101 and m.user_id == 5]
+    rows = [m for m in db.table_stores["app_member"] if m.app_id == "app_101" and m.user_id == "user_eve"]
     check("新增成员记录 is_delete=0", len(rows) == 1 and rows[0].is_delete == 0)
 
     # 按 userId 邀请
-    ok = asyncio.run(svc.add_member(AppMemberAddRequest(appId=101, userId=3), jwt(4, "dave")))
-    check("按 userId 邀请成功", ok is True and len([m for m in db.table_stores["app_member"] if m.app_id == 101 and m.user_id == 3]) == 1)
+    ok = asyncio.run(svc.add_member(AppMemberAddRequest(appId="app_101", userId="user_carol"), jwt("user_dave", "dave")))
+    check("按 userId 邀请成功", ok is True and len([m for m in db.table_stores["app_member"] if m.app_id == "app_101" and m.user_id == "user_carol"]) == 1)
 
     # 移除 → 逻辑删除
-    ok = asyncio.run(svc.remove_member(AppMemberRemoveRequest(appId=101, userId=5), jwt(4, "dave")))
+    ok = asyncio.run(svc.remove_member(AppMemberRemoveRequest(appId="app_101", userId="user_eve"), jwt("user_dave", "dave")))
     check("移除成员成功", ok is True)
     check("移除后记录仍在且 is_delete=1", rows[0].is_delete == 1)
-    check("get_active_member 不再命中", asyncio.run(get_active_member(db, 101, 5)) is None)
+    check("get_active_member 不再命中", asyncio.run(get_active_member(db, "app_101", "user_eve")) is None)
 
     # 非成员本人无权移除他人
     expect_error(
         "被移除者（已非成员）不能再移除他人",
-        lambda: asyncio.run(svc.remove_member(AppMemberRemoveRequest(appId=101, userId=3), jwt(5, "eve"))),
+        lambda: asyncio.run(svc.remove_member(AppMemberRemoveRequest(appId="app_101", userId="user_carol"), jwt("user_eve", "eve"))),
         ErrorCode.NO_AUTH_ERROR,
     )
 
     # 重新加入 → 恢复原记录（不新增行）
     before = len(db.table_stores["app_member"])
-    asyncio.run(svc.add_member(AppMemberAddRequest(appId=101, userId=5), jwt(4, "dave")))
-    after = [m for m in db.table_stores["app_member"] if m.app_id == 101 and m.user_id == 5]
+    asyncio.run(svc.add_member(AppMemberAddRequest(appId="app_101", userId="user_eve"), jwt("user_dave", "dave")))
+    after = [m for m in db.table_stores["app_member"] if m.app_id == "app_101" and m.user_id == "user_eve"]
     check("重新加入恢复原记录（无新增行）", len(after) == 1 and after[0] is rows[0] and after[0].is_delete == 0)
     check("成员总行数不变", len(db.table_stores["app_member"]) == before)
 
     # list_members：join User 输出 VO
-    vos = asyncio.run(svc.list_members(101, jwt(4, "dave")))
+    vos = asyncio.run(svc.list_members("app_101", jwt("user_dave", "dave")))
     by_uid = {v.user_id: v for v in vos}
     check(
         "list_members 返回账号/昵称",
-        by_uid.get(5) is not None and by_uid[5].user_account == "eve" and by_uid[5].user_name == "Eve",
+        by_uid.get("user_eve") is not None and by_uid["user_eve"].user_account == "eve" and by_uid["user_eve"].user_name == "Eve",
     )
 
 
@@ -496,21 +502,21 @@ def test_my_project_list() -> None:
 
     page = asyncio.run(svc.list_my_app_vo_by_page(AppQueryRequest(pageNum=1, pageSize=10), MEMBER()))
     ids = sorted(r.id for r in page.records)
-    check("成员视角包含 属主+成员 项目 {100,101}", ids == [100, 101], f"got {ids}")
+    check("成员视角包含 属主+成员 项目 {app_100,app_101}", ids == ["app_100", "app_101"], f"got {ids}")
 
-    page = asyncio.run(svc.list_my_app_vo_by_page(AppQueryRequest(pageNum=1, pageSize=10), jwt(3, "carol")))
+    page = asyncio.run(svc.list_my_app_vo_by_page(AppQueryRequest(pageNum=1, pageSize=10), jwt("user_carol", "carol")))
     ids = sorted(r.id for r in page.records)
-    check("仅成员视角只含成员项目 {100}", ids == [100], f"got {ids}")
+    check("仅成员视角只含成员项目 {app_100}", ids == ["app_100"], f"got {ids}")
 
     page = asyncio.run(svc.list_my_app_vo_by_page(AppQueryRequest(pageNum=1, pageSize=10), OUTSIDER()))
     check("局外人列表为空", page.records == [] and page.total_row == 0)
 
     vo = page  # noqa: F841
     page100 = asyncio.run(svc.list_my_app_vo_by_page(AppQueryRequest(pageNum=1, pageSize=10), OWNER()))
-    target = next(r for r in page100.records if r.id == 100)
+    target = next(r for r in page100.records if r.id == "app_100")
     check(
         "VO 字段精简（appName/owner/dbName）",
-        target.app_name == "项目甲" and target.owner == 1 and target.db_name == "proj_db",
+        target.app_name == "项目甲" and target.owner == "user_alice" and target.db_name == "proj_db",
     )
 
 

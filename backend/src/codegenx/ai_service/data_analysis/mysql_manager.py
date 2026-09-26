@@ -181,3 +181,25 @@ class MysqlManager:
             self._pool.close()
             await self._pool.wait_closed()
             self._pool = None
+
+
+# ── 进程级单例（F-4：连接配置接入 config.json tools.mysql，原两处工具模块各自
+#    new MysqlManager() 只会用硬编码默认值 readonly/空密码，凭据无法配置） ──────────
+_manager: MysqlManager | None = None
+
+
+def get_mysql_manager() -> MysqlManager:
+    global _manager
+    if _manager is None:
+        from codegenx.ai_service.utils.config import config
+        c = config.tools.mysql
+        _manager = MysqlManager(MysqlConfig(
+            host=c.host,
+            port=c.port,
+            user=c.user,
+            password=c.password,
+            databases=list(c.databases) if c.databases else None,
+            pool_size=c.pool_size,
+            connect_timeout=c.connect_timeout,
+        ))
+    return _manager

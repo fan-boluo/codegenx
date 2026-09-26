@@ -12,7 +12,7 @@ from typing import Any
 
 from codegenx.ai_service.tools.base import BaseTool, ToolResult
 from codegenx.ai_service.data_analysis.mysql_manager import (
-    MysqlManager, MysqlConfig, resolve_sample_ratio, _check_sql_safety,
+    get_mysql_manager, resolve_sample_ratio, _check_sql_safety,
 )
 from codegenx.ai_service.data_analysis.stats_engine import (
     compute_numeric_stats, compute_categorical_stats,
@@ -29,15 +29,8 @@ MAX_COLS_WIDE_TABLE = 20
 COL_STATS_TIMEOUT = 30
 
 # ── 单例 ──────────────────────────────────────────────────
-
-_mysql_manager: MysqlManager | None = None
-
-
-def _get_mysql_manager() -> MysqlManager:
-    global _mysql_manager
-    if _mysql_manager is None:
-        _mysql_manager = MysqlManager()
-    return _mysql_manager
+# F-4：改用 mysql_manager.get_mysql_manager() 共享进程级单例，
+# 连接配置来自 config.json tools.mysql（原先各模块自建实例只会用默认 readonly/空密码）
 
 
 # ── 格式化辅助 ────────────────────────────────────────────
@@ -128,7 +121,7 @@ class ListTablesTool(BaseTool):
         self, params: dict, signal: asyncio.Event | None = None,
     ) -> ToolResult:
         db_name = params["db_name"]
-        mgr = _get_mysql_manager()
+        mgr = get_mysql_manager()
         rows = await mgr.query(db_name, _LIST_TABLES_SQL, (db_name,))
 
         if not rows:
@@ -225,7 +218,7 @@ class DescribeTableTool(BaseTool):
     ) -> ToolResult:
         db_name = params["db_name"]
         table_name = params["table_name"]
-        mgr = _get_mysql_manager()
+        mgr = get_mysql_manager()
 
         # 并行查询
         cols_task = mgr.query(db_name, _COLUMNS_SQL, (db_name, table_name))
@@ -326,7 +319,7 @@ class SampleRowsTool(BaseTool):
         if limit > 100:
             limit = 100
 
-        mgr = _get_mysql_manager()
+        mgr = get_mysql_manager()
         # 先查列名
         cols = await mgr.query(
             db_name,
@@ -442,7 +435,7 @@ class DescribeTableStatsTool(BaseTool):
         requested_sample_pct = int(params.get("sample_pct", 100))
         timeout = int(params.get("timeout_seconds", COL_STATS_TIMEOUT))
 
-        mgr = _get_mysql_manager()
+        mgr = get_mysql_manager()
 
         # 1. 估算行数
         est_rows = await mgr.get_table_rows_estimate(db_name, table_name)

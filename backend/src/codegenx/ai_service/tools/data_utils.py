@@ -19,9 +19,9 @@ from shared import log
 # ═══════════════════════════════════════════════════════════
 
 def _get_mysql_manager():
-    """延迟导入，避免循环依赖。"""
-    from codegenx.ai_service.data_analysis.mysql_manager import MysqlManager
-    return MysqlManager()
+    """延迟导入，避免循环依赖；F-4 起共享 mysql_manager 进程级单例（配置来自 config.json）。"""
+    from codegenx.ai_service.data_analysis.mysql_manager import get_mysql_manager
+    return get_mysql_manager()
 
 
 # 列类型优先级 SQL（复用 data_mysql 中的逻辑）
