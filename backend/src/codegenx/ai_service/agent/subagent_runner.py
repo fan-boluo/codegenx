@@ -54,17 +54,10 @@ class SubagentRunner:
         )
         runtime.max_tool_iterations = max(1, int(subagent_context.max_turns or 15))
         # P4 §10.3：spec.limits 覆盖限额（max_steps / temperature 沿用 AgentConfig 字段）
+        # BUG-1 修复：此处原样重复构造过第二个 AgentRuntime 覆盖了上面的 limits 应用，已删
         if spec is not None and spec.limits is not None:
             if getattr(spec.limits, "max_steps", None):
                 runtime.max_steps = int(spec.limits.max_steps)
-
-        app_code_dir = get_code_dir(subagent_context.user_id or "main", subagent_context.app_id)
-        app_code_dir.mkdir(parents=True, exist_ok=True)
-
-        runtime = AgentRuntime(
-            tool_executor=ToolExecutor(tools_handler),
-        )
-        runtime.max_tool_iterations = max(1, int(subagent_context.max_turns or 15))
 
         request = AiServiceGenerateRequest(
             appId=int(subagent_context.app_id) if str(subagent_context.app_id).isdigit() else 0,

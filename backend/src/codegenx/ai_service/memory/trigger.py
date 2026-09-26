@@ -67,11 +67,13 @@ async def process_turn_signal(
     user_id: str,
     session_id: str,
     round_messages: list[dict],
+    agent_name: str = "",
 ) -> None:
     """on_turn_end 调用：信号判断 → 累加水位 → 达阈值投递 warm_extract。
 
     round_messages: 本轮参与判断的消息（至少含最后一条 user 输入及其收尾
     assistant 回复）。全链路失败静默——漏斗丢一轮信号无正确性影响。
+    agent_name：会话归属智能体（偏差①写门控：随任务下发供 scheduler 门控）。
     """
     try:
         cfg = config_memory_trigger()
@@ -111,6 +113,7 @@ async def process_turn_signal(
             app_id=str(app_id),
             session_id=session_id,
             user_id=str(user_id or ""),
+            payload={"agent_name": agent_name} if agent_name else None,
             dedup=True,
         )
         if enqueued is not None:
@@ -123,7 +126,9 @@ async def process_turn_signal(
         log.debug("[funnel] 信号处理失败（非致命）: {}", exc)
 
 
-async def process_session_end(app_id: str, user_id: str, session_id: str) -> None:
+async def process_session_end(
+    app_id: str, user_id: str, session_id: str, agent_name: str = ""
+) -> None:
     """on_session_end 调用：会话结束事件直接投递（§4.1 触发条件之一）。"""
     try:
         from codegenx.ai_service.schedule.memory_task_store import get_memory_task_store
@@ -132,6 +137,7 @@ async def process_session_end(app_id: str, user_id: str, session_id: str) -> Non
             app_id=str(app_id),
             session_id=session_id,
             user_id=str(user_id or ""),
+            payload={"agent_name": agent_name} if agent_name else None,
             dedup=True,
         )
         if enqueued is not None:
@@ -196,6 +202,7 @@ async def memory_turn_signal(ctx: HookContext) -> None:
             str(session.user_id or ""),
             session.session_id,
             round_messages,
+            agent_name=str(getattr(session, "agent_name", "") or ""),
         )
     except Exception as exc:
         log.debug("记忆漏斗信号处理失败（非致命）: {}", exc)
@@ -210,6 +217,7 @@ async def memory_session_end(ctx: HookContext) -> None:
             str(getattr(session, "app_id", "") or ""),
             str(getattr(session, "user_id", "") or ""),
             str(getattr(session, "session_id", "") or ""),
+            agent_name=str(getattr(session, "agent_name", "") or ""),
         )
     except Exception as exc:
         log.debug("会话结束记忆触发失败（非致命）: {}", exc)

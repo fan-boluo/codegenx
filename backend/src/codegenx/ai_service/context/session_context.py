@@ -49,7 +49,7 @@ class SessionContext:
     def __post_init__(self) -> None:
         # 会话级压缩熔断器：参数在 CompactionService.make_breaker 统一维护
         self.compact_breaker = CompactionService.make_breaker(self.session_id)
-        log.info(self.session_id,"SessonContext 启动完毕")
+        log.info("{} SessionContext 启动完毕", self.session_id)
 
     # ------------------------------------------------------------------ 每轮组装
 

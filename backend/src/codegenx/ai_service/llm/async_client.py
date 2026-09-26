@@ -180,6 +180,17 @@ class AsyncLLMClient:
             finish_reason = None
             captured_usage: Any = None  # P1：机会性采集 usage（部分 provider 在末尾 chunk 携带）
 
+            def _response_info() -> Dict[str, Any]:
+                # BUG-5 接线：response_info 扩为 finish_reason + 真实 usage + 实际服务模型，
+                # 供调用方落 chat_message 用量四列（model/prompt_tokens/completion_tokens/finish_reason）
+                usage = None
+                if captured_usage is not None:
+                    usage = {
+                        "prompt_tokens": int(getattr(captured_usage, "prompt_tokens", 0) or 0),
+                        "completion_tokens": int(getattr(captured_usage, "completion_tokens", 0) or 0),
+                    }
+                return {"finish_reason": finish_reason, "usage": usage, "model": self.model_name}
+
             try:
                 async def _consume_stream():
                     nonlocal finish_reason, captured_usage
@@ -224,7 +235,7 @@ class AsyncLLMClient:
                     if tool_calls_list:
                         yield {"type": "tool_calls", "data": tool_calls_list}
                 if finish_reason:
-                    yield {"type": "response_info", "data": {"finish_reason": finish_reason}}
+                    yield {"type": "response_info", "data": _response_info()}
                 raise
 
             # 流正常结束：记录采集到的 usage（若有）
@@ -237,7 +248,7 @@ class AsyncLLMClient:
                     yield {"type": "tool_calls", "data": tool_calls_list}
 
             if finish_reason:
-                yield {"type": "response_info", "data": {"finish_reason": finish_reason}}
+                yield {"type": "response_info", "data": _response_info()}
 
         except Exception as e:
             log.error(f"LLM Stream Error: {e}")

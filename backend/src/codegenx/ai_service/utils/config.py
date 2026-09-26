@@ -202,9 +202,9 @@ class MemorySearchConfig(Base):
         validation_alias=AliasChoices("hotLoadTimeoutMs", "hot_load_timeout_ms"),
     )  # hot 加载超时（§9 建议值），超时降级为无 hot 注入
     warm_load_timeout_ms: int = Field(
-        default=500,
+        default=1500,
         validation_alias=AliasChoices("warmLoadTimeoutMs", "warm_load_timeout_ms"),
-    )  # warm 召回超时（§9 建议值），超时降级为无 warm 注入
+    )  # warm 召回超时，超时降级为无 warm 注入（F-1：500ms 对 embedding 网络往返过紧，实测零注入）
 
 
 class MemoryTriggerConfig(Base):

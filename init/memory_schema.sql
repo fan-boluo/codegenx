@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS agent_memory (
   session_id       VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '来源会话id',
   source_msg_ids   JSON         NULL COMMENT '溯源消息id数组，合规级联删除依赖此字段',
   task_id          BIGINT       NULL COMMENT '产生本条记忆的 memory_task.id',
+  source_agent     VARCHAR(64)  NULL COMMENT '产生本条记忆的智能体名（P4 偏差①写门控配套溯源）',
 
   valid_from       DATETIME     NULL COMMENT '生效起始，NULL=立即生效',
   valid_to         DATETIME     NULL COMMENT '生效截止，NULL=长期有效',
@@ -106,6 +107,14 @@ CREATE TABLE IF NOT EXISTS agent_memory (
   INDEX idx_task         (task_id)
 ) COMMENT '记忆主表（hot/warm 同表分层，MySQL 为唯一真源）'
   COLLATE = utf8mb4_unicode_ci ROW_FORMAT = DYNAMIC;
+
+-- ------------------------------------------------------------
+-- 存量库升级（source_agent 列，P4 偏差①）。新部署直接跑上面的 CREATE 即可；
+-- 已建表的库请手动执行：
+-- ALTER TABLE agent_memory
+--   ADD COLUMN source_agent VARCHAR(64) NULL
+--   COMMENT '产生本条记忆的智能体名（P4 偏差①写门控配套溯源）' AFTER task_id;
+-- ------------------------------------------------------------
 
 
 -- ------------------------------------------------------------

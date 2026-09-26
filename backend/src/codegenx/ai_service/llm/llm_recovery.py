@@ -51,12 +51,17 @@ class LLMRecoveryMixin:
         # P4 §10.4：智能体维度模型覆盖（spec.model_override 最高 → {agent}:{scenario} → scenario → 默认）
         agent_name = (getattr(session_state, "agent_name", "") or "").strip() or None
         agent_override = None
+        # P4 §10.3：spec.limits.temperature 覆盖（原空设计，偏差③主路径落地）
+        agent_temperature = None
         if agent_name:
             from codegenx.ai_service.system_app import get_app
 
             registry = get_app().agents
             if registry is not None:
-                agent_override = registry.get(agent_name).model_override
+                spec = registry.get(agent_name)
+                agent_override = spec.model_override
+                if spec.limits is not None:
+                    agent_temperature = spec.limits.temperature
         continuation_attempts = 0
         compact_attempts = 0
         accumulated_content = ""
@@ -79,6 +84,7 @@ class LLMRecoveryMixin:
                     tools=tools,
                     primary_model=agent_model,
                     timeout=cfg.llm_stream_timeout_seconds,
+                    temperature=agent_temperature,
                     agent=agent_name,
                     agent_override=agent_override,
                 ):
@@ -96,9 +102,11 @@ class LLMRecoveryMixin:
                     elif chunk["type"] == "tool_calls":
                         round_response["tool_calls"] = chunk["data"]
                     elif chunk["type"] == "response_info":
-                        round_response["finish_reason"] = (
-                            chunk.get("data") or {}
-                        ).get("finish_reason")
+                        info = chunk.get("data") or {}
+                        round_response["finish_reason"] = info.get("finish_reason")
+                        # BUG-5 接线：真实 usage / 实际服务模型随末尾 response_info 回传
+                        round_response["usage"] = info.get("usage")
+                        round_response["model"] = info.get("model")
 
                 # Strategy 1: output truncated — inject continuation message and retry
                 finish_reason = str(round_response.get("finish_reason") or "").lower()
@@ -109,7 +117,7 @@ class LLMRecoveryMixin:
                         self._record_recovery(
                             turn_state,
                             "continue",
-                            continuation_attempts + compact_attempts + transport_attempts,
+                            continuation_attempts + compact_attempts,
                         )
                         log.warning(
                             "[Recovery] Output truncated, injecting continuation "

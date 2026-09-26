@@ -46,9 +46,15 @@ class ChatMessageStore:
     # === 写入 ===
 
     async def append_message(
-        self, user_id: str, app_id: str, session_id: str, message: dict
+        self, user_id: str, app_id: str, session_id: str, message: dict,
+        meta: dict | None = None,
     ) -> int:
-        """追加一条聊天消息，返回分配的会话内 seq。不改动传入的 message 对象。"""
+        """追加一条聊天消息，返回分配的会话内 seq。不改动传入的 message 对象。
+
+        meta：assistant 行的用量元数据（BUG-5 接线）——model/finish_reason/
+        prompt_tokens/completion_tokens，落 chat_message 四个独立用量列；
+        user/tool 行不传自然为 NULL。
+        """
         stored = _storage_view(message)
         content_json = json.dumps(stored, ensure_ascii=False, default=str)
         content_bytes = len(content_json.encode("utf-8"))
@@ -76,12 +82,16 @@ class ChatMessageStore:
                 except OSError as exc:
                     log.error("超长消息 blob 写盘失败，回退直存: {}", exc)
             role = str(message.get("role") or "user")
+            # 用量四列：仅 assistant 行随 meta 写入（BUG-5 修复前为全库死列）
+            chat_meta = meta if meta else {}
             await session.execute(
                 text(
                     "INSERT INTO chat_message "
                     "(message_uid, user_id, session_id, app_id, seq, role, "
-                    "content, content_bytes, content_tokens) "
-                    "VALUES (:uid, :u, :s, :a, :q, :r, :c, :cb, :ct)"
+                    "content, content_bytes, content_tokens, "
+                    "model, prompt_tokens, completion_tokens, finish_reason) "
+                    "VALUES (:uid, :u, :s, :a, :q, :r, :c, :cb, :ct, "
+                    ":m, :pt, :ct2, :fr)"
                 ),
                 {
                     "uid": str(uuid.uuid4()),
@@ -93,6 +103,10 @@ class ChatMessageStore:
                     "c": content_json,
                     "cb": content_bytes,
                     "ct": content_bytes // 4,  # 估算 token（无本地 tokenizer）
+                    "m": str(chat_meta.get("model") or "") or None,
+                    "pt": int(chat_meta.get("prompt_tokens") or 0) or None,
+                    "ct2": int(chat_meta.get("completion_tokens") or 0) or None,
+                    "fr": str(chat_meta.get("finish_reason") or "") or None,
                 },
             )
             await session.commit()

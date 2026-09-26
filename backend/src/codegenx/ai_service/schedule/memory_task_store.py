@@ -362,6 +362,25 @@ class MemoryTaskStore:
             await session.commit()
         return await self.get_watermark_full(session_id)
 
+    async def clear_pending(self, session_id: str) -> None:
+        """清零漏斗计数并刷新 updated_at（BUG-2 修复：no-op 提取也须清账）。
+
+        兜底补投的设计原意是「投递前崩溃」一次性补投（§4.1）：补投过即应退场。
+        否则 pending_* 永不清零 → 每轮 patrol 重复补投空转。半截轮次场景安全：
+        后续轮次完成时漏斗（signal/timeout 触发）会重新累加并投递。
+        updated_at 由 DDL ON UPDATE CURRENT_TIMESTAMP 自动刷新，脱离 stale 扫描集。
+        """
+        async with session_maker() as session:
+            await session.execute(
+                text(
+                    "UPDATE memory_watermark "
+                    "SET pending_signals = 0, pending_tokens = 0 "
+                    "WHERE session_id = :s"
+                ),
+                {"s": session_id},
+            )
+            await session.commit()
+
     async def scan_stale_pending(self, minutes: int, limit: int = 50) -> list[dict]:
         """P1-2 兜底扫描：有积压信号且超时未处理的会话（投递前崩溃补投，§4.1）。"""
         async with session_maker() as session:

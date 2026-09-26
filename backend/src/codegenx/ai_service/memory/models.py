@@ -145,6 +145,7 @@ class MemoryEntry:
     session_id: str = ""                   # 来源会话
     source_msg_ids: list[str] = field(default_factory=list)  # 溯源（合规级联删除依赖）
     task_id: int | None = None             # 产生本条的 memory_task.id
+    source_agent: str = ""                 # 产生本条的智能体名（偏差①写门控配套溯源）
 
     hit_count: int = 0
     last_hit_at: str = ""                  # ISO；空=未命中过（衰减用 COALESCE 回退 created_at）
@@ -216,6 +217,7 @@ class MemoryEntry:
             session_id=str(row.get("session_id") or ""),
             source_msg_ids=[str(m) for m in (msgs or [])],
             task_id=row.get("task_id"),
+            source_agent=str(row.get("source_agent") or ""),
             hit_count=int(row.get("hit_count") or 0),
             last_hit_at=_dt_iso(row.get("last_hit_at")),
             vector_synced=synced_at is not None,

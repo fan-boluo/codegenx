@@ -400,6 +400,19 @@ class AgentRuntime(LLMRecoveryMixin):
 
     # ------------------------------------------------------------------ request execution
 
+    def _spec_limits(self, session_state: RuntimeSessionState):
+        """P4 §10.3：会话归属智能体的 spec.limits（无归属/未配置/容器未启动 → None 走默认）。"""
+        try:
+            from codegenx.ai_service.system_app import get_app
+
+            app = get_app()
+            if app.agents is None:
+                return None
+            spec = app.agents.get(getattr(session_state, "agent_name", "") or "")
+            return spec.limits if spec is not None else None
+        except Exception:  # noqa: BLE001 — 限额解析失败回退默认值，不阻断对话
+            return None
+
     async def _execute_request(self, session_state: RuntimeSessionState) -> None:
         """Process all turns. Always publishes a terminal event; re-raises CancelledError."""
         request_id = session_state.request_id
@@ -431,7 +444,14 @@ class AgentRuntime(LLMRecoveryMixin):
                     }, state=activate_turn.state))
                 log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
                 # 执行turn的任务
-                while activate_turn.step_counter < self.max_steps:
+                # 偏差③修复：spec.limits 主路径落地消费（原 max_steps 全库零生效）
+                limits = self._spec_limits(session_state)
+                effective_max_steps = (
+                    int(limits.max_steps)
+                    if limits is not None and getattr(limits, "max_steps", None)
+                    else self.max_steps
+                )
+                while activate_turn.step_counter < effective_max_steps:
                     self._raise_if_stop_requested(session_state)
                     # 聊天历史微压，清除工具执行结果
                     await context_manager.micro_compact(self.config.compact.maxToolResultTokens)
@@ -601,11 +621,21 @@ class AgentRuntime(LLMRecoveryMixin):
                 for tc in tool_calls
             ]
         session_state.context_manager.add_assistant_message(assistant_message)
+        # BUG-5 接线：model/finish_reason/真实 usage 作为独立 meta 落 chat_message 用量列
+        # （不塞进 assistant_message，避免随 assemble 回传 LLM；缺省回退本地估算）
+        meta_usage = llm_response.get("usage") or {}
+        chat_meta = {
+            "model": str(llm_response.get("model") or "") or None,
+            "finish_reason": str(llm_response.get("finish_reason") or "") or None,
+            "prompt_tokens": int(meta_usage.get("prompt_tokens") or 0) or prompt_tokens,
+            "completion_tokens": int(meta_usage.get("completion_tokens") or 0) or completion_tokens,
+        }
         # assistant 消息入库（MySQL chat_message 表；失败不阻断对话）
         try:
             from codegenx.ai_service.chat_message import get_chat_message_store
             await get_chat_message_store().append_message(
-                session_state.user_id, str(session_state.app_id), session_state.session_id, assistant_message
+                session_state.user_id, str(session_state.app_id), session_state.session_id, assistant_message,
+                meta=chat_meta,
             )
         except Exception as exc:
             log.warning("assistant 消息入库失败（不影响对话）: {}", exc)
@@ -614,9 +644,16 @@ class AgentRuntime(LLMRecoveryMixin):
         for tool_call in tool_calls:
             self._raise_if_stop_requested(session_state)
             session_state.tool_iterations += 1
-            if session_state.tool_iterations > self.max_tool_iterations:
+            # 偏差③修复：spec.limits.max_tool_iterations 主路径消费
+            limits = self._spec_limits(session_state)
+            effective_max_tool_iterations = (
+                int(limits.max_tool_iterations)
+                if limits is not None and getattr(limits, "max_tool_iterations", None)
+                else self.max_tool_iterations
+            )
+            if session_state.tool_iterations > effective_max_tool_iterations:
                 raise RuntimeError(
-                    f"Agent exceeded max tool iterations ({self.max_tool_iterations})"
+                    f"Agent exceeded max tool iterations ({effective_max_tool_iterations})"
                 )
 
             signature = self._tool_call_signature(tool_call)

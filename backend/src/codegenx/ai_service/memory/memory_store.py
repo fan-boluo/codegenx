@@ -135,9 +135,9 @@ async def upsert_hot_slot(
                 "INSERT INTO agent_memory "
                 "(app_id, user_id, memory_id, memory_layer, memory_type, subject, slot_key, "
                 " active_slot, summary, content, token_cost, source_type, confidence, status, "
-                " session_id, source_msg_ids, task_id, vector_synced_at) "
+                " session_id, source_msg_ids, task_id, source_agent, vector_synced_at) "
                 "VALUES (:a, :u, :mid, 1, :t, :subj, :slot, 1, :sum, :content, :tc, :src, :conf, 1, "
-                " :sid, :msgs, :task, NOW())"
+                " :sid, :msgs, :task, :sagent, NOW())"
             ),
             _insert_params(entry),
         )
@@ -164,9 +164,9 @@ async def append_warm(app_id: str, user_id: str, entry: MemoryEntry) -> int:
                 "INSERT INTO agent_memory "
                 "(app_id, user_id, memory_id, memory_layer, memory_type, subject, slot_key, "
                 " active_slot, summary, content, token_cost, source_type, confidence, status, "
-                " session_id, source_msg_ids, task_id, vector_synced_at) "
+                " session_id, source_msg_ids, task_id, source_agent, vector_synced_at) "
                 "VALUES (:a, :u, :mid, 2, :t, :subj, :slot, 1, :sum, :content, :tc, :src, :conf, 1, "
-                " :sid, :msgs, :task, NULL)"
+                " :sid, :msgs, :task, :sagent, NULL)"
             ),
             _insert_params(entry),
         )
@@ -187,6 +187,7 @@ def _insert_params(entry: MemoryEntry) -> dict:
             if entry.source_msg_ids else None
         ),
         "task": entry.task_id,
+        "sagent": str(entry.source_agent or "") or None,
     }
 
 

@@ -171,10 +171,22 @@ async def _periodic_maintenance_loop(*, interval_seconds: int) -> None:
 
             # 2) DB history retention cleanup
             result = await service.cleanup_history(retention_days=7, dry_run=False)
-            log.info(
-                "Periodic maintenance: chat_messages_deleted={} DB_cleanup_status={} DB_deletedRows={}",
-                chat_deleted, result.status, result.deleted_rows,
-            )
+            if result.status == "success":
+                log.info(
+                    "Periodic maintenance: chat_messages_deleted={} DB_cleanup_status={} DB_deletedRows={}",
+                    chat_deleted, result.status, result.deleted_rows,
+                )
+            else:
+                # F-3 修复：partial 时必须带失败表名与原因，否则只看到 partial 无从排查
+                failed = [
+                    "{}: {}".format(r.table_name, r.error_message)
+                    for r in (result.table_results or [])
+                    if r.status == "error"
+                ]
+                log.warning(
+                    "Periodic maintenance: chat_messages_deleted={} DB_cleanup_status={} DB_deletedRows={} failed_tables=[{}]",
+                    chat_deleted, result.status, result.deleted_rows, "; ".join(failed),
+                )
 
             # 3) Alert streak stale-entry cleanup
             #    In a full implementation, the set of active session IDs would

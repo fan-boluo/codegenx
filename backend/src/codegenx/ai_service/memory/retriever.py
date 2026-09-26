@@ -124,8 +124,9 @@ async def search_warm(app_id: str, user_id: str, query: str) -> list[MemoryEntry
             log.error("warm 关键词通道失败:{}", exc)
             return []
 
-    await _vector_channel()
-    keyword_entries = await _keyword_channel()
+    # F-1 修复：双通道 gather 并行（原串行——向量通道的 embedding 网络往返完成后
+    # 才开始关键词通道，冷启动轻松超 warm_load_timeout_ms，实测 3/3 全超时零注入）
+    _, keyword_entries = await asyncio.gather(_vector_channel(), _keyword_channel())
 
     # ── 合并去重（向量分优先保留）+ 回表（§5.1：MySQL 侧再过滤 status=1）───────
     merged: dict[int, tuple[MemoryEntry, float]] = {e.id: (e, _KEYWORD_FALLBACK_SCORE) for e in keyword_entries}

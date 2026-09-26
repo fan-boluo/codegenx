@@ -337,6 +337,8 @@ class MemoryScheduler:
         app_id = str(task.get("app_id") or "")
         session_id = str(task.get("session_id") or "")
         user_id = str(task.get("user_id") or "")
+        # 偏差①（P4 收尾）：任务携带会话归属智能体，供写门控与溯源
+        agent_name = str(((task.get("payload") or {}).get("agent_name")) or "")
         if not app_id or not session_id:
             log.warning("[warm_extract] 任务缺少 app_id/session_id，跳过: #{}", task["id"])
             return 0, None
@@ -348,18 +350,36 @@ class MemoryScheduler:
             await self.tasks.reschedule(task["id"], delay_sec=60.0)
             return 0, None
         try:
-            return await self._warm_extract_locked(task, app_id, session_id, user_id)
+            return await self._warm_extract_locked(task, app_id, session_id, user_id, agent_name)
         finally:
             await locks.release(session_id, token)
 
+    def _memory_policy_for(self, agent_name: str):
+        """会话归属智能体的 MemoryPolicy（偏差①写门控）；无归属/未配置 → None=不设限。"""
+        if not agent_name:
+            return None
+        try:
+            from codegenx.ai_service.system_app import get_app
+
+            app = get_app()
+            if app.agents is None:
+                return None
+            spec = app.agents.get(agent_name)
+            return spec.memory if spec is not None else None
+        except Exception:  # noqa: BLE001 — 策略解析失败不设限（默认行为），不阻断提炼
+            return None
+
     async def _warm_extract_locked(
-        self, task: dict, app_id: str, session_id: str, user_id: str
+        self, task: dict, app_id: str, session_id: str, user_id: str,
+        agent_name: str = "",
     ) -> tuple[int, dict | None]:
         # 1. 水位增量读取（chat_message 表为源，按 seq 递增）
         from codegenx.ai_service.chat_message import get_chat_message_store
         from_seq = await self.tasks.get_watermark(session_id)
         records = await get_chat_message_store().read_since(session_id, after_seq=from_seq)
         if not records:
+            # BUG-2 修复：no-op 也要清账，否则 pending 永不清零 → patrol 每分钟重复补投
+            await self.tasks.clear_pending(session_id)
             return 0, None
 
         # 2. 截到「以 assistant 收尾」的完整前缀；超过单次上限的留待下次
@@ -368,13 +388,25 @@ class MemoryScheduler:
             if rec[1].get("role") == "assistant":
                 consumed = records[: i + 1]
         if not consumed:
-            return 0, None  # 末尾没有完整轮次
+            # 末尾没有完整轮次：清账退场；后续轮次完成时漏斗会重新累加并投递
+            await self.tasks.clear_pending(session_id)
+            return 0, None
+
+        # 偏差①（P4 收尾）写门控：纯执行类智能体（spec.memory.write_enabled=False）
+        # 不产生记忆——跳过提取与落库，水位直接排干积压防重复补投
+        policy = self._memory_policy_for(agent_name)
+        if policy is not None and not policy.write_enabled:
+            await self.tasks.advance_watermark(session_id, app_id, user_id, int(records[-1][0]))
+            log.debug("[warm_extract] 会话 {} 写门控关闭（agent={}），跳过提炼", session_id, agent_name)
+            return 0, {"skipped": "write_disabled", "agent_name": agent_name}
+
         if len(consumed) > _MAX_MESSAGES_PER_EXTRACT:
             consumed = consumed[-_MAX_MESSAGES_PER_EXTRACT:]
             # 截断后必须仍以 assistant 收尾，否则本轮只读不推进
             while consumed and consumed[-1][1].get("role") != "assistant":
                 consumed.pop()
             if not consumed:
+                await self.tasks.clear_pending(session_id)
                 return 0, None
 
         # 3. 小模型提取候选记忆
@@ -391,6 +423,10 @@ class MemoryScheduler:
 
         # 4. 准入校验 + 分层落库（MySQL 真源先行，warm 向量层批量跟进）
         #    溯源（P2-7 ②）：消费区间内全部消息 uid 落 agent_memory.source_msg_ids
+        #    偏差①：write_types 过滤允许提炼的类型；source_agent 落库溯源
+        if candidates and policy is not None and policy.write_types:
+            allowed = {str(t).strip() for t in policy.write_types if str(t).strip()}
+            candidates = [c for c in candidates if str(c.get("memory_type") or "") in allowed]
         written_ids: list[str] = []
         if candidates:
             source_uids = [
@@ -399,6 +435,7 @@ class MemoryScheduler:
             written_ids = await write_memories(
                 user_id, app_id, session_id, candidates, self._invoke_llm,
                 source_msg_ids=source_uids or None, task_id=int(task["id"]),
+                source_agent=agent_name or None,
             )
             if written_ids:
                 log.info("[warm_extract] 会话 {} 写入 {} 条记忆", session_id, len(written_ids))
@@ -415,6 +452,7 @@ class MemoryScheduler:
             "consumed_seq": consumed_seq,
             "source_msg_count": sum(1 for _, m in consumed if m.get("message_uid")),
             "memory_ids": written_ids,
+            "agent_name": agent_name or None,
         }
         return len(written_ids), payload
 

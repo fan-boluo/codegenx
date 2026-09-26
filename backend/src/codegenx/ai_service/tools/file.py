@@ -741,7 +741,8 @@ class ListDirectoryTool(BaseTool):
             return ToolResult(
                 success=True,
                 data=f"目录为空: {absolute_path}",
-                render=f"{self.name} 路径解析失败：{absolute_path.name}"
+                # BUG-3 修复：原文案复制粘贴错误，把「目录为空」渲染成了「路径解析失败」
+                render=f"{self.name} 目录为空：{absolute_path}"
             )
 
         header = f"Contents of {absolute_path} ({dir_count} dirs, {file_count} files)"
