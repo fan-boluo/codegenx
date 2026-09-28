@@ -1,4 +1,4 @@
-"""CodeGenX 单体应用入口：合并原 api-gateway / user-service / app-service / ai-service。
+"""CodeGenX 单体应用入口
 
 启动：uv run python -m codegenx（或控制台命令 codegenx），默认 0.0.0.0:8456，基础路径 /api。
 """

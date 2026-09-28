@@ -50,12 +50,6 @@ class Settings(BaseSettings):
 
     cors_allow_origin_patterns: str = "*"
     log_level: str = "INFO"
-    # 会从.env里面直接读取覆盖吗
-    ai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode"
-    ai_api_key: str = ""
-    ai_model: str = "qwen-plus"
-    ai_chat_completions_path: str = "/v1/chat/completions"
-    ai_timeout_seconds: int = 120
 
     # JWT configuration
     jwt_secret: str = "rainbow"
