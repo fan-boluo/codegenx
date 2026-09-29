@@ -449,7 +449,7 @@ def on(
             condition=condition,
             once=once,
         )
-
+    log.info(f"Hook 注册 event：{event} ,name:{name}")
     return decorator
 
 

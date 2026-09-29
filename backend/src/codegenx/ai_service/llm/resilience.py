@@ -29,8 +29,7 @@ from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
 from codegenx.ai_service.utils.config import config
 
-# 场景常量（config.model_roles 的键）
-SCENARIO_AGENT = "agent_main"
+# 场景常量（config.model_roles 的键_AGENT = "agent_main"
 SCENARIO_COMPACT = "compact"
 SCENARIO_SUMMARY = "summary"
 SCENARIO_MEMORY = "memory"

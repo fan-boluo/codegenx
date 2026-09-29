@@ -262,4 +262,5 @@ def get_llm(model_name: Optional[str] = None) -> AsyncLLMClient:
     AsyncLLMClient 本身无状态（模型名 + 共享底层客户端），可安全并发使用；
     各调用方应通过本入口获取，禁止再随手 `AsyncLLMClient()` 即用即弃。
     """
+    log.debug(f"get_llm model_name: {model_name}")
     return AsyncLLMClient(model_name)

@@ -36,23 +36,23 @@ from codegenx.ai_service.component import (  # noqa: F401
 )
 from codegenx.ai_service.component import SystemApp as ComponentSystemApp
 
-if TYPE_CHECKING:
-    # 仅供类型标注；运行期不产生导入依赖
-    from codegenx.ai_service.agent.agent_registry import AgentRegistry
-    from codegenx.ai_service.agent.runtime import AgentRuntime
-    from codegenx.ai_service.agent.tool_handler import ToolRegistry
-    from codegenx.ai_service.chat_message.store import ChatMessageStore
-    from codegenx.ai_service.compact.compact import CompactionService
-    from codegenx.ai_service.compact.session_summary import SessionSummaryService
-    from codegenx.ai_service.context.context_service import ContextService
-    from codegenx.ai_service.llm.facade import LLMFacade
-    from codegenx.ai_service.memory.memory_manager import MemoryFacade
-    from codegenx.ai_service.monitor.maintenance_service import MonitorMaintenanceService
-    from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline
-    from codegenx.ai_service.schedule.memory import MemoryScheduler
-    from codegenx.ai_service.session.manager import SessionPersistence
-    from codegenx.ai_service.skill.skill_loader import SkillManager
-    from codegenx.ai_service.task.task_manager import TaskBoardService
+# if TYPE_CHECKING:
+#     # 仅供类型标注；运行期不产生导入依赖
+#     from codegenx.ai_service.agent.agent_registry import AgentRegistry
+#     from codegenx.ai_service.agent.runtime import AgentRuntime
+#     from codegenx.ai_service.agent.tool_handler import ToolRegistry
+#     from codegenx.ai_service.chat_message.store import ChatMessageStore
+#     from codegenx.ai_service.compact.compact import CompactionService
+#     from codegenx.ai_service.compact.session_summary import SessionSummaryService
+#     from codegenx.ai_service.context.context_service import ContextService
+#     from codegenx.ai_service.llm.facade import LLMFacade
+#     from codegenx.ai_service.memory.memory_manager import MemoryFacade
+#     from codegenx.ai_service.monitor.maintenance_service import MonitorMaintenanceService
+#     from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline
+#     from codegenx.ai_service.schedule.memory import MemoryScheduler
+#     from codegenx.ai_service.session.manager import SessionPersistence
+#     from codegenx.ai_service.skill.skill_loader import SkillManager
+#     from codegenx.ai_service.task.task_manager import TaskBoardService
 
 
 class SystemApp(ComponentSystemApp):

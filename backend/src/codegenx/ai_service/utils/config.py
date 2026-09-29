@@ -372,6 +372,7 @@ class CompactConfig(Base):
         default=3000,
         validation_alias=AliasChoices("maxToolResultTokens", "max_tool_result_tokens"),
     )
+    model_name: str | None = Field(default=None)
 
 class ModelsConfig(Base):
     name: str = Field(default="qwen3.8-flash")

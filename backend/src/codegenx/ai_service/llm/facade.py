@@ -45,6 +45,7 @@ class LLMFacade(BaseComponent):
                 log.info("LLM 默认模型客户端已预热: {}", model)
 
     def circuit_snapshot(self) -> dict[str, str]:
+        """ 熔断器快照 """
         from codegenx.ai_service.llm.resilience import circuit_snapshot
 
         return circuit_snapshot()

@@ -10,9 +10,7 @@ import traceback
 from datetime import datetime
 from typing import Any, AsyncGenerator
 
-from sqlalchemy.ext.asyncio import result
-
-from codegenx.ai_service.agent.agent_schema import     AgentEvent,AgentState,AgentEventType
+from codegenx.ai_service.agent.agent_schema import  AgentEvent,AgentState,AgentEventType
 from codegenx.ai_service.agent.runtime_schema import (
     RuntimeSessionState,
     TurnStoppedError, ActivateTurn,
@@ -43,8 +41,6 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
     def __init__(
         self,
         system_app=None,
-        tool_executor: ToolExecutor | None = None,
-        message_bus: MessageBus | None = None,
     ):
         # 容器约定首参：register 以 component(system_app) 构造实例（BaseComponent 规范）
         BaseComponent.__init__(self, system_app)
@@ -55,9 +51,9 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
         self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
         self.max_steps = self.agent_config.max_steps
 
-        self.message_bus = message_bus or MessageBus()
+        self.message_bus = MessageBus()
         self.tool_registry = get_tool_registry()
-        self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
+        self.tool_executor = ToolExecutor(self.tool_registry)
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
         # hook 监听器随组件模块 import 链完成 @on 收集，由 initialize_components() 末尾冻结（docs/Hook设计.md §6）
@@ -851,55 +847,6 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
                 except Exception:
                     event.data["description"] = render_raw or tc.get("name", "")
 
-
-    # def _render_tool_front(self,tc:dict):
-    #     """返回工具执行结果的人类可读渲染字符串，供前端展示。"""
-    #     tool_name = tc.get('name')
-    #     content = tc.get('content', '')
-    #
-    #     if tool_name == "read_file":
-    #         path = tc.get("path", "")
-    #         filename = path.split("/")[-1] if path else "unknown"
-    #         return f"文件: {filename}"
-    #
-    #     elif tool_name == "write_file":
-    #         path = tc.get("path", "")
-    #         filename = path.split("/")[-1] if path else "unknown"
-    #         return f"文件: {filename}"
-    #
-    #     elif tool_name == "task_create":
-    #         try:
-    #             task_dict = ast.literal_eval(content)
-    #             return json.dumps({"action": "create", "task": task_dict}, ensure_ascii=False)
-    #         except Exception:
-    #             return ""
-    #
-    #     elif tool_name == "task_update":
-    #         try:
-    #             task_dict = ast.literal_eval(content)
-    #             return json.dumps({"action": "update", "task": task_dict}, ensure_ascii=False)
-    #         except Exception:
-    #             return ""
-    #
-    #     return ""
-
-
-
-
-
-    # async def _publish_request_event(
-    #     self, session_state: RuntimeSessionState, event: AgentEvent
-    # ) -> None:
-    #     await self.message_bus.publish_outbound(
-    #         RuntimeTurnEvent(
-    #             session_id=session_state.session_id,
-    #             request_id=session_state.request_id,
-    #             turn_id=session_state.activate_turn.active_step_id,
-    #             event_type=event.event_type,
-    #             state=event.state.value,
-    #             data=event.data,
-    #         )
-    #     )
     async def _publish_runtime_event(
         self,
         session_state: RuntimeSessionState,
