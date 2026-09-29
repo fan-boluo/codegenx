@@ -164,6 +164,18 @@ def test_swap_out_not_repeated():
 
 # ── swap-out 恢复（runtime） ────────────────────────────────────────────────
 
+def _runtime_without_container() -> AgentRuntime:
+    """构造不依赖组件容器的 AgentRuntime（打桩工具注册表，绕过 get_app()）。"""
+    import codegenx.ai_service.agent.runtime as runtime_mod
+
+    orig_get_registry = runtime_mod.get_tool_registry
+    runtime_mod.get_tool_registry = lambda: _registry_with()
+    try:
+        return AgentRuntime()
+    finally:
+        runtime_mod.get_tool_registry = orig_get_registry
+
+
 def test_restore_swapped_session_reloads_snapshot(monkeypatch):
     """swapped_out 会话下次请求到来时从快照重载 chat_messages。"""
     import codegenx.ai_service.system_app as system_app_mod
@@ -180,7 +192,7 @@ def test_restore_swapped_session_reloads_snapshot(monkeypatch):
 
     monkeypatch.setattr(system_app_mod, "get_app", lambda: _StubApp())
 
-    rt = AgentRuntime()
+    rt = _runtime_without_container()
     request = SimpleNamespace(user_id="u1", app_id="a1", session_id="s1")
     session = RuntimeSessionState(session_id="s1", request=request)
     session.swapped_out = True
@@ -194,7 +206,7 @@ def test_restore_swapped_session_reloads_snapshot(monkeypatch):
 
 def test_restore_skips_non_swapped_session():
     """非 swap 会话：恢复逻辑为空操作，不触发任何 IO。"""
-    rt = AgentRuntime()
+    rt = _runtime_without_container()
     request = SimpleNamespace(user_id="u1", app_id="a1", session_id="s1")
     session = RuntimeSessionState(session_id="s1", request=request)
     session.context_manager = SimpleNamespace(chat_messages=[{"role": "user", "content": "x"}])

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from threading import Lock
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db.mysql.session import session_maker
+from codegenx.ai_service.component import BaseComponent, ComponentType
+from codegenx.ai_service.system_app import SystemApp
 from codegenx.ai_service.monitor.alert_evaluator import get_alert_streak_tracker
 from codegenx.ai_service.monitor.monitor_query_service import MonitorQueryService, get_monitor_query_service
 from shared import log
@@ -17,21 +18,24 @@ CHAT_HISTORY_RETENTION_DAYS = 3
 _CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS = 86400  # 24 hours
 
 
-_MAINTENANCE_SERVICE_SINGLETON: "MonitorMaintenanceService | None" = None
-_MAINTENANCE_SERVICE_LOCK = Lock()
-
 # ── periodic task holders ──────────────────────────────────────────────────
 _CLEANUP_TASK: asyncio.Task | None = None
 _CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes
 
 
-class MonitorMaintenanceService:
+class MonitorMaintenanceService(BaseComponent):
+    """监控周期维护（DB 历史清理/告警状态回收），后台任务生命周期由组件钩子管理。"""
+
+    name = ComponentType.MONITOR_MAINTENANCE
+
     def __init__(
         self,
+        system_app: SystemApp | None = None,
         *,
         db_session_factory: async_sessionmaker[AsyncSession] | None = None,
         query_service: MonitorQueryService | None = None,
     ) -> None:
+        BaseComponent.__init__(self, system_app)
         self._db_session_factory = db_session_factory or session_maker
         self._query_service = query_service or get_monitor_query_service()
         self._retention_targets = [
@@ -40,6 +44,17 @@ class MonitorMaintenanceService:
             ("session_metrics", "updated_at"),
             ("monitor_alerts", "triggered_at"),
         ]
+
+    def init_app(self, system_app: SystemApp) -> None:
+        self.system_app = system_app
+
+    async def async_before_start(self) -> None:
+        """启动周期维护后台任务。"""
+        await self.start_periodic_maintenance()
+
+    async def async_before_stop(self) -> None:
+        """停止周期维护后台任务。"""
+        await self.stop_periodic_maintenance()
 
     # ── chat message DB cleanup ───────────────────────────────────────────
 
@@ -138,14 +153,15 @@ class MonitorMaintenanceService:
 
 
 def get_monitor_maintenance_service() -> MonitorMaintenanceService:
-    global _MAINTENANCE_SERVICE_SINGLETON
-    if _MAINTENANCE_SERVICE_SINGLETON is not None:
-        return _MAINTENANCE_SERVICE_SINGLETON
+    """取监控周期维护组件（经全局容器查表；容器未初始化时 fail fast）。"""
+    from codegenx.ai_service.system_app import get_app
 
-    with _MAINTENANCE_SERVICE_LOCK:
-        if _MAINTENANCE_SERVICE_SINGLETON is None:
-            _MAINTENANCE_SERVICE_SINGLETON = MonitorMaintenanceService()
-    return _MAINTENANCE_SERVICE_SINGLETON
+    return MonitorMaintenanceService.get_instance(get_app())
+
+
+def initialize_monitor_maintenance(system_app: SystemApp) -> MonitorMaintenanceService:
+    """注册监控周期维护组件（system_app.initialize_components 调用）。"""
+    return system_app.register(MonitorMaintenanceService)
 
 
 # ── internal loop ──────────────────────────────────────────────────────────

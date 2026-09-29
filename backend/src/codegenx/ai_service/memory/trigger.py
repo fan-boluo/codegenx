@@ -26,6 +26,7 @@ import re
 import time
 
 from shared import log
+from codegenx.ai_service.hook import HookContext, HookEvent, on
 from codegenx.ai_service.memory import metrics
 
 

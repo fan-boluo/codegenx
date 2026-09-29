@@ -26,6 +26,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from db.mysql.session import session_maker
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from shared import log
 
 # 超长消息外置阈值（字节）：普通消息直存，超限写 blob 防 MySQL 行膨胀
@@ -40,8 +41,13 @@ def _blob_path(user_id, app_id, session_id: str, seq: int) -> Path:
     )
 
 
-class ChatMessageStore:
-    """chat_message 表 DAO（单例，见 get_chat_message_store）。"""
+class ChatMessageStore(BaseComponent):
+    """chat_message 表 DAO（进程级组件，见 get_chat_message_store）。"""
+
+    name = ComponentType.CHAT_MESSAGE_STORE
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     # === 写入 ===
 
@@ -274,14 +280,15 @@ def _parse_content(raw) -> dict | None:
         return {"payload_ref": str(ref), "content_missing": True, "role": "user", "content": ""}
 
 
-# === 全局单例 ===
-
-_global_chat_message_store: ChatMessageStore | None = None
-
+# === 组件访问 ===
 
 def get_chat_message_store() -> ChatMessageStore:
-    """全局聊天消息存储单例（在线写入与离线提取/清理共用）。"""
-    global _global_chat_message_store
-    if _global_chat_message_store is None:
-        _global_chat_message_store = ChatMessageStore()
-    return _global_chat_message_store
+    """取聊天消息存储组件（经容器查表；须在 initialize_components 注册之后）。"""
+    from codegenx.ai_service.system_app import get_app
+
+    return ChatMessageStore.get_instance(get_app())
+
+
+def initialize_chat_messages(system_app) -> ChatMessageStore:
+    """注册聊天消息存储组件（system_app.initialize_components 调用）。"""
+    return system_app.register(ChatMessageStore)

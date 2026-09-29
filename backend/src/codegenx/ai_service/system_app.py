@@ -1,6 +1,6 @@
 """SystemApp —— 全局组件容器（组合根）。
 
-启动时装配全部进程级组件并管理生命周期；项目任意处通过 get_app() 获取。
+启动时注册全部进程级组件并广播生命周期；项目任意处通过 get_app() 获取。
 分层原则与判别法见 docs/SystemApp架构设计.md §2：
 
 ┌─────────────────────────────────────────────────────────┐
@@ -12,239 +12,152 @@
 │ TurnState（请求级，已有 ActivateTurn）                      │
 └─────────────────────────────────────────────────────────┘
 
-约束：只有本模块允许在模块级 import 具体实现类；业务代码一律
-`get_app().xxx` 访问（实现类 import 请延迟到方法内部以避免环）。
+框架（LifeCycle/BaseComponent/组件注册表）在 component.py；本模块是组合根：
+- initialize_components() 决定注册清单与顺序（顺序即依赖），末尾冻结 hook 注册表；
+- 类型化访问器（get_app().xxx）按 ComponentType 惰性查表，业务代码零感知组件化。
+
+导入约束（防循环）：组件模块在模块级只允许 import 本模块的框架再导出
+（SystemApp/BaseComponent/ComponentType）或 component.py 框架本体；本模块
+**只在 initialize_components()/访问器内部延迟 import 组件实现类**。
 """
 from __future__ import annotations
 
-import asyncio
 from contextlib import suppress
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from shared import log
 
-# 组合根特权：仅本模块在模块级 import 具体实现类（业务代码一律 get_app().xxx）。
-# 被引用实现均不得在模块级反向 import 本模块，否则成环。
-from codegenx.ai_service.compact.compact import CompactionService
-from codegenx.ai_service.compact.session_summary import SessionSummaryService
-from codegenx.ai_service.context.context_service import ContextService
-from codegenx.ai_service.memory.memory_manager import MemoryFacade
-from codegenx.ai_service.agent.agent_registry import AgentRegistry
-from codegenx.ai_service.session.manager import SessionPersistence
-from codegenx.ai_service.skill.skill_loader import SkillManager
-from codegenx.ai_service.task.task_manager import TaskBoardService
+# 框架层再导出：组件模块统一 `from codegenx.ai_service.system_app import ...` 或
+# 直接 `from codegenx.ai_service.component import ...`，两者等价。
+from codegenx.ai_service.component import (  # noqa: F401
+    BaseComponent,
+    ComponentType,
+    LifeCycle,
+)
+from codegenx.ai_service.component import SystemApp as ComponentSystemApp
 
 if TYPE_CHECKING:
     # 仅供类型标注；运行期不产生导入依赖
+    from codegenx.ai_service.agent.agent_registry import AgentRegistry
     from codegenx.ai_service.agent.runtime import AgentRuntime
     from codegenx.ai_service.agent.tool_handler import ToolRegistry
     from codegenx.ai_service.chat_message.store import ChatMessageStore
-    from codegenx.ai_service.hook.core import HookManager
-    from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline
+    from codegenx.ai_service.compact.compact import CompactionService
+    from codegenx.ai_service.compact.session_summary import SessionSummaryService
+    from codegenx.ai_service.context.context_service import ContextService
+    from codegenx.ai_service.llm.facade import LLMFacade
+    from codegenx.ai_service.memory.memory_manager import MemoryFacade
     from codegenx.ai_service.monitor.maintenance_service import MonitorMaintenanceService
+    from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline
     from codegenx.ai_service.schedule.memory import MemoryScheduler
-    from codegenx.ai_service.utils.config import Config
+    from codegenx.ai_service.session.manager import SessionPersistence
+    from codegenx.ai_service.skill.skill_loader import SkillManager
+    from codegenx.ai_service.task.task_manager import TaskBoardService
 
 
-# ── LLM 门面：llm/ 调用层的生命周期与观测（不复制状态）────────────────────────
+class SystemApp(ComponentSystemApp):
+    """进程级容器：持有全部组件并提供类型化访问器。
 
-
-class LLMFacade:
-    """LLM 调用层门面。
-
-    调用面保持 llm/ 模块函数（resilient_invoke / get_llm），本门面只负责：
-      - startup：可选预热默认模型客户端（构造连接池，免首次请求冷启动）；
-      - shutdown：统一释放 provider 级共享连接池（close_llm_clients）；
-      - 观测聚合：全部熔断器状态快照（管理端点用）。
+    组件生命周期钩子实现在各自模块内（BaseComponent 子类），本类只负责
+    装配与查表转发；未注册即访问会抛 ValueError（fail fast，宁可显式失败）。
     """
 
-    async def preheat_default_model(self) -> None:
-        """预热默认模型客户端（仅构造，不发起网络请求；失败不阻断启动）。"""
-        with suppress(Exception):
-            from codegenx.ai_service.llm.async_client import get_llm
-            from codegenx.ai_service.utils.config import config as app_config
+    def __init__(self) -> None:
+        super().__init__()
+        self._components_ready: bool = False
+        self._started: bool = False
 
-            model = app_config.get_default_agent().resolved_model_name
-            if model:
-                get_llm(model)
-                log.info("LLM 默认模型客户端已预热: {}", model)
+    # ── 类型化访问器：惰性 import + 按组件名查表（注册清单见 initialize_components）──
 
-    async def shutdown(self) -> None:
-        from codegenx.ai_service.llm.client_registry import close_llm_clients
+    @property
+    def llm(self) -> "LLMFacade":
+        from codegenx.ai_service.llm.facade import LLMFacade
 
-        await close_llm_clients()
+        return self.get_component(ComponentType.LLM_FACADE, LLMFacade)
 
-    def circuit_snapshot(self) -> dict[str, str]:
-        from codegenx.ai_service.llm.resilience import circuit_snapshot
+    @property
+    def tools(self) -> "ToolRegistry":
+        from codegenx.ai_service.agent.tool_handler import ToolRegistry
 
-        return circuit_snapshot()
+        return self.get_component(ComponentType.TOOL_REGISTRY, ToolRegistry)
 
+    @property
+    def skills(self) -> "SkillManager":
+        from codegenx.ai_service.skill.skill_loader import SkillManager
 
-# ── SystemApp 容器 ───────────────────────────────────────────────────────────
+        return self.get_component(ComponentType.SKILL_MANAGER, SkillManager)
 
+    @property
+    def agents(self) -> "AgentRegistry":
+        from codegenx.ai_service.agent.agent_registry import AgentRegistry
 
-@dataclass
-class SystemApp:
-    """进程级全局容器：组件注册、启动装配、关闭回收。"""
+        return self.get_component(ComponentType.AGENT_REGISTRY, AgentRegistry)
 
-    # ── 配置与总线 ────────────────────────────────────────────
-    config: "Config"                                  # 引用 utils/config.py 的单例（不复制）
-    hooks: "HookManager"                              # hook/core.py 单例
+    @property
+    def context(self) -> "ContextService":
+        from codegenx.ai_service.context.context_service import ContextService
 
-    # ── LLM ──────────────────────────────────────────────────
-    llm: LLMFacade = field(default_factory=LLMFacade)  # 生命周期/观测门面，调用面仍是模块函数
+        return self.get_component(ComponentType.CONTEXT_SERVICE, ContextService)
 
-    # ── 注册表 ────────────────────────────────────────────────
-    tools: "ToolRegistry | None" = None               # 启动扫描一次的 ToolRegistry 单例
-    skills: "SkillManager" = field(default_factory=SkillManager)  # 迁自 SessionContext 类属性
-    # P4 §10：多智能体规格（不配置=仅默认 spec，现行为不变）；startup 时按 config.agents 重装+校验
-    agents: "AgentRegistry" = field(default_factory=AgentRegistry)
+    @property
+    def session_io(self) -> "SessionPersistence":
+        from codegenx.ai_service.session.manager import SessionPersistence
 
-    # ── 无状态服务（ids 作参数；纯 Python 无外部依赖，default_factory 装配）────
-    context: "ContextService" = field(default_factory=ContextService)  # workspace 元数据/骨架/组装
-    session_io: "SessionPersistence" = field(default_factory=SessionPersistence)
-    tasks: "TaskBoardService" = field(default_factory=TaskBoardService)
-    memory: "MemoryFacade" = field(default_factory=MemoryFacade)
-    summary: "SessionSummaryService" = field(default_factory=SessionSummaryService)
-    compaction: "CompactionService" = field(default_factory=CompactionService)
+        return self.get_component(ComponentType.SESSION_PERSISTENCE, SessionPersistence)
 
-    # ── 存储与后台任务 ────────────────────────────────────────
-    chat_messages: "ChatMessageStore | None" = None   # 收编 get_chat_message_store()
-    monitor: "MonitorPipeline | None" = None          # 收编 get_monitor_pipeline()
-    monitor_maintenance: "MonitorMaintenanceService | None" = None
-    memory_scheduler: "MemoryScheduler | None" = None
+    @property
+    def tasks(self) -> "TaskBoardService":
+        from codegenx.ai_service.task.task_manager import TaskBoardService
 
-    # ── 引擎 ─────────────────────────────────────────────────
-    runtime: "AgentRuntime | None" = None             # startup 时创建的全局引擎
+        return self.get_component(ComponentType.TASK_BOARD, TaskBoardService)
 
-    _started: bool = False
-    _startup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    @property
+    def memory(self) -> "MemoryFacade":
+        from codegenx.ai_service.memory.memory_manager import MemoryFacade
 
-    # ------------------------------------------------------------------ lifecycle
+        return self.get_component(ComponentType.MEMORY_MANAGER, MemoryFacade)
 
-    async def startup(self) -> None:
-        """启动七步（顺序即依赖）；幂等，重复调用直接返回。"""
-        async with self._startup_lock:
-            if self._started:
-                return
+    @property
+    def summary(self) -> "SessionSummaryService":
+        from codegenx.ai_service.compact.session_summary import SessionSummaryService
 
-            # 1. config 校验（agent/model 必填项），带病配置快速失败
-            self._validate_config()
+        return self.get_component(ComponentType.SESSION_SUMMARY, SessionSummaryService)
 
-            # 2. 冻结 hook 注册表：先显式导入全部带内置 @on 的模块，确保收集完整再冻结
-            #    （docs/Hook设计.md §6）。这些模块多为延迟导入，缺席会导致：
-            #    depends_on 校验失败（如 memory_turn_signal→persist_chat_snapshot），
-            #    或更糟——冻结后导入触发 RuntimeError、hook 静默丢失。
-            from codegenx.ai_service.agent import runtime as _hook_runtime  # noqa: F401
-            from codegenx.ai_service.guardrail import prompt_safety_input_guardrail as _hook_guardrail  # noqa: F401
-            from codegenx.ai_service.memory import trigger as _hook_memory_trigger  # noqa: F401
-            from codegenx.ai_service.monitor import monitor_pipeline as _hook_monitor  # noqa: F401
-            from codegenx.ai_service.tools import base as _hook_tools_base  # noqa: F401
-            self.hooks.load_and_freeze()
+    @property
+    def compaction(self) -> "CompactionService":
+        from codegenx.ai_service.compact.compact import CompactionService
 
-            # 3. 基础设施 warmup：qdrant 预热 + warm 库确保（失败降级不阻断主服务）
-            await self._startup_infra()
+        return self.get_component(ComponentType.COMPACTION, CompactionService)
 
-            # 4. 注册表装载：ToolRegistry 目录扫描一次、SkillRegistry 装载一次、
-            #    AgentRegistry 按 config.agents 装配并校验（P4 §10：fail fast 拒绝带病启动）
-            from codegenx.ai_service.agent.tool_handler import get_tool_registry
+    @property
+    def chat_messages(self) -> "ChatMessageStore":
+        from codegenx.ai_service.chat_message.store import ChatMessageStore
 
-            self.tools = get_tool_registry()
-            self.skills.load()
-            self.agents = AgentRegistry.from_config(self.config)
-            self.agents.validate_against(
-                tool_names={t.name for t in self.tools.tools},
-                skill_names={s.name for s in self.skills.all()},
-            )
+        return self.get_component(ComponentType.CHAT_MESSAGE_STORE, ChatMessageStore)
 
-            # 5. 服务装配：LLM 生命周期门面（预热默认模型客户端）
-            await self.llm.preheat_default_model()
+    @property
+    def monitor(self) -> "MonitorPipeline":
+        from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline
 
-            # 6. 引擎启动：session pool 清理循环 + dispatcher
-            from codegenx.ai_service.agent.runtime import AgentRuntime
+        return self.get_component(ComponentType.MONITOR_PIPELINE, MonitorPipeline)
 
-            self.runtime = AgentRuntime()
-            await self.runtime.start()
-            log.info("启动runtime完毕")
+    @property
+    def monitor_maintenance(self) -> "MonitorMaintenanceService":
+        from codegenx.ai_service.monitor.maintenance_service import MonitorMaintenanceService
 
-            # 7. 后台任务：monitor 周期维护 + 记忆离线任务 worker（失败降级不阻断）
-            from codegenx.ai_service.monitor.maintenance_service import (
-                get_monitor_maintenance_service,
-            )
-            from codegenx.ai_service.schedule.memory import get_memory_scheduler
+        return self.get_component(ComponentType.MONITOR_MAINTENANCE, MonitorMaintenanceService)
 
-            self.monitor_maintenance = get_monitor_maintenance_service()
-            await self.monitor_maintenance.start_periodic_maintenance()
-            with suppress(Exception):
-                self.memory_scheduler = get_memory_scheduler()
-                await self.memory_scheduler.startup()
+    @property
+    def memory_scheduler(self) -> "MemoryScheduler":
+        from codegenx.ai_service.schedule.memory import MemoryScheduler
 
-            self._started = True
-            log.info("SystemApp startup completed")
+        return self.get_component(ComponentType.MEMORY_SCHEDULER, MemoryScheduler)
 
-    async def shutdown(self) -> None:
-        """严格逆序关闭：后台任务 → runtime → LLM 连接池 → 基础设施连接池。"""
-        async with self._startup_lock:
-            if not self._started and self.runtime is None:
-                return
-            # 7← 后台任务：monitor 周期维护
-            if self.monitor_maintenance is not None:
-                with suppress(Exception):
-                    await self.monitor_maintenance.stop_periodic_maintenance()
-            # 7← 记忆离线任务 worker（宽限 10s，running 任务复位 pending）
-            if self.memory_scheduler is not None:
-                with suppress(Exception):
-                    await self.memory_scheduler.shutdown(grace=10.0)
-            # 6← 引擎：dispatcher + session pool
-            if self.runtime is not None:
-                with suppress(Exception):
-                    await self.runtime.stop()
-                self.runtime = None
-            # 5← LLM 共享连接池（自 main.py lifespan 移入；close_llm_clients 本身幂等）
-            with suppress(Exception):
-                await self.llm.shutdown()
-            # 3← 基础设施：redis / qdrant / mysql
-            await self._shutdown_infra()
-            self._started = False
-            log.info("SystemApp shutdown completed")
+    @property
+    def runtime(self) -> "AgentRuntime":
+        from codegenx.ai_service.agent.runtime import AgentRuntime
 
-    # ------------------------------------------------------------------ steps
-
-    def _validate_config(self) -> None:
-        """最小启动校验：默认智能体模型与模型表必须可用，否则拒绝带病启动。"""
-        default_agent = self.config.get_default_agent()
-        if not (default_agent.model or "").strip():
-            raise RuntimeError(
-                "config 校验失败：默认智能体 model 未配置（config.json agents[].model）"
-            )
-        if not self.config.models:
-            raise RuntimeError("config 校验失败：models 列表为空，无法路由任何模型")
-
-    async def _startup_infra(self) -> None:
-        """基础设施预热；qdrant/MySQL 暂不可用只降级记忆功能，不阻断主服务。"""
-        from db.qdrant.client import warm_up_qdrant_client
-        from codegenx.ai_service.memory.vector_store import ensure_warm_collection
-
-        with suppress(Exception):
-            await warm_up_qdrant_client()
-            await ensure_warm_collection()
-            log.info("warm_memories collection 已就绪")
-
-    async def _shutdown_infra(self) -> None:
-        """基础设施连接池关闭（redis / qdrant / mysql）。"""
-        with suppress(Exception):
-            from db.redis.redis_client import redis_client
-
-            await redis_client.aclose()
-        with suppress(Exception):
-            from db.qdrant.client import shutdown_qdrant_client
-
-            await shutdown_qdrant_client()
-        with suppress(Exception):
-            from db.mysql.session import shutdown_mysql_engine
-
-            await shutdown_mysql_engine()
+        return self.get_component(ComponentType.AGENT_RUNTIME, AgentRuntime)
 
 
 # ── 进程级单容器访问 ─────────────────────────────────────────────────────────
@@ -256,35 +169,123 @@ def get_app() -> SystemApp:
     """进程内任意处获取容器。未初始化时抛错（宁可 fail fast 也不静默兜底）。"""
     if _app is None:
         raise RuntimeError(
-            "SystemApp 未初始化：请在应用启动入口调用 init_app()/startup()"
+            "SystemApp 未初始化：请在应用启动入口调用 init_app()/start_app()"
         )
     return _app
 
 
-def initialize_components():
-    # 注册各类组件
-    pass
+def initialize_components(app: SystemApp) -> None:
+    """注册全部组件并冻结 hook 注册表（幂等；顺序即依赖，勿随意调整）。
+
+    每个组件模块提供 initialize_xxx(system_app) 完成构造+注册（DB-GPT 风格），
+    构造知识留在组件模块内。注册顺序 = 启动广播顺序：
+      llm → tools → skills → agents → context → session_io → tasks
+      → memory → summary → compaction → chat_messages → monitor
+      → monitor_maintenance → memory_scheduler → runtime
+    其中 AgentRuntime 构造即取 ToolRegistry，故必须排在 tools 之后。
+    """
+    if app._components_ready:
+        return
+
+    from codegenx.ai_service.llm.facade import initialize_llm
+    from codegenx.ai_service.agent.tool_handler import initialize_tools
+    from codegenx.ai_service.skill.skill_loader import initialize_skill
+    from codegenx.ai_service.agent.agent_registry import initialize_agents
+    from codegenx.ai_service.context.context_service import initialize_context
+    from codegenx.ai_service.session.manager import initialize_session_io
+    from codegenx.ai_service.task.task_manager import initialize_tasks
+    from codegenx.ai_service.memory.memory_manager import initialize_memory
+    from codegenx.ai_service.compact.session_summary import initialize_summary
+    from codegenx.ai_service.compact.compact import initialize_compaction
+    from codegenx.ai_service.chat_message.store import initialize_chat_messages
+    from codegenx.ai_service.monitor.monitor_pipeline import initialize_monitor
+    from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
+    from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
+    from codegenx.ai_service.agent.runtime import initialize_runtime
+
+    initialize_llm(app)
+    initialize_tools(app)
+    initialize_skill(app)
+    initialize_agents(app)
+    initialize_context(app)
+    initialize_session_io(app)
+    initialize_tasks(app)
+    initialize_memory(app)
+    initialize_summary(app)
+    initialize_compaction(app)
+    initialize_chat_messages(app)
+    initialize_monitor(app)
+    initialize_monitor_maintenance(app)
+    initialize_memory_scheduler(app)
+    initialize_runtime(app)
+
+    # hook 注册表冻结：@on 监听器随组件模块的 import 链（模块加载即注册）收集完毕，
+    # 此处统一校验/拓扑排序/冻结（docs/Hook设计.md §6）。
+    # 注意：新增监听器模块必须位于组件依赖图或应用 import 链上，否则收集不到。
+    from codegenx.ai_service.hook import hook_manager
+
+    hook_manager.load_and_freeze()
+
+    app._components_ready = True
+    log.info("SystemApp 组件装配完成：{} 个组件", len(app.components))
+
 
 def init_app(app: SystemApp | None = None) -> SystemApp:
-    """创建并安装容器（main.py 启动时调用；测试可传入自制实例）。"""
-    # 各类组件注册
-    initialize_components()
+    """同步装配（main.py lifespan 前段调用；测试可传入自制实例）：
 
-    #
-    app.on_init()
+    创建/安装全局容器 → 注册组件（含 hook 冻结）→ on_init/after_init/before_start。
+    异步启动（连接/后台任务/runtime）由 start_app() 在事件循环内完成。
+    """
+    global _app
+    if _app is None:
+        _app = app if app is not None else SystemApp()
+    initialize_components(_app)
+    _app.on_init()
+    _app.after_init()
+    _app.before_start()
+    return _app
 
-    app.after_init()
 
-    app.before_start()
-
-    # uvcorn start
-
+async def start_app(app: SystemApp | None = None) -> SystemApp:
+    """异步启动（需事件循环，lifespan 中调用）：async_on_init → async_before_start
+    → after_start → async_after_start。组件级失败语义由各组件钩子内部决定；
+    幂等：已启动的容器重复调用直接返回（防重复拉起后台任务）。"""
+    app = app or get_app()
+    if app._started:
+        return app
+    await app.async_on_init()
+    await app.async_before_start()
     app.after_start()
-
+    await app.async_after_start()
+    app._started = True
+    log.info("SystemApp startup completed")
     return app
 
-def stop_app(app:SystemApp | None = None):
+
+async def stop_app(app: SystemApp | None = None) -> None:
+    """逆序关闭（lifespan shutdown 调用）：组件 async_before_stop → before_stop
+    → 基础设施连接池收尾（redis/qdrant/mysql 为 db/ 模块级单例，不属于任何业务组件，
+    由容器统一兜底释放；自 main.py lifespan 收编，close 本身幂等）。"""
+    app = app or get_app()
+    if not app._started:
+        # 未成功启动过的容器无需收尾（lifespan 也只在成功 startup 后才调用 shutdown）
+        return
+    await app.async_before_stop()
     app.before_stop()
+    with suppress(Exception):
+        from db.redis.redis_client import redis_client
+
+        await redis_client.aclose()
+    with suppress(Exception):
+        from db.qdrant.client import shutdown_qdrant_client
+
+        await shutdown_qdrant_client()
+    with suppress(Exception):
+        from db.mysql.session import shutdown_mysql_engine
+
+        await shutdown_mysql_engine()
+    app._started = False
+    log.info("SystemApp shutdown completed")
 
 
 def reset_app() -> None:
@@ -294,8 +295,5 @@ def reset_app() -> None:
 
 
 def app_started() -> bool:
-    """容器是否已完成 startup（诊断/测试用）。"""
+    """容器是否已完成启动（诊断/测试用）。"""
     return _app is not None and _app._started
-
-
-

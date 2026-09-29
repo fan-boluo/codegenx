@@ -32,6 +32,7 @@ from typing import Any
 
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
 from codegenx.ai_service.llm.resilience import CircuitBreaker
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.compact.thresholds import (
     MAX_CONSECUTIVE_FAILURES,
     estimate_tokens,
@@ -286,7 +287,7 @@ def _default_compact_llm_fn(messages: list[dict]) -> Any:
     return resilient_invoke(SCENARIO_COMPACT, messages)
 
 
-class CompactionService:
+class CompactionService(BaseComponent):
     """无状态压缩服务（P2 服务化，原 CompactionEngine，docs/SystemApp架构设计.md §4.3）。
 
     - llm_fn 全局：默认走韧性层（resilient_invoke compact 场景链）；
@@ -294,6 +295,15 @@ class CompactionService:
       由 SessionContext.compact_breaker 持有，每次调用传入；
     - 会话摘要（Path A 快速通道）经 summary_loader 读取（app.summary.load(ids)）。
     """
+
+    name = ComponentType.COMPACTION
+
+    def __init__(self, system_app=None, llm_fn: Any = None) -> None:
+        BaseComponent.__init__(self, system_app)
+        self._llm_fn = llm_fn or _default_compact_llm_fn
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     # P1：复用韧性层通用三态熔断器（每会话一个，挡 Path B；阈值沿用 MAX_CONSECUTIVE_FAILURES）
     @staticmethod
@@ -306,9 +316,6 @@ class CompactionService:
             half_open_max_calls=2,       # 闭合判定需 ≥2 次探测采样，至少给 2 个名额
             half_open_success_rate=0.5,
         )
-
-    def __init__(self, llm_fn: Any = None) -> None:
-        self._llm_fn = llm_fn or _default_compact_llm_fn
 
     # ------------------------------------------------------------------ public
 
@@ -434,3 +441,8 @@ async def compact_conversation(
         tokens_before=estimate_tokens(messages),
         tokens_after=estimate_tokens(messages),
     )
+
+
+def initialize_compaction(system_app) -> CompactionService:
+    """注册压缩服务组件（system_app.initialize_components 调用）。"""
+    return system_app.register(CompactionService)

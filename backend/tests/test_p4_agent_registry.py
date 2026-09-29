@@ -25,7 +25,7 @@ def _spec(name: str, **kw) -> AgentSpec:
 
 
 def test_registry_get_falls_back_to_default():
-    reg = AgentRegistry([_spec("planner")])
+    reg = AgentRegistry(specs=[_spec("planner")])
     assert reg.get(None) is reg.default()
     assert reg.get("unknown_agent") is reg.default()  # 未知名回落 default（现行为）
     assert reg.get("PLANNER").name == "planner"       # 大小写不敏感
@@ -33,18 +33,18 @@ def test_registry_get_falls_back_to_default():
 
 def test_registry_duplicate_name_rejected():
     with pytest.raises(ValueError, match="重复"):
-        AgentRegistry([_spec("planner"), _spec("planner")])
+        AgentRegistry(specs=[_spec("planner"), _spec("planner")])
 
 
 def test_registry_validate_against_rejects_unknown_tool_and_skill():
-    reg = AgentRegistry([_spec("p", tools=["read_file"], skills=["ok-skill"])])
+    reg = AgentRegistry(specs=[_spec("p", tools=["read_file"], skills=["ok-skill"])])
     reg.validate_against({"read_file"}, {"ok-skill"})  # 通过
 
-    bad_tool = AgentRegistry([_spec("p", tools=["no_such_tool"])])
+    bad_tool = AgentRegistry(specs=[_spec("p", tools=["no_such_tool"])])
     with pytest.raises(ValueError, match="不存在的工具"):
         bad_tool.validate_against({"read_file"}, set())
 
-    bad_skill = AgentRegistry([_spec("p", skills=["no-such-skill"])])
+    bad_skill = AgentRegistry(specs=[_spec("p", skills=["no-such-skill"])])
     with pytest.raises(ValueError, match="不存在的 skill"):
         bad_skill.validate_against(set(), {"ok-skill"})
 

@@ -42,30 +42,30 @@ class PromptSafetyInputGuardrail:
             if pattern.search(text):
                 raise BusinessException(ErrorCode.FORBIDDEN_ERROR, "检测到恶意输入，请求被拒绝")
 
-    @on(HookEvent.ON_COMPLETE, name="output_safety_check", priority=10)
-    async def output_safety_check(self,ctx: "HookContext") -> "HookDecision | None":
-        """输出安全校验（on_complete 默认实现）：
-
-        对 turn 最终回复复用输入侧的敏感词/注入模式检测，
-        命中则 blocked，由触发方以安全提示替换最终回复。
-        """
-        text = str(ctx.data.get("final_output") or "")
-        if not text.strip():
-            return None
-        lowered = text.lower()
-        for word in self.SENSITIVE_WORDS:
-            if word.lower() in lowered:
-                return HookDecision.block("回复内容未通过安全校验（命中敏感词），已替换为安全提示")
-        for pattern in self.INJECTION_PATTERNS:
-            if pattern.search(text):
-                return HookDecision.block("回复内容未通过安全校验（疑似注入内容），已替换为安全提示")
-        return None
-
 
 def validate_prompt_safety(user_input: str) -> None:
     PromptSafetyInputGuardrail().validate(user_input)
 
 
 # ── Hook 监听器：输出安全校验接入事件总线（docs/Hook设计.md §4.2） ───────────
+# 注意：@on 装饰时注册裸函数对象，监听器必须是无 self 的模块级函数
 
 
+@on(HookEvent.ON_COMPLETE, name="output_safety_check", priority=10)
+async def output_safety_check(ctx: "HookContext") -> "HookDecision | None":
+    """输出安全校验（on_complete 默认实现）：
+
+    对 turn 最终回复复用输入侧的敏感词/注入模式检测，
+    命中则 blocked，由触发方以安全提示替换最终回复。
+    """
+    text = str(ctx.data.get("final_output") or "")
+    if not text.strip():
+        return None
+    lowered = text.lower()
+    for word in PromptSafetyInputGuardrail.SENSITIVE_WORDS:
+        if word.lower() in lowered:
+            return HookDecision.block("回复内容未通过安全校验（命中敏感词），已替换为安全提示")
+    for pattern in PromptSafetyInputGuardrail.INJECTION_PATTERNS:
+        if pattern.search(text):
+            return HookDecision.block("回复内容未通过安全校验（疑似注入内容），已替换为安全提示")
+    return None

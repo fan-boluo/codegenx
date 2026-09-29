@@ -20,6 +20,7 @@ from pathlib import Path
 
 from shared import log
 from shared.constants import get_session_dir
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.llm.resilience import SCENARIO_SUMMARY, resilient_invoke
 from codegenx.ai_service.utils.context_utils import rough_tokens
 from codegenx.ai_service.utils.config import config
@@ -123,7 +124,7 @@ class SummaryState:
         self.extract_task: asyncio.Task | None = None
 
 
-class SessionSummaryService:
+class SessionSummaryService(BaseComponent):
     """
     全局无状态会话摘要服务（P2 服务化，docs/SystemApp架构设计.md §4.3）。
 
@@ -132,6 +133,11 @@ class SessionSummaryService:
       2. CompactionService 压缩前调用 load(ids) 取最新摘要（Path A 快速通道）。
     阈值状态由调用方（SessionContext.summary_state: SummaryState）持有。
     """
+
+    name = ComponentType.SESSION_SUMMARY
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     # ── 对外接口 ──────────────────────────────────────────────────────────────
 
@@ -241,3 +247,8 @@ class SessionSummaryService:
             return current_notes if current_notes else ""
 
         return updated_notes.strip()
+
+
+def initialize_summary(system_app) -> SessionSummaryService:
+    """注册会话摘要服务组件（system_app.initialize_components 调用）。"""
+    return system_app.register(SessionSummaryService)

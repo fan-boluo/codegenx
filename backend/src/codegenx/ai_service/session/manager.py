@@ -14,6 +14,7 @@ import aiofiles
 
 from shared import log
 from shared.constants import get_current_session_dir, get_session_dir
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.hook import HookContext, HookEvent, on
 
 
@@ -23,7 +24,7 @@ _TURN_SNAPSHOT_PREFIX = "last_chat_snapshot_"
 _SESSION_INDEX_FILE = "session_index.json"
 
 
-class SessionPersistence:
+class SessionPersistence(BaseComponent):
     """纯落盘服务：聊天快照 / 工具日志 / 记忆日志 / turn 快照 / 会话索引。
 
     锁表说明：同会话的读写需串行（原实例级 asyncio.Lock 语义），
@@ -31,8 +32,15 @@ class SessionPersistence:
     属基础设施注册表（类比 SessionPool），不是会话业务状态。
     """
 
-    def __init__(self) -> None:
+    name = ComponentType.SESSION_PERSISTENCE
+
+    def __init__(self, system_app=None) -> None:
+        BaseComponent.__init__(self, system_app)
         self._locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
+
 
     def _lock(self, user_id: str, app_id: str, session_id: str) -> asyncio.Lock:
         key = (user_id, app_id, session_id)
@@ -204,3 +212,8 @@ async def persist_tool_log(ctx: "HookContext") -> None:
         )
     except Exception as exc:
         log.debug(f"Session log write failed for tool '{tool_name}': {exc}")
+
+
+def initialize_session_io(system_app) -> SessionPersistence:
+    """注册会话落盘服务组件（system_app.initialize_components 调用）。"""
+    return system_app.register(SessionPersistence)

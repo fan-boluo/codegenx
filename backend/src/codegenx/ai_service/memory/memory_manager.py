@@ -14,9 +14,11 @@ ids 进签名（user_id=/app_id=/session_id=），内部模块函数不动。
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.memory.trigger import process_session_end
+from codegenx.ai_service.system_app import SystemApp
 from shared import log
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.memory import metrics
@@ -35,10 +37,22 @@ MEMORY_USAGE_RULES = """\
 
 class MemoryFacade(BaseComponent):
     """全局只读记忆门面（hot/warm 仍按 app+user 维度，session 仅用于埋点）。"""
+
     name = ComponentType.MEMORY_MANAGER
 
-    def __init__(self):
-        pass
+    def init_app(self, system_app: SystemApp) -> None:
+        self.system_app = system_app
+
+    async def async_before_start(self) -> None:
+        """基础设施预热（迁自旧 SystemApp._startup_infra）：
+        qdrant/MySQL 暂不可用只降级记忆功能，不阻断主服务。"""
+        with suppress(Exception):
+            from db.qdrant.client import warm_up_qdrant_client
+            from codegenx.ai_service.memory.vector_store import ensure_warm_collection
+
+            await warm_up_qdrant_client()
+            await ensure_warm_collection()
+            log.info("warm_memories collection 已就绪")
 
     async def load(
         self,
@@ -130,3 +144,8 @@ class MemoryFacade(BaseComponent):
         except Exception as exc:
             log.debug("会话结束记忆触发失败（非致命）: {}", exc)
 
+
+
+def initialize_memory(system_app) -> MemoryFacade:
+    """注册记忆门面组件（system_app.initialize_components 调用）。"""
+    return system_app.register(MemoryFacade)

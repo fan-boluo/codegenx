@@ -4,22 +4,28 @@ import json
 import sys
 from abc import ABC
 from pathlib import Path
-from threading import Lock
 from typing import Any, Callable
 from pydantic import BaseModel
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.tools.base import Tool, BaseTool
 from codegenx.ai_service.tools.file import WriteFileTool, ReadFileTool
 from shared import log
 
 # 工具目录
 BUILTIN_TOOLS_DIR = Path(__file__).parent.parent / "tools"
-_TOOL_REGISTRY_SINGLETON: "ToolRegistry | None" = None
-_TOOL_REGISTRY_LOCK = Lock()
 
-class ToolRegistry:
-    def __init__(self):
+class ToolRegistry(BaseComponent):
+    """启动扫描一次的全局工具注册表（进程级组件，子代理用 child_view 出过滤视图）。"""
+
+    name = ComponentType.TOOL_REGISTRY
+
+    def __init__(self, system_app=None):
+        BaseComponent.__init__(self, system_app)
         self.tools: list[Tool] = []
         self.regist_tools()
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     def regist_tools(self):
         """
@@ -165,11 +171,12 @@ if __name__ == '__main__':
 
 
 def get_tool_registry() -> ToolRegistry:
-    global _TOOL_REGISTRY_SINGLETON
-    if _TOOL_REGISTRY_SINGLETON is not None:
-        return _TOOL_REGISTRY_SINGLETON
+    """取全局工具注册表组件（经容器查表；须在 initialize_components 注册 tools 之后）。"""
+    from codegenx.ai_service.system_app import get_app
 
-    with _TOOL_REGISTRY_LOCK:
-        if _TOOL_REGISTRY_SINGLETON is None:
-            _TOOL_REGISTRY_SINGLETON = ToolRegistry()
-    return _TOOL_REGISTRY_SINGLETON
+    return ToolRegistry.get_instance(get_app())
+
+
+def initialize_tools(system_app) -> ToolRegistry:
+    """注册工具注册表组件（system_app.initialize_components 调用；构造即扫描目录）。"""
+    return system_app.register(ToolRegistry)

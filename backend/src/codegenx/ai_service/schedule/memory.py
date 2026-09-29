@@ -36,6 +36,7 @@ from shared import log
 
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.llm.resilience import SCENARIO_MEMORY, resilient_invoke
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.prompts import (
     MEMORY_CONFLICT_SYSTEM_PROMPT,
@@ -67,23 +68,25 @@ _PATROL_INTERVAL = 60.0          # P1-3 卡死回收 + 兜底扫描 + dead 指�
 _HIT_FLUSH_INTERVAL = 300.0      # P1-7 命中刷回
 
 
-class MemoryScheduler:
-    """记忆离线任务调度器（单消费者 + 内嵌周期作业）。
+class MemoryScheduler(BaseComponent):
+    """记忆离线任务调度器（单消费者 + 内嵌周期作业），进程级组件。
 
-    用法（agent_adapter_service）:
-        scheduler = get_memory_scheduler()
-        await scheduler.startup()   # 崩溃恢复 + 启动循环
-        ...
-        await scheduler.shutdown(grace=10.0)
+    用法（组件化后由生命周期钩子驱动）:
+        await scheduler.startup()         # async_before_start：崩溃恢复 + 启动循环
+        await scheduler.shutdown(grace)   # async_before_stop：宽限等待 → 取消 → 复位
     """
+
+    name = ComponentType.MEMORY_SCHEDULER
 
     def __init__(
         self,
+        system_app=None,
         task_store: MemoryTaskStore | None = None,
         online_busy_fn=None,
         poll_interval: float = 15.0,
         batch_size: int = 5,
     ) -> None:
+        BaseComponent.__init__(self, system_app)
         self.tasks = task_store or get_memory_task_store()
         # 在线忙检测（可选）：True 表示有活跃会话，LLM 调用前先让位
         self._online_busy = online_busy_fn
@@ -97,6 +100,21 @@ class MemoryScheduler:
         self._last_vector_sync = 0.0
         self._last_patrol = 0.0
         self._last_hit_flush = 0.0
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
+
+    # === 组件生命周期钩子（调度器自身的启动/停止逻辑在此，容器只负责广播） ===
+
+    async def async_before_start(self) -> None:
+        """启动调度器；MySQL 暂不可用等失败只降级记忆离线功能，不阻断主服务。"""
+        with contextlib.suppress(Exception):
+            await self.startup()
+
+    async def async_before_stop(self) -> None:
+        """宽限 10s 停止（running 任务复位 pending，下次启动续跑）。"""
+        with contextlib.suppress(Exception):
+            await self.shutdown(grace=10.0)
 
     # === 生命周期 ===
 
@@ -588,15 +606,16 @@ class MemoryScheduler:
 
 # === 全局单例 ===
 
-_global_memory_scheduler: MemoryScheduler | None = None
-
-
 def get_memory_scheduler() -> MemoryScheduler:
-    """全局 scheduler 单例（worker 循环与访问缓冲都要求进程内唯一）。"""
-    global _global_memory_scheduler
-    if _global_memory_scheduler is None:
-        _global_memory_scheduler = MemoryScheduler()
-    return _global_memory_scheduler
+    """全局 scheduler 组件（经容器查表；worker 循环与访问缓冲都要求进程内唯一）。"""
+    from codegenx.ai_service.system_app import get_app
+
+    return MemoryScheduler.get_instance(get_app())
+
+
+def initialize_memory_scheduler(system_app) -> MemoryScheduler:
+    """注册记忆调度器组件（system_app.initialize_components 调用）。"""
+    return system_app.register(MemoryScheduler)
 
 
 # === 消息渲染 ===

@@ -1,17 +1,17 @@
 """SkillManager —— 全局 skill 注册表（P2 服务化，docs/SystemApp架构设计.md §4.5）。
 
 原 SkillManager._skills_cache 类属性（全局一份却挂在会话类上）上收为容器组件：
-启动时装载一次；热更新走显式 reload()，而不是再 new loader。
+启动时装载一次（before_start）；热更新走显式 reload()，而不是再 new loader。
 """
 import json
 import re
 from pathlib import Path
 from threading import Lock
-from typing import Optional,cast
+from typing import Optional
 import yaml
 from pydantic import BaseModel
 
-from codegenx.ai_service.system_app import SystemApp, BaseComponent,ComponentType
+from codegenx.ai_service.system_app import SystemApp, BaseComponent, ComponentType
 from shared import log
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent
@@ -30,8 +30,18 @@ class SkillManager(BaseComponent):
 
     name = ComponentType.SKILL_MANAGER
 
-    def __init__(self) -> None:
+    def __init__(self, system_app: Optional[SystemApp] = None) -> None:
+        super().__init__(system_app)
         self._skills: list[Skill] | None = None
+
+    def init_app(self, system_app: SystemApp) -> None:
+        self.system_app = system_app
+
+    # ------------------------------------------------------------------ lifecycle
+
+    def before_start(self) -> None:
+        """启动时装载全部内置 skill（同步目录扫描，无需事件循环）。"""
+        self.load()
 
     # ------------------------------------------------------------------ loading
 
@@ -132,30 +142,15 @@ class SkillManager(BaseComponent):
         return re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL).strip()
 
 
-_SYSTEM_APP: Optional[SystemApp] = None
-
-
-def initialize_skill(system_app: SystemApp):
-    """Initialize the skill manager."""
-    global _SYSTEM_APP
-    _SYSTEM_APP = system_app
-    skill_manager = SkillManager(system_app)
-    system_app.register_instance(skill_manager)
+def initialize_skill(system_app: SystemApp) -> SkillManager:
+    """注册 skill 注册表组件（system_app.initialize_components 调用）。"""
+    return system_app.register(SkillManager)
 
 
 def get_skill_manager(system_app: Optional[SystemApp] = None) -> SkillManager:
-    """Get the skill manager.
+    """取全局 skill 注册表（未指定容器时回落 get_app()；未初始化 fail fast）。"""
+    if system_app is None:
+        from codegenx.ai_service.system_app import get_app
 
-    Args:
-        system_app: System app instance.
-
-    Returns:
-        SkillManager instance.
-    """
-    global _SYSTEM_APP
-    if not _SYSTEM_APP:
-        if not system_app:
-            system_app = SystemApp()
-        initialize_skill(system_app)
-    app = system_app or _SYSTEM_APP
-    return SkillManager.get_instance(cast(SystemApp, app))
+        system_app = get_app()
+    return SkillManager.get_instance(system_app)

@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 
-from codegenx.ai_service.system_app import get_app, init_app
+from codegenx.ai_service.system_app import get_app, init_app, start_app, stop_app
 from shared import log
 
 
@@ -12,10 +12,13 @@ class AgentAdapterService:
     """薄壳：生命周期与引擎访问全部委托 SystemApp 全局容器（docs/SystemApp架构设计.md §3.3）。"""
 
     async def startup(self) -> None:
-        await init_app().startup()
+        # 两段式启动：init_app 注册组件+广播同步钩子；start_app 在事件循环内完成异步启动
+        app = init_app()
+        await start_app(app)
 
     async def shutdown(self) -> None:
-        await get_app().shutdown()
+        # 组件逆序关闭后，再统一释放基础设施（redis/qdrant/mysql）
+        await stop_app()
 
     async def stream_message(
         self,

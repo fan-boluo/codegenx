@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from codegenx.ai_service.utils.context_utils import ensure_app_workdir
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.hook import HookContext, HookEvent, on
 from codegenx.ai_service.prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE
 from shared import log
@@ -50,12 +51,18 @@ _SKELETON_TTL_SECONDS = 60.0
 _SKELETON_CACHE_CAPACITY = 200
 
 
-class ContextService:
-    """无状态上下文组装（全局一份，ids/每轮产物全部走参数）。"""
+class ContextService(BaseComponent):
+    """无状态上下文组装（全局组件，ids/每轮产物全部走参数）。"""
 
-    def __init__(self) -> None:
+    name = ComponentType.CONTEXT_SERVICE
+
+    def __init__(self, system_app=None) -> None:
+        BaseComponent.__init__(self, system_app)
         # 目录骨架 TTL 缓存：(user_id, app_id) → (skeleton, monotonic 时间戳)
         self._skeleton_cache: dict[tuple[str, str], tuple[str, float]] = {}
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     # ------------------------------------------------------------------ workspace
 
@@ -277,3 +284,8 @@ async def inject_dynamic_prompts(ctx: "HookContext", call_next) -> Any:
     或不调用 call_next 直接短路给出组装结果。
     """
     return await call_next()
+
+
+def initialize_context(system_app) -> ContextService:
+    """注册上下文组装服务组件（system_app.initialize_components 调用）。"""
+    return system_app.register(ContextService)

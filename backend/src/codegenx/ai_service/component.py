@@ -1,133 +1,108 @@
-"""Component module for da.
+"""组件框架：LifeCycle 生命周期钩子 + BaseComponent + SystemApp 组件注册表。
 
-Manages the lifecycle and registration of components.
+分层原则与判别法见 docs/SystemApp架构设计.md §2。本模块是纯框架层：
+不 import 任何业务组件（组合根在 system_app.py，组件实现各自模块内）。
+
+生命周期钩子执行约定（SystemApp 广播）：
+- 启动方向（on_init → after_init → async_on_init → before_start →
+  async_before_start → after_start → async_after_start）：
+  按组件**注册顺序**串行执行——注册顺序即依赖顺序（如 ToolRegistry
+  必须先于 AgentRegistry 装载，AgentRuntime 构造依赖前者）。
+- 关闭方向（async_before_stop → before_stop）：按注册**逆序**执行，
+  异常逐组件隔离并记录，保证全部组件都有机会收尾。
 """
 
 from __future__ import annotations
 
-import asyncio
-
-from pydantic import dataclasses
-
-from shared import log
 import threading
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, Optional, Type, TypeVar, Union
+from typing import Dict, Optional, Type, TypeVar, Union
 
+from shared import log
 
 
 class LifeCycle:
-    """This class defines hooks for lifecycle events of a component.
-
-    Execution order of lifecycle hooks:
-    1. on_init
-    2. after_init
-    3. before_start(async_before_start)
-    4. after_start(async_after_start)
-    5. before_stop(async_before_stop)
-    """
+    """组件生命周期钩子定义（同步/异步成对；重写需要的即可，其余空实现）。"""
 
     def on_init(self):
-        """Called when the component is being initialized."""
-        pass
+        """组件初始化（注册完成后立即调用；适合轻量字段装配）。"""
 
     def after_init(self):
-        """Called after the component has been initialized.
-
-        For most cases, you should initialize your database connection here.
-        """
-        pass
+        """初始化后置（所有组件 on_init 完成后；适合数据库连接等较重装配）。"""
 
     async def async_on_init(self):
-        """Asynchronous version of on_init."""
-        pass
+        """异步版 on_init（需事件循环，lifespan 内调用）。"""
 
     def before_start(self):
-        """Called before the component starts.
-
-        This method is called after the component has been initialized and before it is
-        started.
-        """
-        pass
+        """启动前（同步；如注册表装载/目录扫描等无需事件循环的装配）。"""
 
     async def async_before_start(self):
-        """Asynchronous version of before_start."""
-        pass
+        """启动（异步主钩子：连接池/后台任务/预热等需要事件循环的启动动作）。"""
 
     def after_start(self):
-        """Called after the component has started."""
-        pass
+        """启动后（同步通知位）。"""
 
     async def async_after_start(self):
-        """Asynchronous version of after_start."""
-        pass
+        """启动后（异步通知位）。"""
 
     def before_stop(self):
-        """Called before the component stops."""
-        pass
+        """停止前（同步清理）。"""
 
     async def async_before_stop(self):
-        """Asynchronous version of before_stop."""
-        pass
+        """停止（异步主钩子：后台任务/连接池释放）。"""
 
 
 class ComponentType(str, Enum):
+    """组件名注册表：name 用枚举，落库/日志统一转 .value 字符串。"""
 
-    SKILL_MANAGER = "da_skill_manager"
-    MEMORY_MANAGER = "da_memory_manager"
-
+    LLM_FACADE = "llm_facade"
+    TOOL_REGISTRY = "tool_registry"
+    SKILL_MANAGER = "skill_manager"
+    AGENT_REGISTRY = "agent_registry"
+    CONTEXT_SERVICE = "context_service"
+    SESSION_PERSISTENCE = "session_persistence"
+    TASK_BOARD = "task_board"
+    MEMORY_MANAGER = "memory_manager"
+    SESSION_SUMMARY = "session_summary"
+    COMPACTION = "compaction"
+    CHAT_MESSAGE_STORE = "chat_message_store"
+    MONITOR_PIPELINE = "monitor_pipeline"
+    MONITOR_MAINTENANCE = "monitor_maintenance"
+    MEMORY_SCHEDULER = "memory_scheduler"
+    AGENT_RUNTIME = "agent_runtime"
 
 
 _EMPTY_DEFAULT_COMPONENT = "_EMPTY_DEFAULT_COMPONENT"
 
-@dataclasses
+
 class BaseComponent(LifeCycle, ABC):
-    """Abstract Base Component class. All custom components should extend this."""
+    """组件基类：所有进程级组件继承并实现 init_app；生命周期钩子按需重写。"""
 
-    name = "base_da_component"
+    name: Union[str, ComponentType] = "base_component"
 
-    def __init__(self, system_app: Optional[SystemApp] = None):
+    def __init__(self, system_app: Optional["SystemApp"] = None):
         if system_app is not None:
             self.init_app(system_app)
 
     @abstractmethod
-    def init_app(self, system_app: SystemApp):
-        """Initialize the component with the main application.
-
-        This method needs to be implemented by every component to define how it
-        integrates with the main system app.
-        """
+    def init_app(self, system_app: "SystemApp"):
+        """持有容器引用（组件内经 self.system_app / get_app() 访问其他组件）。"""
 
     @classmethod
     def get_instance(
         cls: Type[T],
-        system_app: SystemApp,
+        system_app: "SystemApp",
         default_component=_EMPTY_DEFAULT_COMPONENT,
         or_register_component: Optional[Type[T]] = None,
         *args,
         **kwargs,
     ) -> T:
-        """Get the current component instance.
-
-        Args:
-            system_app (SystemApp): The system app
-            default_component : The default component instance if not retrieve by name
-            or_register_component (Type[T]): The new component to register if not
-                retrieve by name
-
-        Returns:
-            T: The component instance
-        """
-        # Check for keyword argument conflicts
+        """按组件名取实例；未注册时可选落 default 或现场注册 or_register_component。"""
         if "default_component" in kwargs:
-            raise ValueError(
-                "default_component argument given in both fixed and **kwargs"
-            )
+            raise ValueError("default_component argument given in both fixed and **kwargs")
         if "or_register_component" in kwargs:
-            raise ValueError(
-                "or_register_component argument given in both fixed and **kwargs"
-            )
+            raise ValueError("or_register_component argument given in both fixed and **kwargs")
         kwargs["default_component"] = default_component
         kwargs["or_register_component"] = or_register_component
         return system_app.get_component(
@@ -140,51 +115,37 @@ class BaseComponent(LifeCycle, ABC):
 
 T = TypeVar("T", bound=BaseComponent)
 
-@dataclasses
+
 class SystemApp(LifeCycle):
-    """Main System Application class that manages the lifecycle and registration of
-    components."""
+    """全局容器：组件注册表 + 生命周期广播。
 
-    def __init__(
-        self,
-    ) -> None:
-        self.components: Dict[
-            str, BaseComponent
-        ] = {}  # Dictionary to store registered components.
+    广播顺序：启动按注册顺序、关闭按注册逆序（依赖即顺序，见模块 docstring）。
+    类型化访问器由 system_app.py 的具体容器子类提供（组合根特权）。
+    """
+
+    def __init__(self) -> None:
+        self.components: Dict[str, BaseComponent] = {}
         self._stop_event = threading.Event()
+        self._async_stop_event = threading.Event()
         self._stop_event.clear()
+        self._async_stop_event.clear()
 
+    # ------------------------------------------------------------ 注册
 
     def register(self, component: Type[T], *args, **kwargs) -> T:
-        """Register a new component by its type.
-
-        Args:
-            component (Type[T]): The component class to register
-
-        Returns:
-            T: The instance of registered component
-        """
+        """按组件类注册：构造实例（传入容器）并登记。"""
         instance = component(self, *args, **kwargs)
         self.register_instance(instance)
         return instance
 
     def register_instance(self, instance: T) -> T:
-        """Register an already initialized component.
-
-        Args:
-            instance (T): The component instance to register
-
-        Returns:
-            T: The instance of registered component
-        """
+        """登记一个已构造的组件实例（name 重复视为装配错误，fail fast）。"""
         name = instance.name
         if isinstance(name, ComponentType):
             name = name.value
         if name in self.components:
-            raise RuntimeError(
-                f"Componse name {name} already exists: {self.components[name]}"
-            )
-        log.info(f"Register component with name {name} and instance: {instance}")
+            raise RuntimeError(f"Component name {name} already exists: {self.components[name]}")
+        log.info("Register component with name {} and instance: {}", name, instance)
         self.components[name] = instance
         instance.init_app(self)
         return instance
@@ -198,18 +159,7 @@ class SystemApp(LifeCycle):
         *args,
         **kwargs,
     ) -> T:
-        """Retrieve a registered component by its name and type.
-
-        Args:
-            name (Union[str, ComponentType]): Component name
-            component_type (Type[T]): The type of current retrieve component
-            default_component : The default component instance if not retrieve by name
-            or_register_component (Type[T]): The new component to register if not
-                retrieve by name
-
-        Returns:
-            T: The instance retrieved by component name
-        """
+        """按组件名取实例；缺失时可选落 default / 现场注册，否则抛错（fail fast）。"""
         if isinstance(name, ComponentType):
             name = name.value
         component = self.components.get(name)
@@ -223,68 +173,65 @@ class SystemApp(LifeCycle):
             raise TypeError(f"Component {name} is not of type {component_type}")
         return component
 
+    # ------------------------------------------------------------ 生命周期广播（启动：注册顺序）
+
     def on_init(self):
-        """Invoke the on_init hooks for all registered components."""
-        copied_view = {k: v for k, v in self.components.items()}
-        for _, v in copied_view.items():
-            v.on_init()
+        """按注册顺序调用全部组件的 on_init。"""
+        for component in list(self.components.values()):
+            component.on_init()
 
     def after_init(self):
-        """Invoke the after_init hooks for all registered components."""
-        copied_view = {k: v for k, v in self.components.items()}
-        for _, v in copied_view.items():
-            v.after_init()
+        """按注册顺序调用全部组件的 after_init。"""
+        for component in list(self.components.values()):
+            component.after_init()
 
     async def async_on_init(self):
-        """Asynchronously invoke the on_init hooks for all registered components."""
-
-        copied_view = {k: v for k, v in self.components.items()}
-        tasks = [v.async_on_init() for _, v in copied_view.items()]
-        await asyncio.gather(*tasks)
+        """按注册顺序 await 全部组件的 async_on_init。"""
+        for component in list(self.components.values()):
+            await component.async_on_init()
 
     def before_start(self):
-        """Invoke the before_start hooks for all registered components."""
-        copied_view = {k: v for k, v in self.components.items()}
-        for _, v in copied_view.items():
-            v.before_start()
+        """按注册顺序调用全部组件的 before_start。"""
+        for component in list(self.components.values()):
+            component.before_start()
 
     async def async_before_start(self):
-        """Asynchronously invoke the before_start hooks.
-
-        It will invoke all registered components' async_before_start hooks.
-        """
-        copied_view = {k: v for k, v in self.components.items()}
-        tasks = [v.async_before_start() for _, v in copied_view.items()]
-        await asyncio.gather(*tasks)
+        """按注册顺序 await 全部组件的 async_before_start（启动主钩子）。"""
+        for component in list(self.components.values()):
+            await component.async_before_start()
 
     def after_start(self):
-        """Invoke the after_start hooks for all registered components."""
-        copied_view = {k: v for k, v in self.components.items()}
-        for _, v in copied_view.items():
-            v.after_start()
+        """按注册顺序调用全部组件的 after_start。"""
+        for component in list(self.components.values()):
+            component.after_start()
 
     async def async_after_start(self):
-        """Asynchronously invoke the after_start hooks for all registered components."""
-        copied_view = {k: v for k, v in self.components.items()}
-        tasks = [v.async_after_start() for _, v in copied_view.items()]
-        await asyncio.gather(*tasks)
+        """按注册顺序 await 全部组件的 async_after_start。"""
+        for component in list(self.components.values()):
+            await component.async_after_start()
+
+    # ------------------------------------------------------------ 生命周期广播（关闭：注册逆序）
 
     def before_stop(self):
-        """Invoke the before_stop hooks for all registered components."""
+        """按注册逆序调用全部组件的 before_stop；异常逐组件隔离，进程级幂等。"""
         if self._stop_event.is_set():
             return
-
-        copied_view = {k: v for k, v in self.components.items()}
-        for _, v in copied_view.items():
+        for component in reversed(list(self.components.values())):
             try:
-                v.before_stop()
-            except Exception:
-                pass
+                component.before_stop()
+            except Exception as exc:
+                log.error("component {} before_stop 失败（继续其余组件收尾）: {}",
+                          getattr(component, "name", component), exc)
         self._stop_event.set()
 
     async def async_before_stop(self):
-        """Asynchronously invoke the before_stop hooks for all registered components."""
-        copied_view = {k: v for k, v in self.components.items()}
-        tasks = [v.async_before_stop() for _, v in copied_view.items()]
-        await asyncio.gather(*tasks)
-
+        """按注册逆序 await 全部组件的 async_before_stop；异常逐组件隔离。"""
+        if self._async_stop_event.is_set():
+            return
+        for component in reversed(list(self.components.values())):
+            try:
+                await component.async_before_stop()
+            except Exception as exc:
+                log.error("component {} async_before_stop 失败（继续其余组件收尾）: {}",
+                          getattr(component, "name", component), exc)
+        self._async_stop_event.set()

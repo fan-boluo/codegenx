@@ -18,8 +18,9 @@ from codegenx.ai_service.agent.runtime_schema import (
     TurnStoppedError, ActivateTurn,
 )
 from codegenx.ai_service.agent.session_pool import SessionPool
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.llm.llm_recovery import LLMRecoveryMixin
-from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager, on
+from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
 from codegenx.ai_service.agent.tool_executor import ToolExecutor
 from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from codegenx.ai_service.bus import MessageBus, RuntimeTurnEvent
@@ -29,15 +30,24 @@ from shared import log
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.compact.thresholds import estimate_tokens as _thresholds_estimate
 
-class AgentRuntime(LLMRecoveryMixin):
+class AgentRuntime(LLMRecoveryMixin, BaseComponent):
+    """全局对话引擎（进程级组件）：session pool + dispatcher + turn 编排。
+
+    子代理经 SubagentRunner 亦可直接构造轻量实例（引用均为全局资源）。
+    """
+
+    name = ComponentType.AGENT_RUNTIME
 
     CONTINUATION_MESSAGE: str = "Please continue from where you left off."
 
     def __init__(
         self,
+        system_app=None,
         tool_executor: ToolExecutor | None = None,
         message_bus: MessageBus | None = None,
     ):
+        # 容器约定首参：register 以 component(system_app) 构造实例（BaseComponent 规范）
+        BaseComponent.__init__(self, system_app)
         self.config = config
         self.agent_config = self.config.get_default_agent() or AgentConfig()
         self.max_tool_iterations = max(1, int(self.agent_config.max_tool_iterations or 40))
@@ -50,7 +60,7 @@ class AgentRuntime(LLMRecoveryMixin):
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
-        # hook 监听器随应用 import 链完成 @on 收集，由 AgentAdapterService.startup() 冻结（docs/Hook设计.md §6）
+        # hook 监听器随组件模块 import 链完成 @on 收集，由 initialize_components() 末尾冻结（docs/Hook设计.md §6）
         self._dispatcher_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
         
@@ -63,7 +73,29 @@ class AgentRuntime(LLMRecoveryMixin):
             swap_idle_seconds=int(getattr(self.agent_config, "session_swap_idle_seconds", 0) or 300),
         )
 
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
+
     # ------------------------------------------------------------------ lifecycle
+
+    async def async_before_start(self) -> None:
+        """引擎启动（迁自旧 SystemApp.startup 第 1/6 步）：
+        先做最小启动校验（默认智能体模型与模型表必须可用，带病配置快速失败），
+        再启动 session pool 清理循环 + dispatcher。"""
+        default_agent = self.config.get_default_agent()
+        if not (default_agent.model or "").strip():
+            raise RuntimeError(
+                "config 校验失败：默认智能体 model 未配置（config.json agents[].model）"
+            )
+        if not self.config.models:
+            raise RuntimeError("config 校验失败：models 列表为空，无法路由任何模型")
+        await self.start()
+        log.info("启动runtime完毕")
+
+    async def async_before_stop(self) -> None:
+        """引擎停止：dispatcher + session pool（失败不阻断其余组件收尾）。"""
+        with suppress(Exception):
+            await self.stop()
 
     async def start(self) -> None:
         if self._dispatcher_task is not None and not self._dispatcher_task.done():
@@ -689,7 +721,7 @@ class AgentRuntime(LLMRecoveryMixin):
             log.debug("PreToolUse {},{},{}", session_state.request_id, turn_state.step_counter,
                       turn_state.active_step_id)
             # before_tool_call 顺序分发：安全/参数守卫可 blocked（含文件工具参数校验，
-            # 已迁移至 agent/tool_execute.py
+            # 已迁移至 agent/tool_executor.py 与 tools/base.py 的模块级监听器
             await self._fire(HookEvent.BEFORE_TOOL_CALL, hook_ctx, tool_call=tool_call)
             if hook_ctx.action == HookAction.BLOCKED:
                 log.debug("PreToolUse blocked")
@@ -970,3 +1002,9 @@ class AgentRuntime(LLMRecoveryMixin):
         }
 
 
+
+
+def initialize_runtime(system_app) -> AgentRuntime:
+    """注册全局对话引擎组件（system_app.initialize_components 调用；
+    实际启动/停止在 async_before_start / async_before_stop 钩子中）。"""
+    return system_app.register(AgentRuntime)

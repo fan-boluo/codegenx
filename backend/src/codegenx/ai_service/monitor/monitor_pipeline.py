@@ -3,11 +3,11 @@ from __future__ import annotations
 import secrets
 import time
 from datetime import datetime
-from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 from codegenx.ai_service.agent.agent_schema import AgentState
 from codegenx.ai_service.compact import AUTOCOMPACT_THRESHOLD
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.monitor.alert_evaluator import get_alert_streak_tracker
 from codegenx.ai_service.monitor.metric_collector import MetricCollector
 from codegenx.ai_service.monitor.monitor_store import MonitorStore, get_monitor_store
@@ -34,9 +34,6 @@ if TYPE_CHECKING:
     # 仅类型注解使用；模块级导入会与 agent.runtime_schema 形成
     # 循环（runtime_schema → monitor 包门面 → monitor_pipeline → runtime_schema）
     from codegenx.ai_service.agent.runtime_schema import ActivateTurn, RuntimeSessionState
-
-_PIPELINE_SINGLETON: "MonitorPipeline | None" = None
-_PIPELINE_LOCK = Lock()
 
 
 def _new_span_id() -> str:
@@ -66,16 +63,22 @@ def _tool_status(result: Any) -> AgentState:
     return AgentState.SUCCESS
 
 
-class MonitorPipeline:
+class MonitorPipeline(BaseComponent):
     """
     Facade that coordinates SpanCollector, SessionTelemetry, and MonitorStore.
     Owns all monitoring logic; handlers simply delegate to these methods.
     """
 
-    def __init__(self) -> None:
+    name = ComponentType.MONITOR_PIPELINE
+
+    def __init__(self, system_app=None) -> None:
+        BaseComponent.__init__(self, system_app)
         self.store: MonitorStore = get_monitor_store()
         self._span_collectors: dict[str, SpanCollector] = {}
         self._metric_collectors: dict[str, MetricCollector] = {}
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     # ------------------------------------------------------------------
     # Telemetry lookup helpers
@@ -431,58 +434,62 @@ class MonitorPipeline:
     # ------------------------------------------------------------------
 
     # ── Hook 监听器：监控上报接入事件总线（docs/Hook设计.md §4.2） ──────────────
-    # 全部为薄封装：从 HookContext 取参转发 MonitorPipeline，priority=100 排在业务监听器之后
+    # 全部为薄封装：从 HookContext 取参转发单例 pipeline，priority=100 排在业务监听器之后。
+    # 注意：@on 注册的是类体内原始函数（分发以 callback(ctx) 直调），监听器不能带 self，
+    # 统一经 get_monitor_pipeline() 取实例。
 
     @on(HookEvent.SESSION_START, name="report_session_start", priority=100)
-    async def report_session_start(self,ctx: HookContext) -> None:
-        self.on_session_start(ctx.session)
+    async def report_session_start(ctx: HookContext) -> None:
+        get_monitor_pipeline().on_session_start(ctx.session)
 
     @on(HookEvent.TURN_START, name="report_turn_start", priority=100)
-    async def report_turn_start(self,ctx: HookContext) -> None:
-        await self.on_turn_start(ctx.session, ctx.turn)
+    async def report_turn_start(ctx: HookContext) -> None:
+        await get_monitor_pipeline().on_turn_start(ctx.session, ctx.turn)
 
     @on(HookEvent.BEFORE_LLM_INVOKE, name="report_prompt_tokens", priority=100)
-    async def report_prompt_tokens(self,ctx: HookContext) -> None:
-        self.pre_llm_call(
+    async def report_prompt_tokens(ctx: HookContext) -> None:
+        get_monitor_pipeline().pre_llm_call(
             ctx.session, ctx.turn,
             prompt_tokens=ctx.data.get("prompt_tokens"),
             projected_total_tokens=ctx.data.get("projected_total_tokens"),
         )
 
     @on(HookEvent.AFTER_LLM_INVOKE, name="report_llm_usage", priority=100)
-    async def report_llm_usage(self,ctx: HookContext) -> None:
-        await self.post_llm_call(ctx.session, ctx.turn, usage=ctx.data.get("usage"))
+    async def report_llm_usage(ctx: HookContext) -> None:
+        await get_monitor_pipeline().post_llm_call(ctx.session, ctx.turn, usage=ctx.data.get("usage"))
 
     @on(HookEvent.BEFORE_TOOL_CALL, name="report_tool_start", priority=100)
-    async def report_tool_start(self,ctx: HookContext) -> None:
-        self.pre_tool_use(ctx.session, ctx.turn, ctx.data.get("tool_call") or {})
+    async def report_tool_start(ctx: HookContext) -> None:
+        get_monitor_pipeline().pre_tool_use(ctx.session, ctx.turn, ctx.data.get("tool_call") or {})
 
     @on(HookEvent.AFTER_TOOL_CALL, name="report_tool_end", priority=100)
-    async def report_tool_end(self,ctx: HookContext) -> None:
-        await self.post_tool_use(
+    async def report_tool_end(ctx: HookContext) -> None:
+        await get_monitor_pipeline().post_tool_use(
             ctx.session, ctx.turn, ctx.data.get("tool_call") or {}, ctx.data.get("result")
         )
 
     @on(HookEvent.TURN_END, name="report_turn_end", priority=100)
-    async def report_turn_end(self,ctx: HookContext) -> None:
-        await self.on_turn_end(ctx.session, ctx.turn)
+    async def report_turn_end(ctx: HookContext) -> None:
+        await get_monitor_pipeline().on_turn_end(ctx.session, ctx.turn)
 
     @on(HookEvent.INTERNAL_ON_ERROR, name="report_error", priority=100)
-    async def report_error(self,ctx: HookContext) -> None:
-        self.on_error(ctx.session, ctx.turn)
+    async def report_error(ctx: HookContext) -> None:
+        get_monitor_pipeline().on_error(ctx.session, ctx.turn)
 
     @on(HookEvent.SESSION_END, name="report_session_end", priority=100)
-    async def report_session_end(self,ctx: HookContext) -> None:
-        await self.on_session_end(ctx.session, end_reason=ctx.data.get("end_reason"))
+    async def report_session_end(ctx: HookContext) -> None:
+        await get_monitor_pipeline().on_session_end(ctx.session, end_reason=ctx.data.get("end_reason"))
 
 
 def get_monitor_pipeline() -> MonitorPipeline:
-    global _PIPELINE_SINGLETON
-    if _PIPELINE_SINGLETON is not None:
-        return _PIPELINE_SINGLETON
-    with _PIPELINE_LOCK:
-        if _PIPELINE_SINGLETON is None:
-            _PIPELINE_SINGLETON = MonitorPipeline()
-    return _PIPELINE_SINGLETON
+    """取监控管线组件（经全局容器查表；容器未初始化时 fail fast）。"""
+    from codegenx.ai_service.system_app import get_app
+
+    return MonitorPipeline.get_instance(get_app())
+
+
+def initialize_monitor(system_app) -> MonitorPipeline:
+    """注册监控管线组件（system_app.initialize_components 调用）。"""
+    return system_app.register(MonitorPipeline)
 
 

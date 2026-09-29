@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # 关闭顺序由 SystemApp.shutdown 统一保证：后台任务 → runtime → LLM 连接池 → redis/qdrant/mysql
+        # 关闭顺序由 SystemApp stop_app 统一保证：组件逆序 before_stop → redis/qdrant/mysql
         await agent_service.shutdown()
         log.info("codegenx monolith shutdown completed")
 

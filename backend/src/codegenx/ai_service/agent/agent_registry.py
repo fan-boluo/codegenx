@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Union
 
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from shared import log
 
 if TYPE_CHECKING:
@@ -51,14 +52,18 @@ class AgentSpec:
     memory: MemoryPolicy = field(default_factory=MemoryPolicy)
 
 
-class AgentRegistry:
+class AgentRegistry(BaseComponent):
     """AgentSpec 存取 + 启动校验（persona 非空、name 不重复、工具/skill 名存在）。
 
     校验 fail fast（沿用 hook 冻结校验思路），拒绝带病启动（§12 风险表）。
     """
 
-    def __init__(self, specs: list[AgentSpec] | None = None,
+    name = ComponentType.AGENT_REGISTRY
+
+    def __init__(self, system_app=None, specs: list[AgentSpec] | None = None,
                  default: AgentSpec | None = None) -> None:
+        # 容器约定首参：register 以 component(system_app) 构造实例（BaseComponent 规范）
+        BaseComponent.__init__(self, system_app)
         self._specs: dict[str, AgentSpec] = {}
         for spec in specs or []:
             key = self._normalize(spec.name)
@@ -69,6 +74,27 @@ class AgentRegistry:
             self._specs[key] = spec
         # 默认 spec：不配置任何新字段时与现单智能体行为完全等价（persona 空 → 内置模板）
         self._default = default or AgentSpec(name="default")
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
+
+    # ------------------------------------------------------------------ lifecycle
+
+    async def async_before_start(self) -> None:
+        """按 config.agents 装配并校验（P4 §10，迁自旧 SystemApp.startup 第 4 步）。
+
+        依赖注册顺序：tools/skills 组件先于本组件完成 before_start 装载，
+        此处才能对 allowlist 做 fail-fast 校验。
+        """
+        from codegenx.ai_service.system_app import get_app
+        from codegenx.ai_service.utils.config import config as app_config
+
+        self.load_from_config(app_config)
+        app = get_app()
+        self.validate_against(
+            tool_names={t.name for t in app.tools.tools},
+            skill_names={s.name for s in app.skills.all()},
+        )
 
     # ------------------------------------------------------------------ 存取
 
@@ -144,7 +170,7 @@ class AgentRegistry:
                 first_named = spec
             specs.append(spec)
 
-        registry = cls(specs, default=default_spec or first_named)
+        registry = cls(specs=specs, default=default_spec or first_named)
         for spec in specs:
             if spec is registry._default:
                 continue  # 默认智能体空 persona = 内置 DEFAULT_PROMPT_TEMPLATE
@@ -155,3 +181,15 @@ class AgentRegistry:
     @staticmethod
     def _normalize(name: str) -> str:
         return str(name or "").strip().lower()
+
+    def load_from_config(self, cfg) -> None:
+        """按 config.agents 原地重装注册表（组件化：旧 startup 的整体替换改为原地装配）。"""
+        reloaded = AgentRegistry.from_config(cfg)
+        self._specs = reloaded._specs
+        self._default = reloaded._default
+
+
+def initialize_agents(system_app) -> AgentRegistry:
+    """注册智能体规格注册表组件（system_app.initialize_components 调用；
+    config.agents 的实际装配与校验在其 async_before_start 中进行）。"""
+    return system_app.register(AgentRegistry)

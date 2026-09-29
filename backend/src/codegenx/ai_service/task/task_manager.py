@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from shared import log
 from shared.constants import get_current_session_dir
 
@@ -45,12 +46,17 @@ def _tasks_dir(user_id: str, app_id: str, session_id: str) -> Path:
 # ------------------------------------------------------------------ TaskBoardService
 
 
-class TaskBoardService:
+class TaskBoardService(BaseComponent):
     """Per-(user, app, session) persistent task graph（全局单例，ids 走参数）。
 
     Disk-backed so tasks survive session restarts.  Multiple sessions for
     the same ``app_id`` are isolated by their session directories.
     """
+
+    name = ComponentType.TASK_BOARD
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     # ------------------------------------------------------------------ ID management
 
@@ -235,3 +241,8 @@ class TaskBoardService:
                     task["id"],
                     completed_id,
                 )
+
+
+def initialize_tasks(system_app) -> TaskBoardService:
+    """注册任务看板服务组件（system_app.initialize_components 调用）。"""
+    return system_app.register(TaskBoardService)
