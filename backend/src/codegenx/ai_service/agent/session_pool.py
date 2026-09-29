@@ -5,7 +5,7 @@ import asyncio
 import time
 from collections import OrderedDict
 from typing import Any, Optional
-
+from codegenx.ai_service.hook import  HookContext, HookEvent, on
 from shared import log
 
 
@@ -269,3 +269,20 @@ class SessionPool:
             "max_sessions": self.max_sessions,
             "idle_timeout_seconds": self.idle_timeout_seconds,
         }
+
+    # ── Hook 监听器：会话/turn 生命周期编排（docs/Hook设计.md §4.2） ─────────────
+    # 会话级对象只剩 SessionContext（纯状态）；落盘/任务看板走 SystemApp 无状态服务
+
+    @on(HookEvent.TURN_END, name="persist_chat_snapshot", priority=10)
+    async def persist_chat_snapshot(ctx: HookContext) -> None:
+        """保留上下文快照（迁自 handlers.on_turn_end 前半）。"""
+        session = ctx.session
+        if session.context_manager is not None:
+            from codegenx.ai_service.system_app import get_app
+
+            await get_app().session_io.save_turn_chat_message_snapshot(
+                session.context_manager.chat_messages,
+                user_id=session.user_id,
+                app_id=session.app_id,
+                session_id=session.session_id,
+            )

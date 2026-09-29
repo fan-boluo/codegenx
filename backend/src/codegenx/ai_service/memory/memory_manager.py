@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import asyncio
 
+from codegenx.ai_service.component import BaseComponent, ComponentType
+from codegenx.ai_service.memory.trigger import process_session_end
 from shared import log
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.hot_store import format_hot_prompt
 from codegenx.ai_service.memory.retriever import search_warm, format_warm_entries_prompt
+from codegenx.ai_service.hook import HookContext, HookEvent, on
 
 # 冲突消解规则（P0-12，§5.5）：跨层 hot 优先，不按时间推翻硬约束
 MEMORY_USAGE_RULES = """\
@@ -30,8 +33,12 @@ MEMORY_USAGE_RULES = """\
 """
 
 
-class MemoryFacade:
+class MemoryFacade(BaseComponent):
     """全局只读记忆门面（hot/warm 仍按 app+user 维度，session 仅用于埋点）。"""
+    name = ComponentType.MEMORY_MANAGER
+
+    def __init__(self):
+        pass
 
     async def load(
         self,
@@ -108,4 +115,18 @@ class MemoryFacade:
                 pass
 
         return "\n\n".join(parts)
+
+    @on(HookEvent.SESSION_END, name="memory_session_end", priority=20)
+    async def memory_session_end(ctx: HookContext) -> None:
+        """会话结束事件是提炼触发条件之一（P1-2 §4.1，迁自 handlers.on_session_end 前半）。"""
+        session = ctx.session
+        try:
+            await process_session_end(
+                str(getattr(session, "app_id", "") or ""),
+                str(getattr(session, "user_id", "") or ""),
+                str(getattr(session, "session_id", "") or ""),
+                agent_name=str(getattr(session, "agent_name", "") or ""),
+            )
+        except Exception as exc:
+            log.debug("会话结束记忆触发失败（非致命）: {}", exc)
 

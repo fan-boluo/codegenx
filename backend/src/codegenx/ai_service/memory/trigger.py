@@ -27,7 +27,7 @@ import time
 
 from shared import log
 from codegenx.ai_service.memory import metrics
-from codegenx.ai_service.hook import HookContext, HookEvent, on
+
 
 # ── 第一级：轻量信号正则（§4.1 四类）────────────────────────────────────────────
 _SIGNAL_PATTERNS: list[re.Pattern] = [
@@ -208,16 +208,4 @@ async def memory_turn_signal(ctx: HookContext) -> None:
         log.debug("记忆漏斗信号处理失败（非致命）: {}", exc)
 
 
-@on(HookEvent.SESSION_END, name="memory_session_end", priority=20)
-async def memory_session_end(ctx: HookContext) -> None:
-    """会话结束事件是提炼触发条件之一（P1-2 §4.1，迁自 handlers.on_session_end 前半）。"""
-    session = ctx.session
-    try:
-        await process_session_end(
-            str(getattr(session, "app_id", "") or ""),
-            str(getattr(session, "user_id", "") or ""),
-            str(getattr(session, "session_id", "") or ""),
-            agent_name=str(getattr(session, "agent_name", "") or ""),
-        )
-    except Exception as exc:
-        log.debug("会话结束记忆触发失败（非致命）: {}", exc)
+

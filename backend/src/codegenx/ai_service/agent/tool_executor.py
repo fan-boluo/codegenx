@@ -8,6 +8,7 @@ from codegenx.ai_service.agent.runtime_schema import ActivateTurn, RuntimeSessio
 from shared import log
 from codegenx.ai_service.agent.tool_handler import ToolRegistry
 from shared.constants import get_code_dir
+from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
 
 DATA_ANALYSIS_TOOL_NAMES = {
     "list_tables",
@@ -47,7 +48,6 @@ class ToolExecutor:
         turn_id = getattr(session_state, "request_id", "") if session_state is not None else ""
         trace_id = getattr(session_state, "trace_id", "")
         stop_signal = getattr(session_state, "stop_signal", None) if session_state is not None else None
-        safe_paths = self._resolve_safe_paths(turn_state, session_state,safe_paths)
 
         if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory", "code_check", "find", "grep"}:
             tool_input.setdefault("app_id", app_id)
@@ -78,14 +78,6 @@ class ToolExecutor:
         if not tool:
             log.error(f"Unknown tool called: {tool_name}")
             return {"error": f"未知工具：{tool_name}"}
-        
-        # 2 检查工具合法性
-        # try:
-        #     validate_params(tool_input)
-        # except ValueError as e:
-        #     error_message = str(e)
-        #     log.error(f"参数验证失败：{error_message}")
-        #     return {"error": error_message}
 
         # 2. 安全检查 (安全边界前置)
         error_msg = self._perform_safety_checks(tool_name, tool_input, safe_paths, user_id=user_id)
@@ -104,19 +96,6 @@ class ToolExecutor:
         else:
             result = func(**call_kwargs)
 
-        # 执行成功则大的输出落盘，没想好大的输出落盘之后怎么衔接上下文 TODO
-        # if result.success:
-        #     await session_state.context_manager.persist_large_output(tool_call=tool_call,output=result)
-
-        # if hasattr(result, "model_dump"):
-        #     result = result.model_dump()
-        # elif hasattr(result, "dict"):
-        #     result = result.dict()
-        # model_dump() 后的 dict 放入 tool_message["content"] 会导致 LLM API 拒绝
-        # （因为 content 必须是 str 或 list，不能是 dict）
-        # if isinstance(result, dict):
-        #     result = result.get("message") or str(result)
-
         return result
 
 
@@ -134,18 +113,28 @@ class ToolExecutor:
                 return resolved
         return list(safe_paths) if safe_paths else []
 
-    def _perform_safety_checks(self, tool_name: str, tool_input: Dict[str, Any], safe_paths: List[Path], user_id: str = "") -> Optional[str]:
+    @on(HookEvent.BEFORE_TOOL_CALL, name="file_tool_param_guard", priority=20)
+    def _perform_safety_checks(self, ctx: HookContext) -> Optional[str]:
         """
         检查所有有关路径的参数，判断是否在 safe_path 内。
         并对 Bash 命令进行基本的敏感策略处理（示例）。
         """
         # 检查路径
         # 通常文件操作的 tool 参数可能叫 path, filename, src, dest, 等等
+        session_state = ctx.session
+        turn_state = session_state.activate_turn
+        tool = ctx.data.tool_call
+
+        safe_paths = self._resolve_safe_paths(turn_state, session_state)
+
+
+        tool_name = tool.name
+        tool_input = tool.tool_input
         for key, value in tool_input.items():
             # 尝试根据名称推测这是一个路径相关的参数
             # 或更严谨地，可以查 schema，但现在通过名称推测或显式硬编码都可以。
             # 为了简单健壮，我们检查值为字符串且看着像绝对或相对路径的操作
-            
+
             # 若 key 匹配已知的路径参数名，我们严格校验它
             if key in ["path", "filename", "src", "dest", "file_path"]:
                 if not isinstance(value, str):
@@ -153,9 +142,9 @@ class ToolExecutor:
                 try:
                     target_path = self._resolve_candidate_path(value, tool_input.get("app_id", "main"), user_id)
                     if not self._is_safe_path(target_path, safe_paths):
-                         return f"越界访问：目标路径 '{target_path}' 不在 safe_path 允许范围内"
+                         return f"{tool_name}：越界访问：目标路径 '{target_path}' 不在 safe_path 允许范围内"
                 except Exception as e:
-                     return f"路径解析错误：{e}"
+                     return f"{tool_name}：路径解析错误：{e}"
 
         # 对于 bash 类工具，我们可以进一步限制敏感命令
         if tool_name in ["run_bash", "bash", "execute_command"]:
@@ -164,7 +153,8 @@ class ToolExecutor:
             # 示例：
             forbidden_cmds = ["rm -rf /", "mkfs", "chown"]
             if any(forbidden in cmd for forbidden in forbidden_cmds):
-                 return f"命中了危险命令策略：不能执行可能破坏系统的命令"
+                 return f"{tool_name}：命中了危险命令策略：不能执行可能破坏系统的命令"
+
 
         return None
         

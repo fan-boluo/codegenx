@@ -32,7 +32,7 @@ from codegenx.ai_service.context.context_service import ContextService
 from codegenx.ai_service.memory.memory_manager import MemoryFacade
 from codegenx.ai_service.agent.agent_registry import AgentRegistry
 from codegenx.ai_service.session.manager import SessionPersistence
-from codegenx.ai_service.skill.skill_loader import SkillRegistry
+from codegenx.ai_service.skill.skill_loader import SkillManager
 from codegenx.ai_service.task.task_manager import TaskBoardService
 
 if TYPE_CHECKING:
@@ -97,7 +97,7 @@ class SystemApp:
 
     # ── 注册表 ────────────────────────────────────────────────
     tools: "ToolRegistry | None" = None               # 启动扫描一次的 ToolRegistry 单例
-    skills: "SkillRegistry" = field(default_factory=SkillRegistry)  # 迁自 SessionContext 类属性
+    skills: "SkillManager" = field(default_factory=SkillManager)  # 迁自 SessionContext 类属性
     # P4 §10：多智能体规格（不配置=仅默认 spec，现行为不变）；startup 时按 config.agents 重装+校验
     agents: "AgentRegistry" = field(default_factory=AgentRegistry)
 
@@ -261,18 +261,30 @@ def get_app() -> SystemApp:
     return _app
 
 
+def initialize_components():
+    # 注册各类组件
+    pass
+
 def init_app(app: SystemApp | None = None) -> SystemApp:
     """创建并安装容器（main.py 启动时调用；测试可传入自制实例）。"""
-    global _app
-    if _app is not None:
-        return _app
-    if app is None:
-        from codegenx.ai_service.hook import hook_manager
-        from codegenx.ai_service.utils.config import config as app_config
+    # 各类组件注册
+    initialize_components()
 
-        app = SystemApp(config=app_config, hooks=hook_manager)
-    _app = app
+    #
+    app.on_init()
+
+    app.after_init()
+
+    app.before_start()
+
+    # uvcorn start
+
+    app.after_start()
+
     return app
+
+def stop_app(app:SystemApp | None = None):
+    app.before_stop()
 
 
 def reset_app() -> None:
@@ -284,3 +296,6 @@ def reset_app() -> None:
 def app_started() -> bool:
     """容器是否已完成 startup（诊断/测试用）。"""
     return _app is not None and _app._started
+
+
+
