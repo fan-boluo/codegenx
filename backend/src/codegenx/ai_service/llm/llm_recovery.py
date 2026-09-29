@@ -1,65 +1,64 @@
-"""LLM error-recovery mixin (s11)。
+"""LLM 业务语义恢复协作器（组合于 AgentRuntime，非继承）。
 
-业务语义恢复（本 Mixin 职责）：
+本类只保留 LLM 调用的**业务语义**恢复：
   1. finish_reason length/max_tokens → inject CONTINUATION_MESSAGE and retry.
   2. Context-too-long API error      → compact history and retry.
-传输类瞬态错误的重试/降级/熔断已移交韧性层（llm/resilience.py，P1）：
+传输类瞬态错误的重试/降级/熔断已移交韧性层（llm/resilience.py）：
 首 chunk 前由 executor 透明重试或切换 fallback 模型；首 chunk 后失败直接抛出，
-本层不再重试（否则前端会出现重复内容，P1-5）。
+本层不再重试（否则前端会出现重复内容）。
+
+模型链来自 runtime.resolve_agent_chain（组件自持：agents[].model，缺省回落默认链）。
 """
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
+
 from codegenx.ai_service.agent.agent_schema import AgentEvent, AgentState, AgentEventType
-from codegenx.ai_service.agent.runtime_schema import  RuntimeSessionState, TurnStoppedError, \
-    ActivateTurn
+from codegenx.ai_service.agent.runtime_schema import TurnStoppedError, ActivateTurn
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
-from codegenx.ai_service.llm.resilience import SCENARIO_AGENT, resilient_invoke_stream
+from codegenx.ai_service.llm.resilience import resilient_invoke_stream
 from shared import log
 
 if TYPE_CHECKING:
-    pass
+    from codegenx.ai_service.agent.runtime import AgentRuntime
+    from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
 
 
-class LLMRecoveryMixin:
-    """Mixin for AgentRuntime — provides ``_invoke_llm_with_recovery``."""
+class LLMRecovery:
+    """AgentRuntime 的 LLM 调用协作器（组合）。
 
-    # These attributes are satisfied by AgentRuntime; declared here for type checkers.
-    CONTINUATION_MESSAGE: str
-    agent_config: Any
+    持有 runtime 引用（鸭子类型访问 tools/agent_config/事件发布/停止检查），
+    AgentRuntime.__init__ 中构造：self._llm_recovery = LLMRecovery(self)。
+    """
 
-    def _raise_if_stop_requested(self, session_state: RuntimeSessionState) -> None: ...  # provided by AgentRuntime
-    async def _publish_runtime_event(self, session_state: RuntimeSessionState, event: AgentEvent) -> None: ...  # provided by AgentRuntime
+    def __init__(self, runtime: "AgentRuntime") -> None:
+        self._runtime = runtime
 
     # ------------------------------------------------------------------ public entry
 
-    async def _invoke_llm_with_recovery(
+    async def invoke(
         self,
         messages: list[dict[str, Any]],
         turn_state: ActivateTurn,
-        session_state: RuntimeSessionState,
+        session_state: "RuntimeSessionState",
     ) -> dict[str, Any]:
         """Invoke the LLM with error recovery (s11)."""
-        cfg = self.agent_config
+        runtime = self._runtime
+        cfg = runtime.agent_config
         context = session_state.context_manager
-        # P2：RuntimeSessionState 不再持有 runtime；本 Mixin 混入 AgentRuntime，
-        # 工具目录直接取 self.tools（start() 时构建）
-        tools = self.tools
-        # P0-2 修复：使用 agent 配置的模型（原实现漏传 → 永远回落默认模型，AgentConfig.model 成死配置）
-        agent_model = (cfg.resolved_model_name or "").strip() or None
-        # P4 §10.4：智能体维度模型覆盖（spec.model_override 最高 → {agent}:{scenario} → scenario → 默认）
-        agent_name = (getattr(session_state, "agent_name", "") or "").strip() or None
-        agent_override = None
-        # P4 §10.3：spec.limits.temperature 覆盖（原空设计，偏差③主路径落地）
+        tools = runtime.tools
+        # 模型链：会话智能体的 model 优先（组件配置 agents[].model），缺省回落默认链
+        chain = runtime.resolve_agent_chain(session_state.agent_name)
+        # P4 §10.3：spec.limits.temperature 覆盖
         agent_temperature = None
+        agent_name = (getattr(session_state, "agent_name", "") or "").strip()
         if agent_name:
             from codegenx.ai_service.system_app import get_app
 
             registry = get_app().agents
             if registry is not None:
                 spec = registry.get(agent_name)
-                agent_override = spec.model_override
                 if spec.limits is not None:
                     agent_temperature = spec.limits.temperature
         continuation_attempts = 0
@@ -70,28 +69,26 @@ class LLMRecoveryMixin:
 
         while True:
             try:
-                self._raise_if_stop_requested(session_state)
+                runtime._raise_if_stop_requested(session_state)
                 round_response: dict[str, Any] = {
                     "content": "",
                     "tool_calls": [],
                     "finish_reason": None,
                 }
 
-                # P1：重试/降级/熔断由韧性层负责（含 agent 配置模型 → fallback 链）
+                # 重试/降级/熔断由韧性层负责（组件解析的模型链）
                 async for chunk in resilient_invoke_stream(
-                    SCENARIO_AGENT,
                     messages,
+                    chain=chain,
+                    label="agent",
                     tools=tools,
-                    primary_model=agent_model,
                     timeout=cfg.llm_stream_timeout_seconds,
                     temperature=agent_temperature,
-                    agent=agent_name,
-                    agent_override=agent_override,
                 ):
-                    self._raise_if_stop_requested(session_state)
+                    runtime._raise_if_stop_requested(session_state)
                     if chunk["type"] == "content":
                         round_response["content"] += chunk["data"]
-                        await self._publish_runtime_event(
+                        await runtime._publish_runtime_event(
                             session_state,
                             AgentEvent(
                                 event_type=AgentEventType.LLM_RESPONSE_CHUNK,
@@ -127,7 +124,7 @@ class LLMRecoveryMixin:
                         )
                         # 不在 context.chat_messages 中写入中间消息，在本地构建
                         continuation_messages.append({"role": "assistant", "content": round_response["content"]})
-                        continuation_messages.append({"role": "user", "content": self.CONTINUATION_MESSAGE})
+                        continuation_messages.append({"role": "user", "content": runtime.CONTINUATION_MESSAGE})
                         # 重新组装 messages：原始 + 本地累积的 continuation 消息
                         messages = await context.assemble()
                         messages.extend(continuation_messages)

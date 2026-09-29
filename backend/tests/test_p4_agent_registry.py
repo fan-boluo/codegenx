@@ -1,4 +1,4 @@
-"""P4 多智能体单测：AgentSpec/AgentRegistry + 模型路由覆盖 + persona 渲染（§10）。
+"""P4 多智能体单测：AgentSpec/AgentRegistry + 智能体模型解析 + persona 渲染（§10）。
 
 运行：backend/.venv/Scripts/python.exe -m pytest backend/tests/test_p4_agent_registry.py -q
 """
@@ -60,8 +60,8 @@ def test_from_config_maps_spec_fields():
         {
             "id": "planner", "defaults": True,
             "persona": "规划师",
+            "model": "dashscope/qwen-x",
             "tools": ["read_file"], "skills": ["planning"],
-            "modelOverride": {"agent_main": ["m1", "m2"]},
             "memory": {"writeEnabled": True, "readTypes": ["hard_constraint"]},
         },
         {"id": "data_explore", "persona": "探查员",
@@ -74,7 +74,7 @@ def test_from_config_maps_spec_fields():
     planner = reg.get("planner")
     assert planner.persona == "规划师"
     assert planner.tools == ["read_file"]
-    assert planner.model_override == {"agent_main": ["m1", "m2"]}
+    assert planner.limits.resolved_model_name == "qwen-x"  # 智能体模型 = agents[].model
     assert planner.memory.read_types == ["hard_constraint"]
     assert planner.memory.write_enabled is True
 
@@ -96,34 +96,34 @@ def test_from_config_empty_agents_single_agent_equivalent():
     default = reg.default()
     assert default.persona == ""
     assert default.tools is None and default.skills is None
-    assert default.model_override is None
+    assert default.limits is None
     assert default.memory.write_enabled is True
 
 
-# ── 模型路由：智能体维度覆盖（§10.4） ───────────────────────────────────────
+# ── 智能体模型链解析（AgentRuntime.resolve_agent_chain，组件配置驱动） ────────
 
-def test_model_chain_agent_override_highest_priority():
-    cfg = Config(
-        model_roles={"agent_main": ["s1"], "data_explore:agent_main": ["g1", "g2"]},
-    )
-    override = {"agent_main": "qwen-x"}
-    chain = cfg.get_model_chain("agent_main", agent="data_explore", agent_override=override)
-    assert chain == ["qwen-x"]  # spec.model_override > model_roles["{agent}:{scenario}"]
+def test_resolve_agent_chain_spec_model_first(monkeypatch):
+    """会话智能体配置了 model → 用它；未配置 → 回落默认智能体链。"""
+    from types import SimpleNamespace
 
+    from codegenx.ai_service.agent import runtime as rt_mod
 
-def test_model_chain_agent_scenario_role_second():
-    cfg = Config(model_roles={"agent_main": ["s1"], "data_explore:agent_main": ["g1", "g2"]})
-    chain = cfg.get_model_chain("agent_main", agent="data_explore")
-    assert chain == ["g1", "g2"]  # 整链替换，primary_override 不叠加
+    # 隔离工具注册表：AgentRuntime.__init__ 会经容器查表（测试环境无 SystemApp）
+    monkeypatch.setattr(rt_mod, "get_tool_registry", lambda: SimpleNamespace(tools=[]))
 
+    rt = rt_mod.AgentRuntime(system_app=None)
+    registry = SimpleNamespace(get=lambda name: (
+        SimpleNamespace(limits=SimpleNamespace(resolved_model_name="qwen-planner"))
+        if name == "planner" else
+        SimpleNamespace(limits=None)
+    ))
+    rt.system_app = SimpleNamespace(agents=registry)
 
-def test_model_chain_scenario_fallback_unchanged():
-    """无智能体覆盖 → 现有行为完全不变（scenario 链 + primary_override 换头）。"""
-    cfg = Config(model_roles={"agent_main": ["s1", "s2"]})
-    assert cfg.get_model_chain("agent_main", primary_override="m0") == ["m0", "s2"]
-    assert cfg.get_model_chain("agent_main") == ["s1", "s2"]
-    # 未配置场景 → [默认模型]
-    assert cfg.get_model_chain("no_such_scenario") == [cfg.get_default_model()]
+    assert rt.resolve_agent_chain("planner") == ["qwen-planner"]
+    fallback = list(rt._default_chain)
+    assert rt.resolve_agent_chain("no_limits_agent") == fallback
+    assert rt.resolve_agent_chain(None) == fallback
+    assert rt.resolve_agent_chain("") == fallback
 
 
 # ── persona 渲染（§10.3） ──────────────────────────────────────────────────

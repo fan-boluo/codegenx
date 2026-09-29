@@ -16,12 +16,14 @@ from __future__ import annotations
 import asyncio
 import re
 import traceback
+from contextlib import suppress
 from pathlib import Path
 
 from shared import log
 from shared.constants import get_session_dir
 from codegenx.ai_service.component import BaseComponent, ComponentType
-from codegenx.ai_service.llm.resilience import SCENARIO_SUMMARY, resilient_invoke
+from codegenx.ai_service.llm.async_client import get_llm
+from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.utils.context_utils import rough_tokens
 from codegenx.ai_service.utils.config import config
 
@@ -132,12 +134,33 @@ class SessionSummaryService(BaseComponent):
       1. compact_after_turn() 判定 should_extract(state, messages) 后 fire_extract()。
       2. CompactionService 压缩前调用 load(ids) 取最新摘要（Path A 快速通道）。
     阈值状态由调用方（SessionContext.summary_state: SummaryState）持有。
+
+    模型：初始化时从 compact.model_name 解析（与压缩同族共用小模型配置，
+    缺省回落默认模型），启动钩子中预热客户端与熔断器。
     """
 
     name = ComponentType.SESSION_SUMMARY
 
+    def __init__(self, system_app=None) -> None:
+        BaseComponent.__init__(self, system_app)
+        # 初始化即解析摘要模型（压缩族共用 compact.model_name，空则默认模型）
+        model = (config.compact.model_name or "").strip() or config.get_default_model()
+        self._model_chain: list[str] = [model]
+
     def init_app(self, system_app) -> None:
         self.system_app = system_app
+
+    async def async_before_start(self) -> None:
+        """预热摘要模型的客户端与熔断器（构造即注册，不发起网络请求；失败不阻断启动）。"""
+        for model in self._model_chain:
+            with suppress(Exception):
+                get_llm(model)
+                get_breaker(model)
+                log.info("[session_summary] 摘要模型客户端已预热: {}", model)
+
+    @property
+    def model_chain(self) -> list[str]:
+        return list(self._model_chain)
 
     # ── 对外接口 ──────────────────────────────────────────────────────────────
 
@@ -232,13 +255,14 @@ class SessionSummaryService(BaseComponent):
             notes_path=notes_path,
         )
 
-        # P1：走韧性层（summary 场景模型链 + 熔断/重试/降级）
+        # 走韧性层（摘要模型链 + 熔断/重试/降级）
         updated_notes = await resilient_invoke(
-            SCENARIO_SUMMARY,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": "请根据上述指令更新会话笔记。"},
             ],
+            chain=self._model_chain,
+            label="summary",
             temperature=0.0,
             max_tokens=4096,
         )

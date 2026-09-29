@@ -35,7 +35,8 @@ from datetime import datetime
 from shared import log
 
 from codegenx.ai_service.utils.config import config
-from codegenx.ai_service.llm.resilience import SCENARIO_MEMORY, resilient_invoke
+from codegenx.ai_service.llm.async_client import get_llm
+from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.prompts import (
@@ -94,6 +95,10 @@ class MemoryScheduler(BaseComponent):
         self._batch_size = batch_size
         # 离线 LLM 并发上限：避免挤占在线对话资源
         self._sem = asyncio.Semaphore(config.memory.store.extract_max_concurrency or 2)
+        # 初始化即解析提炼模型（memory.store.model_name 最高优先级，空则默认模型）
+        self._model_chain: list[str] = [
+            (config.memory.store.model_name or "").strip() or config.get_default_model()
+        ]
         self._stop = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
         # 周期作业上次执行时刻
@@ -108,6 +113,12 @@ class MemoryScheduler(BaseComponent):
 
     async def async_before_start(self) -> None:
         """启动调度器；MySQL 暂不可用等失败只降级记忆离线功能，不阻断主服务。"""
+        # 预热提炼模型的客户端与熔断器（构造即注册，不发起网络请求；失败不阻断启动）
+        for model in self._model_chain:
+            with contextlib.suppress(Exception):
+                get_llm(model)
+                get_breaker(model)
+                log.info("[memory_scheduler] 提炼模型客户端已预热: {}", model)
         with contextlib.suppress(Exception):
             await self.startup()
 
@@ -464,7 +475,7 @@ class MemoryScheduler(BaseComponent):
 
         # 任务审计（§4.2 ⑥ payload 回填：不含对话内容，只含元数据）
         payload = {
-            "model": config.memory.store.model_name or config.get_default_model(),
+            "model": self._model_chain[0],
             "cost_ms": int((time.time() - started) * 1000),
             "from_seq": int(from_seq),
             "consumed_seq": consumed_seq,
@@ -588,19 +599,19 @@ class MemoryScheduler(BaseComponent):
     async def _invoke_llm(self, messages: list[dict], max_tokens: int = 1024) -> str:
         """受控 LLM 调用：信号量限并发 + 在线让位（有活跃会话先等 1 秒）。
 
-        P1：走韧性层（memory 场景模型链 + 熔断/重试/降级）；
-        memory.store.model_name 仍为最高优先级（向后兼容）。
+        走韧性层（提炼模型链 + 熔断/重试/降级）；模型在初始化时已从
+        memory.store.model_name 解析（空则默认模型）。
         """
         async with self._sem:
             if self._online_busy is not None and self._online_busy():
                 # 在线对话优先：短暂让位后再调用（只延迟一次，不无限等待）
                 await asyncio.sleep(1.0)
             return await resilient_invoke(
-                SCENARIO_MEMORY,
                 messages,
+                chain=self._model_chain,
+                label="memory",
                 max_tokens=max_tokens,
                 temperature=0.0,
-                primary_model=config.memory.store.model_name or None,
             )
 
 

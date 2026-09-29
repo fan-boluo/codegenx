@@ -5,16 +5,13 @@
 （N 个智能体共享一份基础设施，成本 O(1)），组件只读 spec 视图，不持有
 per-agent 可变字段（红线 1）。
 
-模型路由解析顺序（§10.4）：
-  spec.model_override[scenario]        # 该智能体对该场景的显式配置（最高）
-  → model_roles["{agent}:{scenario}"]  # 全局按智能体细分（可选写法）
-  → model_roles[scenario]              # 现有全局场景路由（现状不变）
-  → [默认模型]
+模型路由：每个智能体用自己 AgentConfig.model（spec.limits.model），
+无场景维度路由；未配置时由 AgentRuntime 回落默认智能体的模型。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from shared import log
@@ -47,8 +44,7 @@ class AgentSpec:
     persona: str = ""                      # system prompt 模板；空=默认 DEFAULT_PROMPT_TEMPLATE
     tools: list[str] | None = None         # 工具 allowlist；None=全部（默认智能体行为）
     skills: list[str] | None = None        # skill allowlist；None=全部
-    model_override: dict[str, Union[str, list[str]]] | None = None  # 场景→模型/链覆盖（§10.4）
-    limits: "AgentConfig | None" = None    # max_steps/max_tool_iterations/temperature 覆盖
+    limits: "AgentConfig | None" = None    # max_steps/max_tool_iterations/temperature/模型 覆盖
     memory: MemoryPolicy = field(default_factory=MemoryPolicy)
 
 
@@ -156,7 +152,6 @@ class AgentRegistry(BaseComponent):
                 persona=str(agent_cfg.persona or ""),
                 tools=list(agent_cfg.tools) if agent_cfg.tools else None,
                 skills=list(agent_cfg.skills) if agent_cfg.skills else None,
-                model_override=dict(agent_cfg.model_override) if agent_cfg.model_override else None,
                 limits=agent_cfg,
                 memory=MemoryPolicy(
                     read_types=list(memory.read_types) if memory and memory.read_types else None,

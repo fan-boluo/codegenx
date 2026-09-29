@@ -139,9 +139,12 @@ def _make_runtime(recorder: RecorderHookManager, executor):
     orig_get_registry = runtime_module.get_tool_registry
     runtime_module.get_tool_registry = lambda: bare_registry
     try:
-        rt = AgentRuntime(tool_executor=executor, message_bus=FakeBus())
+        rt = AgentRuntime(system_app=None)
     finally:
         runtime_module.get_tool_registry = orig_get_registry
+    # 构造后注入测试替身（新签名仅收 system_app，依赖组件在容器中装配）
+    rt.tool_executor = executor
+    rt.message_bus = FakeBus()
     runtime_module.hook_manager = recorder
     rt._record_chat_history = AsyncMock()  # 跳过 chat_message 入库
     return rt
@@ -153,7 +156,7 @@ class TestRuntimeHookSequence(unittest.IsolatedAsyncioTestCase):
         recorder = RecorderHookManager()
         executor = FakeToolExecutor()
         rt = _make_runtime(recorder, executor)
-        rt._invoke_llm_with_recovery = AsyncMock(return_value={"content": "final answer", "tool_calls": []})
+        rt._llm_recovery.invoke = AsyncMock(return_value={"content": "final answer", "tool_calls": []})
         session = _make_session()
 
         await rt._execute_request(session)
@@ -188,7 +191,7 @@ class TestRuntimeHookSequence(unittest.IsolatedAsyncioTestCase):
             {"content": "", "tool_calls": [{"id": "1", "name": "read_file", "arguments": {"path": "a.py"}}]},
             {"content": "done", "tool_calls": []},
         ]
-        rt._invoke_llm_with_recovery = AsyncMock(side_effect=responses)
+        rt._llm_recovery.invoke = AsyncMock(side_effect=responses)
         session = _make_session()
 
         await rt._execute_request(session)
@@ -216,14 +219,14 @@ class TestRuntimeHookSequence(unittest.IsolatedAsyncioTestCase):
         recorder.decisions[HookEvent.BEFORE_LLM_INVOKE] = HookDecision.block("预算超限")
         executor = FakeToolExecutor()
         rt = _make_runtime(recorder, executor)
-        rt._invoke_llm_with_recovery = AsyncMock(return_value={"content": "x", "tool_calls": []})
+        rt._llm_recovery.invoke = AsyncMock(return_value={"content": "x", "tool_calls": []})
         session = _make_session()
 
         await rt._execute_request(session)
 
         llm_events = [e for e in recorder.events if e == HookEvent.BEFORE_LLM_INVOKE]
         self.assertEqual(len(llm_events), 1)
-        rt._invoke_llm_with_recovery.assert_not_awaited()
+        rt._llm_recovery.invoke.assert_not_awaited()
         self.assertEqual(executor.calls, [])
         # 拦截消息成为本轮回复
         self.assertEqual(session.context_manager.chat_messages[-1]["content"], "预算超限")
@@ -235,7 +238,7 @@ class TestRuntimeHookSequence(unittest.IsolatedAsyncioTestCase):
         recorder.decisions[HookEvent.BEFORE_TOOL_CALL] = HookDecision.block("path 参数为空")
         executor = FakeToolExecutor()
         rt = _make_runtime(recorder, executor)
-        rt._invoke_llm_with_recovery = AsyncMock(side_effect=[
+        rt._llm_recovery.invoke = AsyncMock(side_effect=[
             {"content": "", "tool_calls": [{"id": "1", "name": "write_file", "arguments": {}}]},
             {"content": "ok", "tool_calls": []},
         ])

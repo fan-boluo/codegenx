@@ -17,7 +17,9 @@ from codegenx.ai_service.agent.runtime_schema import (
 )
 from codegenx.ai_service.agent.session_pool import SessionPool
 from codegenx.ai_service.component import BaseComponent, ComponentType
-from codegenx.ai_service.llm.llm_recovery import LLMRecoveryMixin
+from codegenx.ai_service.llm.async_client import get_llm
+from codegenx.ai_service.llm.llm_recovery import LLMRecovery
+from codegenx.ai_service.llm.resilience import get_breaker
 from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
 from codegenx.ai_service.agent.tool_executor import ToolExecutor
 from codegenx.ai_service.agent.tool_handler import get_tool_registry
@@ -28,10 +30,12 @@ from shared import log
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.compact.thresholds import estimate_tokens as _thresholds_estimate
 
-class AgentRuntime(LLMRecoveryMixin, BaseComponent):
+class AgentRuntime(BaseComponent):
     """全局对话引擎（进程级组件）：session pool + dispatcher + turn 编排。
 
     子代理经 SubagentRunner 亦可直接构造轻量实例（引用均为全局资源）。
+    LLM 业务恢复为组合协作器（LLMRecovery，非继承）；模型链在初始化时
+    从 agents[].model 解析，启动钩子预热全部智能体模型的客户端与熔断器。
     """
 
     name = ComponentType.AGENT_RUNTIME
@@ -51,6 +55,13 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
         self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
         self.max_steps = self.agent_config.max_steps
 
+        # 初始化即解析默认智能体模型链（组件自持 LLM 资源；会话级覆盖见 resolve_agent_chain）
+        default_model = (self.agent_config.resolved_model_name or "").strip() \
+            or self.config.get_default_model()
+        self._default_chain: list[str] = [default_model]
+        # LLM 业务恢复协作器（continuation/压缩重试），组合替代原 Mixin 继承
+        self._llm_recovery = LLMRecovery(self)
+
         self.message_bus = MessageBus()
         self.tool_registry = get_tool_registry()
         self.tool_executor = ToolExecutor(self.tool_registry)
@@ -59,7 +70,7 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
         # hook 监听器随组件模块 import 链完成 @on 收集，由 initialize_components() 末尾冻结（docs/Hook设计.md §6）
         self._dispatcher_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
-        
+
         # Session pool with intelligent cleanup
         # Default: max 1000 sessions, idle timeout 1 hour, cleanup every 5 minutes
         self.session_pool = SessionPool(
@@ -72,11 +83,35 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
     def init_app(self, system_app) -> None:
         self.system_app = system_app
 
+    # ------------------------------------------------------------------ model chain
+
+    def resolve_agent_chain(self, agent_name: str | None) -> list[str]:
+        """会话智能体 → 模型链：spec.limits.model（agents[].model）优先，
+        未指定/未知智能体回落默认智能体链。"""
+        model = ""
+        if str(agent_name or "").strip():
+            registry = getattr(self.system_app, "agents", None) \
+                if self.system_app is not None else None
+            spec = registry.get(agent_name) if registry is not None else None
+            if spec is not None and spec.limits is not None:
+                model = (spec.limits.resolved_model_name or "").strip()
+        return [model] if model else list(self._default_chain)
+
+    def _all_agent_models(self) -> list[str]:
+        """全部智能体模型（默认 + 各 agents[].model），去重保序（预热用）。"""
+        models: list[str] = list(self._default_chain)
+        for agent_cfg in self.config.agents or []:
+            model = (agent_cfg.resolved_model_name or "").strip()
+            if model and model not in models:
+                models.append(model)
+        return models
+
     # ------------------------------------------------------------------ lifecycle
 
     async def async_before_start(self) -> None:
         """引擎启动（迁自旧 SystemApp.startup 第 1/6 步）：
         先做最小启动校验（默认智能体模型与模型表必须可用，带病配置快速失败），
+        预热全部智能体模型的客户端与熔断器（构造即注册，不发起网络请求），
         再启动 session pool 清理循环 + dispatcher。"""
         default_agent = self.config.get_default_agent()
         if not (default_agent.model or "").strip():
@@ -85,6 +120,11 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
             )
         if not self.config.models:
             raise RuntimeError("config 校验失败：models 列表为空，无法路由任何模型")
+        for model in self._all_agent_models():
+            with suppress(Exception):
+                get_llm(model)
+                get_breaker(model)
+        log.info("[agent_runtime] 智能体模型客户端已预热: {}", self._all_agent_models())
         await self.start()
         log.info("启动runtime完毕")
 
@@ -610,7 +650,7 @@ class AgentRuntime(LLMRecoveryMixin, BaseComponent):
         log.debug("PreLLMCALL {},{},{}",session_state.request_id, turn_state.step_counter,turn_state.active_step_id)
         # LLM 调用层洋葱 span：记录用时与 trace 路径
         async with hook_manager.span("llm_invoke", hook_ctx):
-            llm_response = await self._invoke_llm_with_recovery(
+            llm_response = await self._llm_recovery.invoke(
                 messages, turn_state, session_state
             )
         log.debug(llm_response)

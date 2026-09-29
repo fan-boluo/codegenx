@@ -2,8 +2,8 @@
 
 覆盖：
   - TaskBoardService   ids 进签名、跨会话隔离、依赖自动解锁
-  - CompactionService  会话级熔断器工厂（key=compact:{session_id}）
-  - SessionSummaryService 阈值状态外置（SummaryState 随会话生灭）
+  - CompactionService  服务级业务熔断器 + compact.model_name 模型解析
+  - SessionSummaryService 阈值状态外置（SummaryState 随会话生灭）+ 模型解析
 
 运行：backend/.venv/Scripts/python.exe -m pytest backend/tests/test_system_services.py -q
 """
@@ -77,15 +77,37 @@ def test_task_invalid_status_rejected(task_board):
         task_board.update(task["id"], status="done", **ids)
 
 
-# ── CompactionService：会话级熔断器 ─────────────────────────────────────────
+# ── CompactionService：服务级熔断器 + 模型解析 ───────────────────────────────
 
-def test_compact_breaker_per_session():
-    """每个会话独立熔断器：key 带 session_id，实例不共享。"""
-    b1 = CompactionService.make_breaker("s1")
-    b2 = CompactionService.make_breaker("s2")
-    assert b1 is not b2
-    assert "s1" in b1.key and "s2" in b2.key
-    assert CompactionService.make_breaker("s1").key == b1.key
+def test_compact_breaker_service_owned():
+    """熔断器由 CompactionService 服务级持有（非会话级）：实例固定、key 不带 session。"""
+    svc = CompactionService(system_app=None)
+    assert svc._breaker is not None
+    assert svc._breaker.key == "compaction"
+    assert "s1" not in svc._breaker.key  # 不再按会话建熔断器
+    assert svc.model_chain[0]  # 模型必解析出非空（compact.model_name 或默认模型）
+
+
+def test_compact_model_from_config(monkeypatch):
+    """compact.model_name 配置了 → 用它；空 → 回落默认模型。"""
+    from codegenx.ai_service.utils.config import config as app_config
+
+    monkeypatch.setattr(app_config.compact, "model_name", "qwen-compact-x")
+    assert CompactionService(system_app=None).model_chain == ["qwen-compact-x"]
+
+    monkeypatch.setattr(app_config.compact, "model_name", None)
+    assert CompactionService(system_app=None).model_chain == [app_config.get_default_model()]
+
+
+def test_summary_model_from_config(monkeypatch):
+    """会话摘要与压缩同族：共用 compact.model_name，空则默认模型。"""
+    from codegenx.ai_service.utils.config import config as app_config
+
+    monkeypatch.setattr(app_config.compact, "model_name", "qwen-compact-x")
+    assert SessionSummaryService(system_app=None).model_chain == ["qwen-compact-x"]
+
+    monkeypatch.setattr(app_config.compact, "model_name", None)
+    assert SessionSummaryService(system_app=None).model_chain == [app_config.get_default_model()]
 
 
 # ── SessionSummaryService：阈值状态外置 ──────────────────────────────────────

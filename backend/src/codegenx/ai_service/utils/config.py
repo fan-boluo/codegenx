@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import ClassVar, Dict, List, Union
+from typing import ClassVar, List
 from functools import lru_cache
 from pydantic import AliasChoices, ConfigDict, Field, BaseModel
 from pydantic.alias_generators import to_camel
@@ -80,7 +80,7 @@ class AgentConfig(Base):
     description: str = ""                  # 给规划智能体的派活描述（subagent 工具 description 来源）
     tools: List[str] | None = None         # 工具 allowlist；None=全部
     skills: List[str] | None = None        # skill allowlist；None=全部
-    model_override: Dict[str, Union[str, List[str]]] | None = None  # 场景→模型/链覆盖（§10.4）
+    # 智能体模型即上方 model 字段（无场景维度覆盖；多智能体 = agents[] 每项各自配 model）
     memory: AgentMemoryPolicy = Field(default_factory=AgentMemoryPolicy)
 
     @property
@@ -413,13 +413,8 @@ class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     models:List[ModelsConfig] = Field(default_factory=lambda: [ModelsConfig()])
-    # 场景→模型路由（P0-2/P1）：agent_main/compact/summary/memory；
-    # 值为模型名或模型链列表（[主模型, fallback1, ...]）；未配置的场景回落默认模型，
-    # memory.store.model_name 优先级更高（向后兼容）
-    model_roles: Dict[str, Union[str, List[str]]] = Field(
-        default_factory=dict,
-        validation_alias=AliasChoices("modelRoles", "model_roles"),
-    )
+    # 模型选择由各使用模型的组件从自身配置解析（agents[].model /
+    # compact.model_name / memory.store.model_name），不再有全局场景路由
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
@@ -471,59 +466,6 @@ class Config(BaseSettings):
                     if provider and hasattr(self.providers, provider):
                         return provider
         return "custom"
-
-    def get_model_for_scenario(self, scenario: str) -> str | None:
-        """场景→模型路由（P0-2）；未配置返回 None，由调用方回落默认模型。"""
-        value = (self.model_roles or {}).get(str(scenario).strip().lower())
-        if isinstance(value, list):
-            return str(value[0]).strip() or None if value else None
-        return str(value).strip() or None if value else None
-
-    def get_model_chain(
-        self,
-        scenario: str,
-        primary_override: str | None = None,
-        *,
-        agent: str | None = None,
-        agent_override: Dict[str, Union[str, List[str]]] | None = None,
-    ) -> list[str]:
-        """场景→模型链 [主模型, fallback...]（P1 降级链；P4 §10.4 增加智能体维度）。
-
-        - primary_override：替换主模型（如 agent_config.model / memory.store.model_name）；
-        - agent / agent_override：智能体名与 spec.model_override，解析顺序（§10.4）：
-          spec.model_override[scenario] → model_roles["{agent}:{scenario}"] →
-          model_roles[scenario] → [默认模型]；前两级命中为**整链替换**（primary_override 不叠加）；
-        - 场景未配置时回落 [默认模型]。
-        """
-        scenario_key = str(scenario).strip().lower()
-
-        # P4：智能体维度覆盖（spec.model_override 最高 → model_roles["{agent}:{scenario}"]）
-        agent_chain = self._parse_chain((agent_override or {}).get(scenario_key))
-        if not agent_chain and agent:
-            agent_chain = self._parse_chain(
-                (self.model_roles or {}).get(f"{str(agent).strip().lower()}:{scenario_key}")
-            )
-        if agent_chain:
-            return agent_chain
-
-        value = (self.model_roles or {}).get(scenario_key)
-        chain = self._parse_chain(value)
-        if not chain:
-            chain = [self.get_default_model()]
-        override = str(primary_override or "").strip()
-        if override:
-            # override 只替换主模型，fallback 链保留（去掉与 override 重复的项）
-            chain = [override] + [m for m in chain[1:] if m != override]
-        return chain
-
-    @staticmethod
-    def _parse_chain(value: Union[str, List[str], None]) -> list[str]:
-        """model_roles / model_override 条目值 → 模型链（非法/空值 → 空链）。"""
-        if isinstance(value, list):
-            return [str(m).strip() for m in value if str(m).strip()]
-        if value:
-            return [str(value).strip()]
-        return []
 
     def get_default_model(self) -> str:
         if not self.models:

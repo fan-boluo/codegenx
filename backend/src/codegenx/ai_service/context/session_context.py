@@ -1,9 +1,10 @@
 """SessionContext —— 纯会话状态（P2 瘦身，docs/SystemApp架构设计.md §4.2）。
 
 只留真会话状态：ids、system_prompt、chat_messages、每轮组装产物（TurnPrompts）、
-压缩熔断器（会话级语义）、摘要阈值状态（SummaryState）。
-原成员对象（MemoryManager/TaskManager/SessionSummaryService/CompactionEngine/
-ContextAssembler/SkillLoader）全部服务化，经 get_app() 的全局服务委托完成。
+摘要阈值状态（SummaryState）。原成员对象（MemoryManager/TaskManager/
+SessionSummaryService/CompactionEngine/ContextAssembler/SkillLoader）全部服务化，
+经 get_app() 的全局服务委托完成；压缩熔断器由 CompactionService 服务级持有，
+会话不绑定。
 """
 from dataclasses import field, dataclass
 from typing import Any, Dict
@@ -11,10 +12,8 @@ from typing import Any, Dict
 from codegenx.ai_service.agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from codegenx.ai_service.context.context_service import TurnPrompts
 from codegenx.ai_service.compact.session_summary import SummaryState
-from codegenx.ai_service.compact.compact import CompactionService
 from codegenx.ai_service.compact import microcompact_messages, estimate_tokens
 from codegenx.ai_service.compact.large_output import persist_large_output
-from codegenx.ai_service.llm.resilience import CircuitBreaker
 from codegenx.ai_service.tools.base import ToolResult
 from shared import log
 
@@ -40,15 +39,10 @@ class SessionContext:
     chat_messages: list[dict[str, Any]] = field(default_factory=list)
     # 每轮组装产物（原 ContextAssembler 的可变字段）
     prompts: TurnPrompts = field(default_factory=TurnPrompts)
-    # 压缩熔断器（会话级语义：一个会话压缩失败不应熔断别的会话；
-    # key=compact:{session_id}，韧性层三态 CircuitBreaker，冷却后半开恢复）
-    compact_breaker: CircuitBreaker | None = None
     # 会话摘要阈值状态（原 SessionSummaryService 实例字段）
     summary_state: SummaryState = field(default_factory=SummaryState)
 
     def __post_init__(self) -> None:
-        # 会话级压缩熔断器：参数在 CompactionService.make_breaker 统一维护
-        self.compact_breaker = CompactionService.make_breaker(self.session_id)
         log.info("{} SessionContext 启动完毕", self.session_id)
 
     # ------------------------------------------------------------------ 每轮组装
@@ -151,7 +145,6 @@ class SessionContext:
         app = get_app()
         self.chat_messages, result = await app.compaction.compact_if_needed(
             self.chat_messages,
-            breaker=self.compact_breaker,
             summary_loader=lambda: app.summary.load(
                 user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
             ),
@@ -196,7 +189,6 @@ class SessionContext:
         app = get_app()
         self.chat_messages, result = await app.compaction.compact_if_needed(
             self.chat_messages,
-            breaker=self.compact_breaker,
             summary_loader=lambda: app.summary.load(
                 user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
             ),

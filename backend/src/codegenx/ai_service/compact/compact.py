@@ -17,22 +17,25 @@ Path B — LLM summarization
     up to MAX_COMPACT_RETRIES times
   • Falls back gracefully if the LLM itself is unavailable
 
-Circuit breaker（P1 统一：复用韧性层三态熔断器，llm/resilience.py）
-  • After MAX_CONSECUTIVE_FAILURES consecutive failures (path B failed or
+Circuit breaker（复用韧性层三态熔断器，llm/resilience.py）
+  • 服务级熔断器由 CompactionService 持有（模型故障是全局性的，不应每会话各建一个）；
+    After MAX_CONSECUTIVE_FAILURES consecutive failures (path B failed or
     compaction ineffective), the LLM path opens its circuit and is skipped;
     it recovers via half-open probing after the cooldown.
   • Path A is NOT gated by the circuit breaker (it's always safe and free) —
-    熔断只挡 Path B（LLM 压缩），零成本快速路径永远可用（修 P1-6）
+    熔断只挡 Path B（LLM 压缩），零成本快速路径永远可用
 """
 from __future__ import annotations
 
-from shared import log
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
-from codegenx.ai_service.llm.resilience import CircuitBreaker
+from codegenx.ai_service.llm.resilience import CircuitBreaker, get_breaker, resilient_invoke
+from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.component import BaseComponent, ComponentType
+from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.compact.thresholds import (
     MAX_CONSECUTIVE_FAILURES,
     estimate_tokens,
@@ -280,19 +283,12 @@ async def _llm_compact(
 # ── Unified auto-compact entry point ──────────────────────────────────────────
 
 
-def _default_compact_llm_fn(messages: list[dict]) -> Any:
-    """默认 LLM 压缩调用：走韧性层（compact 场景模型链 + 熔断/重试/降级）。"""
-    from codegenx.ai_service.llm.resilience import SCENARIO_COMPACT, resilient_invoke
-
-    return resilient_invoke(SCENARIO_COMPACT, messages)
-
-
 class CompactionService(BaseComponent):
-    """无状态压缩服务（P2 服务化，原 CompactionEngine，docs/SystemApp架构设计.md §4.3）。
+    """压缩服务（服务化，原 CompactionEngine，docs/SystemApp架构设计.md §4.3）。
 
-    - llm_fn 全局：默认走韧性层（resilient_invoke compact 场景链）；
-    - 三态熔断器是会话级语义（一个会话压缩失败不应熔断别的会话），
-      由 SessionContext.compact_breaker 持有，每次调用传入；
+    - 模型：初始化时从 compact.model_name 解析（缺省回落默认模型），
+      走韧性层（resilient_invoke：熔断/重试/降级）；
+    - 业务熔断器：服务级持有（挡 Path B；Path A 永远可用），非会话级；
     - 会话摘要（Path A 快速通道）经 summary_loader 读取（app.summary.load(ids)）。
     """
 
@@ -300,22 +296,38 @@ class CompactionService(BaseComponent):
 
     def __init__(self, system_app=None, llm_fn: Any = None) -> None:
         BaseComponent.__init__(self, system_app)
-        self._llm_fn = llm_fn or _default_compact_llm_fn
-
-    def init_app(self, system_app) -> None:
-        self.system_app = system_app
-
-    # P1：复用韧性层通用三态熔断器（每会话一个，挡 Path B；阈值沿用 MAX_CONSECUTIVE_FAILURES）
-    @staticmethod
-    def make_breaker(session_id: str) -> CircuitBreaker:
-        """创建会话级压缩熔断器（key=compact:{session_id}，冷却后可探测恢复）。"""
-        return CircuitBreaker(
-            f"compact:{session_id}",
+        # 初始化即解析压缩模型（compact.model_name，空则默认模型）
+        model = (config.compact.model_name or "").strip() or config.get_default_model()
+        self._model_chain: list[str] = [model]
+        # 服务级业务熔断器：连续失败/无效压缩打开，冷却后半开探测恢复；
+        # 只挡 Path B（LLM 压缩），Path A 零成本快速路径不受门控
+        self._breaker = CircuitBreaker(
+            "compaction",
             failure_threshold=MAX_CONSECUTIVE_FAILURES,
             recovery_timeout=COMPACT_BREAKER_RECOVERY_SECONDS,
             half_open_max_calls=2,       # 闭合判定需 ≥2 次探测采样，至少给 2 个名额
             half_open_success_rate=0.5,
         )
+        self._llm_fn = llm_fn or self._default_llm_fn
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
+
+    async def async_before_start(self) -> None:
+        """预热压缩模型的客户端与熔断器（构造即注册，不发起网络请求；失败不阻断启动）。"""
+        for model in self._model_chain:
+            with suppress(Exception):
+                get_llm(model)
+                get_breaker(model)
+                log.info("[compaction] 压缩模型客户端已预热: {}", model)
+
+    def _default_llm_fn(self, messages: list[dict]) -> Any:
+        """默认 LLM 压缩调用：走韧性层（压缩模型链 + 熔断/重试/降级）。"""
+        return resilient_invoke(messages, chain=self._model_chain, label="compact")
+
+    @property
+    def model_chain(self) -> list[str]:
+        return list(self._model_chain)
 
     # ------------------------------------------------------------------ public
 
@@ -323,7 +335,6 @@ class CompactionService(BaseComponent):
         self,
         messages: list[dict],
         *,
-        breaker: CircuitBreaker | None = None,
         summary_loader: Any = None,          # Callable[[], str] | None
     ) -> tuple[list[dict], CompactResult | None]:
         """
@@ -338,11 +349,10 @@ class CompactionService(BaseComponent):
             return messages, None
 
         tokens_before = estimate_tokens(messages)
-        result = await self._run_compaction(messages, breaker=breaker, summary_loader=summary_loader)
+        result = await self._run_compaction(messages, summary_loader=summary_loader)
         if result is None or result.tokens_after >= result.tokens_before:
-            # P1：压缩失败/无效计入通用熔断器（挡的是 Path B，Path A 永远可用）
-            if breaker is not None:
-                await breaker.record_failure()
+            # 压缩失败/无效计入服务级熔断器（挡的是 Path B，Path A 永远可用）
+            await self._breaker.record_failure()
             if result is not None:
                 log.info(
                     "Compaction ineffective ({}→{} tokens, +{:.0f}%); falling back to truncation.",
@@ -367,8 +377,7 @@ class CompactionService(BaseComponent):
                 tokens_after=estimate_tokens(truncated),
             )
 
-        if breaker is not None:
-            await breaker.record_success()
+        await self._breaker.record_success()
         log.info(
             "Compaction complete via {}: {}→{} tokens, removed {} messages.",
             result.path_used,
@@ -384,7 +393,6 @@ class CompactionService(BaseComponent):
         self,
         messages: list[dict],
         *,
-        breaker: CircuitBreaker | None = None,
         summary_loader: Any = None,
     ) -> CompactResult | None:
         log.debug("step 执行压缩开始")
@@ -399,7 +407,7 @@ class CompactionService(BaseComponent):
                 log.warning("Session-memory fast-path failed: {}; trying LLM.", exc)
 
         # Path B — LLM summarization（唯一受熔断门控的路径）
-        if breaker is None or await breaker.acquire():
+        if await self._breaker.acquire():
             log.debug("setp 压缩：Using LLM compaction.")
             result = await _llm_compact(messages, self._llm_fn)
             if result is not None:

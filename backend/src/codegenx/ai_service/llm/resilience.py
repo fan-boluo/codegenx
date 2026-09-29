@@ -1,13 +1,11 @@
-"""LLM 韧性层（P1：熔断 + 重试 + 模型降级链，见 docs/LLM调用设计方案.md §5-§6）。
+"""LLM 韧性层（熔断 + 重试 + 模型降级链，见 docs/LLM调用设计方案.md）。
 
-统一职责（业务层只声明 scenario，不感知重试/熔断细节）：
+统一职责（模型选择不在本层——各组件初始化时从自身配置解析模型链后传入）：
   1. CircuitBreaker  三态熔断器，按 (provider, model) 粒度，asyncio 安全；
-  2. 模型链路由      scenario → [主模型, fallback...]（config.model_roles），
-                     每级独立熔断，已熔断的模型快速跳过；
-  3. resilient_invoke         非流式执行：同模型退避重试 → 逐级 fallback；
-  4. resilient_invoke_stream  流式执行：仅首 chunk 前允许透明重试/换模型
-                              （首 chunk 后失败直接抛，避免向用户重复吐字，修 P1-5）；
-  5. 观测            scenario/model/outcome 指标 + 结构化调用日志。
+  2. resilient_invoke         非流式执行：同模型退避重试 → 逐级 fallback；
+  3. resilient_invoke_stream  流式执行：仅首 chunk 前允许透明重试/换模型
+                              （首 chunk 后失败直接抛，避免向用户重复吐字）；
+  4. 观测            label/model/outcome 指标 + 结构化调用日志。
 
 错误处理契约（llm/errors.py 四分类）：
   RETRYABLE         同模型退避重试（尊重 Retry-After），耗尽后切 fallback；
@@ -21,18 +19,13 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence
 
 from shared import log
 
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
 from codegenx.ai_service.utils.config import config
-
-# 场景常量（config.model_roles 的键_AGENT = "agent_main"
-SCENARIO_COMPACT = "compact"
-SCENARIO_SUMMARY = "summary"
-SCENARIO_MEMORY = "memory"
 
 
 class LLMNoModelAvailableError(RuntimeError):
@@ -200,18 +193,19 @@ def _backoff_delay(attempt: int, exc: Optional[BaseException] = None) -> float:
     return delay + random.uniform(0, 0.25 * base)
 
 
-def _log_call(scenario: str, model: str, attempt: int, latency_s: float,
+def _log_call(label: str, model: str, attempt: int, latency_s: float,
               outcome: str, fallback_used: bool = False) -> None:
     # 结构化调用日志：只记元数据，不记消息内容
     log.debug(
-        "[llm_call] scenario={} model={} attempt={} outcome={} fallback={} latency={:.2f}s",
-        scenario, model, attempt, outcome, fallback_used, latency_s,
+        "[llm_call] label={} model={} attempt={} outcome={} fallback={} latency={:.2f}s",
+        label, model, attempt, outcome, fallback_used, latency_s,
     )
 
 
-def _record_outcome(scenario: str, model: str, cls: Optional[LLMErrorClass]) -> None:
+def _record_outcome(label: str, model: str, cls: Optional[LLMErrorClass]) -> None:
     outcome = "ok" if cls is None else f"error_{cls.value}"
-    _inc("llm_scenario_calls_total", scenario=scenario, model=model, outcome=outcome)
+    # 指标沿用 scenario 标签键（看板连续性），值传组件 label
+    _inc("llm_scenario_calls_total", scenario=label, model=model, outcome=outcome)
 
 
 def _exec_kwargs(tools=None, max_tokens=None, temperature=None) -> Dict[str, Any]:
@@ -229,24 +223,20 @@ def _exec_kwargs(tools=None, max_tokens=None, temperature=None) -> Dict[str, Any
 # ── 非流式执行 ─────────────────────────────────────────────────────────────
 
 async def resilient_invoke(
-    scenario: str,
     messages: List[Dict[str, Any]],
     *,
+    chain: Sequence[str],
+    label: str = "",
     tools: Optional[List[Dict]] = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
-    primary_model: Optional[str] = None,
-    agent: Optional[str] = None,
-    agent_override: Optional[Dict[str, Any]] = None,
 ) -> str:
     """非流式调用：同模型退避重试 → 逐级 fallback（每级独立熔断）。
 
-    P4 §10.4：agent/agent_override 传智能体维度的模型覆盖（spec.name / spec.model_override）。
+    chain：组件初始化时从自身配置解析出的模型链 [主模型, fallback...]；
+    label：观测标签（组件名），仅用于指标/日志，不参与路由。
     """
-    chain = config.get_model_chain(
-        scenario, primary_override=primary_model,
-        agent=agent, agent_override=agent_override,
-    )
+    chain = [m for m in chain if str(m or "").strip()]
     kwargs = _exec_kwargs(tools, max_tokens, temperature)
     last_exc: Optional[BaseException] = None
     max_attempts = max(0, config.llm.max_attempts)
@@ -254,10 +244,10 @@ async def resilient_invoke(
     for idx, model in enumerate(chain):
         fallback_used = idx > 0
         if fallback_used:
-            _inc("llm_fallback_total", scenario=scenario, model=model)
+            _inc("llm_fallback_total", scenario=label, model=model)
         breaker = get_breaker(model)
         if not await breaker.acquire():
-            log.warning("[llm] {} 熔断打开，跳过模型 {}（scenario={}）", chain[0], model, scenario)
+            log.warning("[llm] {} 熔断打开，跳过模型 {}（label={}）", chain[0], model, label)
             if last_exc is None:
                 last_exc = LLMNoModelAvailableError(f"circuit open: {model}")
             continue
@@ -267,15 +257,15 @@ async def resilient_invoke(
                 t0 = time.monotonic()
                 content = await get_llm(model).invoke(messages, **kwargs)
                 await breaker.record_success()
-                _record_outcome(scenario, model, None)
-                _log_call(scenario, model, attempt, time.monotonic() - t0, "ok", fallback_used)
+                _record_outcome(label, model, None)
+                _log_call(label, model, attempt, time.monotonic() - t0, "ok", fallback_used)
                 return content
             except asyncio.CancelledError:
                 raise  # 停止请求/任务取消：绝不重试
             except Exception as exc:
                 cls = classify_llm_error(exc)
-                _record_outcome(scenario, model, cls)
-                _log_call(scenario, model, attempt, time.monotonic() - t0,
+                _record_outcome(label, model, cls)
+                _log_call(label, model, attempt, time.monotonic() - t0,
                           f"error_{cls.value}", fallback_used)
                 last_exc = exc
                 if cls is LLMErrorClass.RETRYABLE:
@@ -288,41 +278,35 @@ async def resilient_invoke(
                     break  # 重试耗尽：下一级模型
                 delay = _backoff_delay(attempt, exc)
                 log.warning(
-                    "[llm] scenario={} model={} 瞬态错误({})，{:.1f}s 后重试（{}/{}）: {}",
-                    scenario, model, cls.value, delay, attempt + 1, max_attempts, exc,
+                    "[llm] label={} model={} 瞬态错误({})，{:.1f}s 后重试（{}/{}）: {}",
+                    label, model, cls.value, delay, attempt + 1, max_attempts, exc,
                 )
-                _inc("llm_retry_total", scenario=scenario, model=model)
+                _inc("llm_retry_total", scenario=label, model=model)
                 await asyncio.sleep(delay)
 
     if last_exc is not None:
         raise last_exc
-    raise LLMNoModelAvailableError(f"scenario={scenario} 无可用模型（链为空）")
+    raise LLMNoModelAvailableError(f"label={label} 无可用模型（链为空）")
 
 
 # ── 流式执行 ───────────────────────────────────────────────────────────────
 
 async def resilient_invoke_stream(
-    scenario: str,
     messages: List[Dict[str, Any]],
     *,
+    chain: Sequence[str],
+    label: str = "",
     tools: Optional[List[Dict]] = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
-    primary_model: Optional[str] = None,
     timeout: Optional[float] = None,
-    agent: Optional[str] = None,
-    agent_override: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """流式调用：重试/换模型仅限**首 chunk 之前**；首 chunk 后失败直接抛。
 
-    这是 P1-5（流式中断重试导致前端内容重复）的修复点：一旦有内容已透传给
-    上层消费者，任何失败都不能透明重放，只能让本轮显式失败。
-    P4 §10.4：agent/agent_override 传智能体维度的模型覆盖（spec.name / spec.model_override）。
+    一旦有内容已透传给上层消费者，任何失败都不能透明重放，只能让本轮显式失败
+    （否则用户会看到重复内容）。chain/label 语义同 resilient_invoke。
     """
-    chain = config.get_model_chain(
-        scenario, primary_override=primary_model,
-        agent=agent, agent_override=agent_override,
-    )
+    chain = [m for m in chain if str(m or "").strip()]
     kwargs = _exec_kwargs(tools, max_tokens, temperature)
     if timeout is not None:
         kwargs["timeout"] = timeout
@@ -332,10 +316,10 @@ async def resilient_invoke_stream(
     for idx, model in enumerate(chain):
         fallback_used = idx > 0
         if fallback_used:
-            _inc("llm_fallback_total", scenario=scenario, model=model)
+            _inc("llm_fallback_total", scenario=label, model=model)
         breaker = get_breaker(model)
         if not await breaker.acquire():
-            log.warning("[llm] {} 熔断打开，跳过模型 {}（scenario={}）", chain[0], model, scenario)
+            log.warning("[llm] {} 熔断打开，跳过模型 {}（label={}）", chain[0], model, label)
             if last_exc is None:
                 last_exc = LLMNoModelAvailableError(f"circuit open: {model}")
             continue
@@ -348,23 +332,23 @@ async def resilient_invoke_stream(
                     first_chunk_seen = True
                     yield item
                 await breaker.record_success()
-                _record_outcome(scenario, model, None)
-                _log_call(scenario, model, attempt, time.monotonic() - t0, "ok", fallback_used)
+                _record_outcome(label, model, None)
+                _log_call(label, model, attempt, time.monotonic() - t0, "ok", fallback_used)
                 return
             except asyncio.CancelledError:
                 raise  # 用户停止/客户端断开：绝不重试、不计失败
             except Exception as exc:
                 cls = classify_llm_error(exc)
-                _record_outcome(scenario, model, cls)
-                _log_call(scenario, model, attempt, time.monotonic() - t0,
+                _record_outcome(label, model, cls)
+                _log_call(label, model, attempt, time.monotonic() - t0,
                           f"error_{cls.value}", fallback_used)
                 last_exc = exc
                 if cls is LLMErrorClass.RETRYABLE:
                     await breaker.record_failure()
                 if first_chunk_seen:
                     # 首 chunk 已透传：只能显式失败（透明重放会让用户看到重复内容）
-                    log.warning("[llm] scenario={} 首 chunk 后失败({})，终止本轮: {}",
-                                scenario, cls.value, exc)
+                    log.warning("[llm] label={} 首 chunk 后失败({})，终止本轮: {}",
+                                label, cls.value, exc)
                     raise
                 if cls is LLMErrorClass.LOGIC:
                     raise
@@ -374,12 +358,12 @@ async def resilient_invoke_stream(
                     break
                 delay = _backoff_delay(attempt, exc)
                 log.warning(
-                    "[llm] scenario={} model={} 流式瞬态错误({})，{:.1f}s 后重试（{}/{}）: {}",
-                    scenario, model, cls.value, delay, attempt + 1, max_attempts, exc,
+                    "[llm] label={} model={} 流式瞬态错误({})，{:.1f}s 后重试（{}/{}）: {}",
+                    label, model, cls.value, delay, attempt + 1, max_attempts, exc,
                 )
-                _inc("llm_retry_total", scenario=scenario, model=model)
+                _inc("llm_retry_total", scenario=label, model=model)
                 await asyncio.sleep(delay)
 
     if last_exc is not None:
         raise last_exc
-    raise LLMNoModelAvailableError(f"scenario={scenario} 无可用模型（链为空）")
+    raise LLMNoModelAvailableError(f"label={label} 无可用模型（链为空）")
