@@ -124,6 +124,27 @@ def test_summary_model_from_config(monkeypatch):
     assert SessionSummaryService(system_app=None).model_chain == [app_config.get_default_model()]
 
 
+def test_summary_empty_output_falls_back_to_current_notes(monkeypatch):
+    """校验闸（句法层）：空输出 = 无效结果 → 兜底保留旧笔记（LLM调用设计方案.md §5.3）。"""
+    import asyncio
+
+    from codegenx.ai_service.compact import session_summary as ss_mod
+
+    svc = SessionSummaryService(system_app=None)
+
+    async def _empty_invoke(*args, **kwargs):
+        return "   "  # 空白输出
+
+    monkeypatch.setattr(ss_mod, "resilient_invoke", _empty_invoke)
+
+    notes = asyncio.run(svc._summarize(
+        messages=[{"role": "user", "content": "hi"}],
+        current_notes="# Session Title\n旧内容",
+        notes_path="x.md",
+    ))
+    assert notes == "# Session Title\n旧内容"
+
+
 # ── SessionSummaryService：阈值状态外置 ──────────────────────────────────────
 
 def _big_messages(n_chars: int) -> list[dict]:

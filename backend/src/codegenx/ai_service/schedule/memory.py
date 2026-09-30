@@ -36,6 +36,7 @@ from shared import log
 
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.llm.async_client import get_llm
+from codegenx.ai_service.llm.errors import classify_llm_error
 from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.memory import metrics
@@ -332,12 +333,17 @@ class MemoryScheduler(BaseComponent):
                 metrics.observe_extract_latency(app_id, time.time() - started)
             log.debug("任务 #{} {} 完成，耗时 {:.1f}s", task_id, task_type, time.time() - started)
         except Exception as exc:  # noqa: BLE001
-            status = await self.tasks.mark_failed(task_id, f"{type(exc).__name__}: {exc}")
+            # 异常闸（LLM调用设计方案.md §5.4）：按 LLMErrorClass 记因入库与日志，
+            # 便于区分模型故障（retryable/超长）与本地 bug（logic）
+            err_class = classify_llm_error(exc)
+            status = await self.tasks.mark_failed(
+                task_id, f"[{err_class.value}] {type(exc).__name__}: {exc}"
+            )
             if task_type == TASK_WARM_EXTRACT:
                 metrics.inc_extract(app_id, "dead" if status == "dead" else "failed")
             log.warning(
-                "任务 #{} {} 失败（第 {} 次）: {} → {}",
-                task_id, task_type, task.get("retry_count", 0) + 1, exc, status,
+                "任务 #{} {} 失败（第 {} 次，{}）: {} → {}",
+                task_id, task_type, task.get("retry_count", 0) + 1, err_class.value, exc, status,
             )
         finally:
             heartbeat.cancel()
@@ -449,6 +455,13 @@ class MemoryScheduler(BaseComponent):
             max_tokens=1024,
         )
         candidates = parse_extracted_memories(raw)
+        # 校验闸（§5.4）：模型有输出但解析不出候选 → 记因后按合法 no-op 推进水位
+        #（「没提炼出记忆」是正常业务结果不重试；此日志用于发现提示词/模型回归）
+        if raw and raw.strip() and not candidates:
+            log.warning(
+                "[warm_extract] 会话 {} 提炼输出无法解析为候选记忆（{} 字符），按 no-op 推进水位",
+                session_id, len(raw),
+            )
 
         # 4. 准入校验 + 分层落库（MySQL 真源先行，warm 向量层批量跟进）
         #    溯源（P2-7 ②）：消费区间内全部消息 uid 落 agent_memory.source_msg_ids

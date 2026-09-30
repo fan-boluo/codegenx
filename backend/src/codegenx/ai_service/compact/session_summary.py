@@ -23,6 +23,7 @@ from shared import log
 from shared.constants import get_session_dir
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.llm.async_client import get_llm
+from codegenx.ai_service.llm.errors import classify_llm_error
 from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.utils.context_utils import rough_tokens
 from codegenx.ai_service.utils.config import config
@@ -219,15 +220,20 @@ class SessionSummaryService(BaseComponent):
     # ── 内部提取 ──────────────────────────────────────────────────────────────
 
     async def _extract(self, state: SummaryState, messages: list[dict], path: Path) -> None:
-        """后台任务：摘要 messages → 覆盖写 SUMMARY.md；失败非致命。"""
+        """后台任务：摘要 messages → 覆盖写 SUMMARY.md；失败非致命。
+
+        异常闸（LLM调用设计方案.md §5.4）：catch 通用层异常并按 LLMErrorClass
+        记因后转「无效结果」，兜底 = 本次跳过（旧摘要保留），等下次阈值再触发。
+        """
         try:
             current_notes = self._load_from_path(path)
             summary = await self._summarize(messages, current_notes, str(path))
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(summary, encoding="utf-8")
             log.debug("session summary 压缩完成:{}", path)
-        except Exception:
-            log.error("session summary 压缩异常")
+        except Exception as exc:
+            err_class = classify_llm_error(exc)
+            log.error("session summary 提取异常（{}）", err_class.value)
             log.error(traceback.format_exc())
         finally:
             state.extracting = False
@@ -268,6 +274,8 @@ class SessionSummaryService(BaseComponent):
         )
 
         if not updated_notes or not updated_notes.strip():
+            # 校验闸（句法层）：空输出 = 无效结果 → 兜底保留旧笔记（异步可重算，等下次阈值触发）
+            log.warning("[summary] 摘要输出为空，保留旧笔记兜底")
             return current_notes if current_notes else ""
 
         return updated_notes.strip()
