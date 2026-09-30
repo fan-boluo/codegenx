@@ -1,5 +1,5 @@
 """
-Token thresholds, auto-compact gate, and circuit breaker.
+Token thresholds and auto-compact gate.
 
 Production numbers (for reference):
   Model context window:         200,000 tokens  (Claude Sonnet)
@@ -44,13 +44,6 @@ MANUAL_COMPACT_BUFFER = max(100, EFFECTIVE_CONTEXT_WINDOW // 30)
 
 # 实际压缩触发的阈值
 AUTOCOMPACT_THRESHOLD = EFFECTIVE_CONTEXT_WINDOW - AUTOCOMPACT_BUFFER_TOKENS
-
-
-# ── Circuit breaker ────────────────────────────────────────────────────────────
-# After this many consecutive failures stop retrying until the session restarts.
-# Mirrors MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3 in autoCompact.ts.
-
-MAX_CONSECUTIVE_FAILURES = 3
 
 
 # ── Threshold queries ──────────────────────────────────────────────────────────

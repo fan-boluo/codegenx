@@ -11,7 +11,7 @@ LLM 调用按职责分三层，上层只声明自己的模型链，传输细节�
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ 组件层：每个组件在初始化时从自身配置解析模型链，自持熔断器             │
+│ 组件层：每个组件在初始化时从自身配置解析模型链                         │
 │                                                                   │
 │  AgentRuntime     CompactionService   SessionSummaryService       │
 │  MemoryScheduler                                                  │
@@ -47,7 +47,7 @@ LLM 调用按职责分三层，上层只声明自己的模型链，传输细节�
 | 模型选择 | 各组件 | 从自身配置字段解析，不经全局路由 |
 | 重试 / 退避 / 降级 | 韧性层 | 业务层不感知重试细节 |
 | 熔断（模型级） | 韧性层 | per `provider:model`，全局注册表 |
-| 熔断（压缩业务级） | CompactionService | 服务级自持，保护压缩链路 |
+| 压缩失败兜底 | CompactionService | 压缩失败/无效统一保守截断（保底可用），不属模型故障、不进熔断 |
 | 连接池 / 客户端生命周期 | 客户端层 | per-provider 单例，应用级启停 |
 | 截断续写（finish_reason=length） | Agent 侧业务恢复 | 业务语义，不是传输问题 |
 | 上下文超长恢复 | Agent 侧业务恢复 | 依赖会话上下文管理器 |
@@ -77,8 +77,7 @@ LLM 调用按职责分三层，上层只声明自己的模型链，传输细节�
 每个使用 LLM 的组件在 **`__init__`** 时：
 
 1. 从自身配置解析出模型链 `self._model_chain`；
-2. 构造自己需要的熔断器；
-3. 连接池经客户端层惰性单例按需建立。
+2. 连接池经客户端层惰性单例按需建立（模型级熔断器统一由韧性层注册表管理，无自建业务熔断器）。
 
 在 **`async_before_start`**（引擎启动阶段）时：
 
@@ -190,12 +189,13 @@ resilient_invoke_stream(messages, *, chain, label, tools?, max_tokens?, temperat
 - HALF_OPEN 放行限量探测，成功过半闭合、任一失败重开；
 - 状态迁移经 `asyncio.Lock` 串行化；状态变化打日志并更新指标（`llm_breaker_opens_total`、`llm_circuit_state` gauge）。
 
-**双层熔断**：
+**熔断粒度**：只有模型级一层。
 
 | 层 | 键 | 持有者 | 保护对象 |
 |----|-----|--------|---------|
 | 模型级 | `provider:model` | 韧性层注册表 | 传输层故障（超时/限流/不可达），全局生效 |
-| 压缩业务级 | `compaction` | CompactionService 实例自持 | 压缩 LLM 连续失败的业务场景；熔断打开时上下文压缩退回 session-memory 快速路径（该路径不经熔断，永远可用） |
+
+压缩失败与压缩无效（压缩后 token 未下降）是业务结果而非模型故障，不进熔断；由 CompactionService 统一保守截断兜底（session-memory 快速路径不经 LLM，永远可用）。
 
 ### 4.3 非流式执行（resilient_invoke）
 

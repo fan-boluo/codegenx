@@ -18,7 +18,6 @@ Micro-compaction (no LLM):
 
 Full compaction:
   CompactionService                   — stateless compaction service（原 CompactionEngine）
-  compact_conversation(...)           — one-shot helper
 
 Constants:
   COMPACTABLE_TOOLS                   — set of tools whose results are clearable
@@ -53,7 +52,6 @@ from codegenx.ai_service.compact.micro import (
 from codegenx.ai_service.compact.compact import (
     CompactResult,
     CompactionService,
-    compact_conversation,
     MAX_TOKENS_AFTER,
     MIN_TEXT_MESSAGES,
 )
@@ -81,7 +79,6 @@ __all__ = [
     # full compaction
     "CompactResult",
     "CompactionService",
-    "compact_conversation",
     "MAX_TOKENS_AFTER",
     "MIN_TEXT_MESSAGES",
 ]
