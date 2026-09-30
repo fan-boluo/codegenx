@@ -108,8 +108,10 @@ def test_resolve_agent_chain_spec_model_first(monkeypatch):
 
     from codegenx.ai_service.agent import runtime as rt_mod
 
-    # 隔离工具注册表：AgentRuntime.__init__ 会经容器查表（测试环境无 SystemApp）
-    monkeypatch.setattr(rt_mod, "get_tool_registry", lambda: SimpleNamespace(tools=[]))
+    # 隔离容器查表：AgentRuntime.__init__ 经 get_app() 取 tools/tools_executor/session_pool（测试环境无 SystemApp）
+    monkeypatch.setattr(rt_mod, "get_app", lambda: SimpleNamespace(
+        tools=SimpleNamespace(tools=[]), tools_executor=None, session_pool=None,
+    ))
 
     rt = rt_mod.AgentRuntime(system_app=None)
     registry = SimpleNamespace(get=lambda name: (

@@ -44,6 +44,7 @@ class ComponentType(str, Enum):
     SKILL_MANAGER = "skill_manager"
     AGENT_REGISTRY = "agent_registry"
     CONTEXT_SERVICE = "context_service"
+    SESSION_POOL = "session_pool"
     SESSION_PERSISTENCE = "session_persistence"
     TASK_BOARD = "task_board"
     MEMORY_MANAGER = "memory_manager"

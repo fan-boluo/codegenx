@@ -15,7 +15,6 @@ from codegenx.ai_service.agent.runtime_schema import (
     RuntimeSessionState,
     TurnStoppedError, ActivateTurn,
 )
-from codegenx.ai_service.agent.session_pool import SessionPool
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import LLMRecovery
@@ -63,20 +62,13 @@ class AgentRuntime(BaseComponent):
         self.message_bus = MessageBus()
         self.tool_registry = get_app().tools
         self.tool_executor = get_app().tools_executor
+        # 会话池为独立进程级组件（参数自读 config.session），此处仅取用
+        self.session_pool = get_app().session_pool
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
         # hook 监听器随组件模块 import 链完成 @on 收集，由 initialize_components() 末尾冻结（docs/Hook设计.md §6）
         self._dispatcher_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
-
-        # Session pool with intelligent cleanup
-        # Default: max 1000 sessions, idle timeout 1 hour, cleanup every 5 minutes
-        self.session_pool = SessionPool(
-            max_sessions=int(self.agent_config.max_sessions or 1000),
-            idle_timeout_seconds=int(self.agent_config.session_idle_timeout_seconds or 3600),
-            cleanup_interval_seconds=int(self.agent_config.session_cleanup_interval_seconds or 300),
-            swap_idle_seconds=int(getattr(self.agent_config, "session_swap_idle_seconds", 0) or 300),
-        )
 
     def init_app(self, system_app) -> None:
         self.system_app = system_app
@@ -110,7 +102,7 @@ class AgentRuntime(BaseComponent):
         """引擎启动（迁自旧 SystemApp.startup 第 1/6 步）：
         先做最小启动校验（默认智能体模型与模型表必须可用，带病配置快速失败），
         预热全部智能体模型的客户端与熔断器（构造即注册，不发起网络请求），
-        再启动 session pool 清理循环 + dispatcher。"""
+        再启动 dispatcher（session pool 清理循环由容器广播、注册顺序先于本组件）。"""
         default_agent = self.config.get_default_agent()
         if not (default_agent.model or "").strip():
             raise RuntimeError(
@@ -127,7 +119,7 @@ class AgentRuntime(BaseComponent):
         log.info("启动runtime完毕")
 
     async def async_before_stop(self) -> None:
-        """引擎停止：dispatcher + session pool（失败不阻断其余组件收尾）。"""
+        """引擎停止：dispatcher（session pool 由容器逆序广播自行收尾，失败不阻断其余组件）。"""
         with suppress(Exception):
             await self.stop()
 
@@ -135,12 +127,9 @@ class AgentRuntime(BaseComponent):
         if self._dispatcher_task is not None and not self._dispatcher_task.done():
             return
         self._shutdown_event.clear()
-        
-        # Start session pool cleanup task
-        await self.session_pool.start()
 
         # Build tool catalog (async — must be awaited)
-        self.tools = await self.tool_registry.build_tool(self.config.tools.excluded)
+        self.tools = await self.tool_registry.build_tool()
         log.info("工具目录构建完成,共{}个工具", len(self.tools))
 
         self._dispatcher_task = asyncio.create_task(
@@ -155,9 +144,6 @@ class AgentRuntime(BaseComponent):
             with suppress(asyncio.CancelledError):
                 await self._dispatcher_task
             self._dispatcher_task = None
-
-        # Stop session pool (gracefully closes all sessions)
-        await self.session_pool.stop()
 
     # ------------------------------------------------------------------ public API
 

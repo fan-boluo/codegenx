@@ -66,13 +66,6 @@ class AgentConfig(Base):
         default=50,
         validation_alias=AliasChoices("maxSteps", "max_steps"),
     )  # 一次turn的最大llm推理步数
-    session_cleanup_interval_seconds: ClassVar[int] = 300 # 每隔5分钟就进行闲置sessioni清理一次
-    session_idle_timeout_seconds : ClassVar[int] = 1800 # session空闲时间 30分钟就清除
-    session_swap_idle_seconds: int = Field(
-        default=300,
-        validation_alias=AliasChoices("swapIdleSeconds", "session_swap_idle_seconds"),
-    )  # P3：闲置超过该秒数且无在途任务的会话卸载 chat_messages（须远小于 session_idle_timeout_seconds）
-    max_sessions : ClassVar[int] = 100  # sessoion pool的session的最多个数
 
     # ── P4 多智能体（docs/SystemApp架构设计.md §10）：AgentConfig 扩展为 AgentSpec 超集，
     #    旧配置无新字段时与现状完全等价 ──────────────────────────────────────────
@@ -410,7 +403,11 @@ class LLMConfig(Base):
     )  # 探测成功率达标则闭合
 
 class SessionConfig(Base):
-    pass
+    """SessionPool 组件配置（会话池参数由组件自读 config.session，与智能体配置解耦）。"""
+    max_sessions: int = Field(default=100)  # session pool 的 session 最多个数
+    idle_timeout_seconds: int = Field(default=1800)  # session 空闲 30 分钟即清除
+    cleanup_interval_seconds: int = Field(default=300)  # 每隔 5 分钟进行一次闲置 session 清理
+    swap_idle_seconds: int = Field(default=300)  # P3：闲置超过该秒数且无在途任务的会话卸载 chat_messages（须远小于 idle_timeout_seconds）
 
 class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)

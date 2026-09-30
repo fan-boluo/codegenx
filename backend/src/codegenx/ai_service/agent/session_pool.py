@@ -8,14 +8,16 @@ from datetime import datetime
 from typing import Any, Optional
 
 from codegenx.ai_service.agent.agent_schema import AgentState
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.hook import  HookContext, HookEvent, on
+from codegenx.ai_service.utils.config import config
 from shared import log
 
 
-class SessionPool:
+class SessionPool(BaseComponent):
     """
     Manages session lifecycle with intelligent cleanup strategies.
-    
+
     Features:
     - LRU-based session eviction
     - Configurable idle timeout
@@ -23,34 +25,33 @@ class SessionPool:
     - Memory-efficient session management
     """
 
+    name = ComponentType.SESSION_POOL
+
     def __init__(
         self,
-        max_sessions: int = 1000,
-        idle_timeout_seconds: int = 3600,
-        cleanup_interval_seconds: int = 300,
-        swap_idle_seconds: int = 300,
+        system_app=None,
     ):
-        """
-        Initialize SessionPool.
+        """会话池组件：参数自读 config.session（SessionConfig），与智能体配置解耦；
+        启动/关闭由容器生命周期广播接管（async_before_start / async_before_stop）。
 
         Args:
-            max_sessions: Maximum number of active sessions
-            idle_timeout_seconds: Seconds before idle session cleanup (default 1 hour)
-            cleanup_interval_seconds: Interval between cleanup runs (default 5 minutes)
-            swap_idle_seconds: Seconds before an idle session's chat_messages are
-                unloaded (swap-out, P3). Must be far smaller than idle_timeout_seconds;
-                0 disables swapping.
+            system_app: 容器引用（system_app.register 以 component(system_app) 构造）
         """
-        self.max_sessions = max_sessions
-        self.idle_timeout_seconds = idle_timeout_seconds
-        self.cleanup_interval_seconds = cleanup_interval_seconds
-        self.swap_idle_seconds = swap_idle_seconds
-        
+        BaseComponent.__init__(self, system_app)
+        session_cfg = config.session
+        self.max_sessions = int(session_cfg.max_sessions or 100)
+        self.idle_timeout_seconds = int(session_cfg.idle_timeout_seconds or 1800)
+        self.cleanup_interval_seconds = int(session_cfg.cleanup_interval_seconds or 300)
+        self.swap_idle_seconds = int(session_cfg.swap_idle_seconds or 300)
+
         # OrderedDict maintains insertion order for LRU tracking
         self._sessions: OrderedDict[str, Any] = OrderedDict()
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     async def start(self) -> None:
         """Start background cleanup task."""
@@ -84,6 +85,14 @@ class SessionPool:
                 await self._close_session_unsafe(session_id)
             self._sessions.clear()
         log.info("SessionPool stopped")
+
+    # ── 容器生命周期钩子：start_app/stop_app 广播接管（原由 AgentRuntime.start/stop 代管）──
+
+    async def async_before_start(self) -> None:
+        await self.start()
+
+    async def async_before_stop(self) -> None:
+        await self.stop()
 
     async def get_or_create(
         self, session_id: str, request: Any
@@ -343,3 +352,9 @@ async def persist_chat_snapshot(ctx: HookContext) -> None:
             app_id=session.app_id,
             session_id=session.session_id,
         )
+
+
+def initialize_session_pool(system_app) -> SessionPool:
+    """注册会话池组件（system_app.initialize_components 调用；须先于 AgentRuntime，
+    关闭逆序保证 runtime 先停、会话池最后收尾）。"""
+    return system_app.register(SessionPool)

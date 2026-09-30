@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.tools.base import Tool, BaseTool
 from codegenx.ai_service.tools.file import WriteFileTool, ReadFileTool
+from codegenx.ai_service.utils.config import config
 from shared import log
 
 # 工具目录
@@ -21,6 +22,7 @@ class ToolRegistry(BaseComponent):
 
     def __init__(self, system_app=None):
         BaseComponent.__init__(self, system_app)
+        self.config = config
         self.tools: list[Tool] = []
         self.regist_tools()
 
@@ -29,7 +31,7 @@ class ToolRegistry(BaseComponent):
 
     def regist_tools(self):
         """
-        加载所有的工具
+        加载所有的工具（注册时即排除 config.tools.excluded 中不启用的工具）
         """
         classes = []
         pattern = "*.py"
@@ -59,10 +61,15 @@ class ToolRegistry(BaseComponent):
 
             except Exception as e:
                 log.error(f"导入失败 {file_path}: {e}")
+        # 注册时即排除不启用的工具（config.tools.excluded），build_tool 直接构建无需再过滤
+        excluded_names = {str(n).strip() for n in (self.config.tools.excluded or [])}
         for tool_cls in classes:
             try :
                 tool_instance = tool_cls()
                 name = getattr(tool_instance, "name", None)
+                if name in excluded_names:
+                    log.info(f"工具 {name} 在 tools.excluded 名单中，跳过注册")
+                    continue
                 label = getattr(tool_instance, "label", None)
                 description = getattr(tool_instance, "description", None)
                 parameters = getattr(tool_instance, "parameters", None)
@@ -119,10 +126,11 @@ class ToolRegistry(BaseComponent):
         else:
             return {"error": f"未知工具：{tool_name}"}
 
-    async def build_tool(self,exclude_tools: list=None) -> list:
+    async def build_tool(self) -> list:
+        """构建 LLM function-calling 工具目录（不启用的工具已在注册时排除）。"""
         # build_tool = await self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
 
-        tool_catalog = [tool for tool in self.tools if tool.name not in exclude_tools]
+        tool_catalog = self.tools
 
         return [
             {

@@ -95,11 +95,13 @@ def _make_pool_session(chat_len: int = 3) -> SimpleNamespace:
 
 
 def _make_pool(**kwargs) -> SessionPool:
-    return SessionPool(
-        idle_timeout_seconds=3600,
-        swap_idle_seconds=300,
-        **kwargs,
-    )
+    # SessionPool 已组件化（参数自读 config.session），测试直接覆盖属性
+    pool = SessionPool()
+    pool.idle_timeout_seconds = 3600
+    pool.swap_idle_seconds = 300
+    for key, value in kwargs.items():
+        setattr(pool, key, value)
+    return pool
 
 
 def test_swap_out_unloads_idle_quiescent_session():
@@ -165,15 +167,21 @@ def test_swap_out_not_repeated():
 # ── swap-out 恢复（runtime） ────────────────────────────────────────────────
 
 def _runtime_without_container() -> AgentRuntime:
-    """构造不依赖组件容器的 AgentRuntime（打桩工具注册表，绕过 get_app()）。"""
+    """构造不依赖组件容器的 AgentRuntime（打桩 get_app()，绕过真实组件装配）。"""
     import codegenx.ai_service.agent.runtime as runtime_mod
 
-    orig_get_registry = runtime_mod.get_tool_registry
-    runtime_mod.get_tool_registry = lambda: _registry_with()
+    class _StubApp:
+        # runtime 构造仅保存 tools/tools_executor/session_pool 引用，桩对象足够
+        tools = SimpleNamespace(tools=[])
+        tools_executor = SimpleNamespace()
+        session_pool = SimpleNamespace()
+
+    orig_get_app = runtime_mod.get_app
+    runtime_mod.get_app = lambda: _StubApp()
     try:
         return AgentRuntime()
     finally:
-        runtime_mod.get_tool_registry = orig_get_registry
+        runtime_mod.get_app = orig_get_app
 
 
 def test_restore_swapped_session_reloads_snapshot(monkeypatch):

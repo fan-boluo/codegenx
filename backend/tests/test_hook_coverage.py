@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-import codegenx.ai_service.router  # noqa: F401  与 main.py 相同的应用 import 入口
+import codegenx.ai_service.api.router  # noqa: F401  与 main.py 相同的应用 import 入口
 from codegenx.ai_service.hook import EVENT_DEFINITIONS, hook_manager
 
 

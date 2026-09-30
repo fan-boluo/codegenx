@@ -130,18 +130,24 @@ def _make_session() -> RuntimeSessionState:
 
 
 def _make_runtime(recorder: RecorderHookManager, executor):
-    # AgentRuntime 构造依赖全局工具注册表（组件容器查表）；
+    # AgentRuntime 构造经 get_app() 查表取 tools/tools_executor/session_pool；
     # 本文件定位为不依赖容器的单元测试，构造期打桩绕过
     from codegenx.ai_service.agent.tool_handler import ToolRegistry as _TR
 
     bare_registry = _TR.__new__(_TR)  # 绕过目录扫描与容器依赖
     bare_registry.tools = []
-    orig_get_registry = runtime_module.get_tool_registry
-    runtime_module.get_tool_registry = lambda: bare_registry
+
+    class _StubApp:
+        tools = bare_registry
+        tools_executor = None
+        session_pool = None
+
+    orig_get_app = runtime_module.get_app
+    runtime_module.get_app = lambda: _StubApp()
     try:
         rt = AgentRuntime(system_app=None)
     finally:
-        runtime_module.get_tool_registry = orig_get_registry
+        runtime_module.get_app = orig_get_app
     # 构造后注入测试替身（新签名仅收 system_app，依赖组件在容器中装配）
     rt.tool_executor = executor
     rt.message_bus = FakeBus()

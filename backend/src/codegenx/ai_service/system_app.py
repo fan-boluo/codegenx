@@ -88,6 +88,12 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.CONTEXT_SERVICE, ContextService)
 
     @property
+    def session_pool(self) -> "SessionPool":
+        from codegenx.ai_service.agent.session_pool import SessionPool
+
+        return self.get_component(ComponentType.SESSION_POOL, SessionPool)
+
+    @property
     def session_io(self) -> "SessionPersistence":
         from codegenx.ai_service.session.manager import SessionPersistence
 
@@ -169,8 +175,8 @@ def initialize_components(app: SystemApp) -> None:
     构造知识留在组件模块内。注册顺序 = 启动广播顺序：
       llm → tools → skills → agents → context → session_io → tasks
       → memory → summary → compaction → chat_messages → monitor
-      → monitor_maintenance → memory_scheduler → runtime
-    其中 AgentRuntime 构造即取 ToolRegistry，故必须排在 tools 之后。
+      → monitor_maintenance → memory_scheduler → session_pool → runtime
+    其中 AgentRuntime 构造即取 ToolRegistry/SessionPool，故必须排在 tools、session_pool 之后。
     """
     if app._components_ready:
         return
@@ -190,6 +196,7 @@ def initialize_components(app: SystemApp) -> None:
     from codegenx.ai_service.monitor.monitor_pipeline import initialize_monitor
     from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
     from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
+    from codegenx.ai_service.agent.session_pool import initialize_session_pool
     from codegenx.ai_service.agent.runtime import initialize_runtime
 
     initialize_llm(app)
@@ -207,6 +214,7 @@ def initialize_components(app: SystemApp) -> None:
     initialize_monitor(app)
     initialize_monitor_maintenance(app)
     initialize_memory_scheduler(app)
+    initialize_session_pool(app)
     initialize_runtime(app)
 
     # hook 注册表冻结：@on 监听器随组件模块的 import 链（模块加载即注册）收集完毕，

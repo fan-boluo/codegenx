@@ -102,7 +102,7 @@ def test_init_app_default_wiring():
     assert hook_manager._frozen is True
     # 重复 init 返回同一容器且不重复装配（幂等）
     assert init_app() is app
-    assert len(app.components) == 15
+    assert len(app.components) == 17
 
 
 def test_reset_app_unloads_container():
@@ -113,12 +113,13 @@ def test_reset_app_unloads_container():
 
 
 def test_default_assembly_includes_all_components():
-    """回归：默认装配必须含全部 15 个组件（防访问器悬空）。"""
+    """回归：默认装配必须含全部 17 个组件（防访问器悬空）。"""
     app = init_app()
     for accessor in (
-        "llm", "tools", "skills", "agents", "context", "session_io", "tasks",
-        "memory", "summary", "compaction", "chat_messages", "monitor",
-        "monitor_maintenance", "memory_scheduler", "runtime",
+        "llm", "tools", "tools_executor", "skills", "agents", "context",
+        "session_pool", "session_io", "tasks", "memory", "summary",
+        "compaction", "chat_messages", "monitor", "monitor_maintenance",
+        "memory_scheduler", "runtime",
     ):
         assert getattr(app, accessor) is not None, accessor
 
