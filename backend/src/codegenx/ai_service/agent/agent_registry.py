@@ -79,7 +79,7 @@ class AgentRegistry(BaseComponent):
     async def async_before_start(self) -> None:
         """按 config.agents 装配并校验（P4 §10，迁自旧 SystemApp.startup 第 4 步）。
 
-        依赖注册顺序：tools/skills 组件先于本组件完成 before_start 装载，
+        依赖注册顺序：tools（构造扫描）/skills（on_init 装载）先于本组件就绪，
         此处才能对 allowlist 做 fail-fast 校验。
         """
         from codegenx.ai_service.system_app import get_app

@@ -3,12 +3,12 @@
 分层原则与判别法见 docs/SystemApp架构设计.md §2。本模块是纯框架层：
 不 import 任何业务组件（组合根在 system_app.py，组件实现各自模块内）。
 
-生命周期钩子执行约定（SystemApp 广播）：
-- 启动方向（on_init → after_init → async_on_init → before_start →
-  async_before_start → after_start → async_after_start）：
-  按组件**注册顺序**串行执行——注册顺序即依赖顺序（如 ToolRegistry
-  必须先于 AgentRegistry 装载，AgentRuntime 构造依赖前者）。
-- 关闭方向（async_before_stop → before_stop）：按注册**逆序**执行，
+生命周期钩子执行约定（SystemApp 广播，仅 3 个钩子）：
+- 启动方向（on_init → async_before_start）：按组件**注册顺序**串行执行——
+  注册顺序即依赖顺序（如 ToolRegistry 必须先于 AgentRegistry 装载，
+  AgentRuntime 构造依赖前者）。on_init 在 init_app() 同步阶段广播；
+  async_before_start 在 start_app() 事件循环内广播（主启动钩子）。
+- 关闭方向（async_before_stop）：在 stop_app() 内按注册**逆序**执行，
   异常逐组件隔离并记录，保证全部组件都有机会收尾。
 """
 
@@ -23,34 +23,16 @@ from shared import log
 
 
 class LifeCycle:
-    """组件生命周期钩子定义（同步/异步成对；重写需要的即可，其余空实现）。"""
+    """组件生命周期钩子定义（仅 3 个；重写需要的即可，其余空实现）。"""
 
     def on_init(self):
-        """组件初始化（注册完成后立即调用；适合轻量字段装配）。"""
-
-    def after_init(self):
-        """初始化后置（所有组件 on_init 完成后；适合数据库连接等较重装配）。"""
-
-    async def async_on_init(self):
-        """异步版 on_init（需事件循环，lifespan 内调用）。"""
-
-    def before_start(self):
-        """启动前（同步；如注册表装载/目录扫描等无需事件循环的装配）。"""
+        """组件初始化（init_app() 同步阶段广播；轻量装配/同步装载如目录扫描）。"""
 
     async def async_before_start(self):
-        """启动（异步主钩子：连接池/后台任务/预热等需要事件循环的启动动作）。"""
-
-    def after_start(self):
-        """启动后（同步通知位）。"""
-
-    async def async_after_start(self):
-        """启动后（异步通知位）。"""
-
-    def before_stop(self):
-        """停止前（同步清理）。"""
+        """启动主钩子（start_app() 事件循环内广播：连接池/后台任务/预热）。"""
 
     async def async_before_stop(self):
-        """停止（异步主钩子：后台任务/连接池释放）。"""
+        """关闭主钩子（stop_app() 逆序广播：后台任务/连接池释放）。"""
 
 
 class ComponentType(str, Enum):
@@ -126,9 +108,7 @@ class SystemApp(LifeCycle):
     def __init__(self) -> None:
         self.components: Dict[str, BaseComponent] = {}
         self._stop_event = threading.Event()
-        self._async_stop_event = threading.Event()
         self._stop_event.clear()
-        self._async_stop_event.clear()
 
     # ------------------------------------------------------------ 注册
 
@@ -180,53 +160,16 @@ class SystemApp(LifeCycle):
         for component in list(self.components.values()):
             component.on_init()
 
-    def after_init(self):
-        """按注册顺序调用全部组件的 after_init。"""
-        for component in list(self.components.values()):
-            component.after_init()
-
-    async def async_on_init(self):
-        """按注册顺序 await 全部组件的 async_on_init。"""
-        for component in list(self.components.values()):
-            await component.async_on_init()
-
-    def before_start(self):
-        """按注册顺序调用全部组件的 before_start。"""
-        for component in list(self.components.values()):
-            component.before_start()
-
     async def async_before_start(self):
         """按注册顺序 await 全部组件的 async_before_start（启动主钩子）。"""
         for component in list(self.components.values()):
             await component.async_before_start()
 
-    def after_start(self):
-        """按注册顺序调用全部组件的 after_start。"""
-        for component in list(self.components.values()):
-            component.after_start()
-
-    async def async_after_start(self):
-        """按注册顺序 await 全部组件的 async_after_start。"""
-        for component in list(self.components.values()):
-            await component.async_after_start()
-
     # ------------------------------------------------------------ 生命周期广播（关闭：注册逆序）
 
-    def before_stop(self):
-        """按注册逆序调用全部组件的 before_stop；异常逐组件隔离，进程级幂等。"""
-        if self._stop_event.is_set():
-            return
-        for component in reversed(list(self.components.values())):
-            try:
-                component.before_stop()
-            except Exception as exc:
-                log.error("component {} before_stop 失败（继续其余组件收尾）: {}",
-                          getattr(component, "name", component), exc)
-        self._stop_event.set()
-
     async def async_before_stop(self):
-        """按注册逆序 await 全部组件的 async_before_stop；异常逐组件隔离。"""
-        if self._async_stop_event.is_set():
+        """按注册逆序 await 全部组件的 async_before_stop；异常逐组件隔离，进程级幂等。"""
+        if self._stop_event.is_set():
             return
         for component in reversed(list(self.components.values())):
             try:
@@ -234,4 +177,4 @@ class SystemApp(LifeCycle):
             except Exception as exc:
                 log.error("component {} async_before_stop 失败（继续其余组件收尾）: {}",
                           getattr(component, "name", component), exc)
-        self._async_stop_event.set()
+        self._stop_event.set()

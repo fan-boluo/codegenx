@@ -1,7 +1,7 @@
 """SkillManager —— 全局 skill 注册表（P2 服务化，docs/SystemApp架构设计.md §4.5）。
 
 原 SkillManager._skills_cache 类属性（全局一份却挂在会话类上）上收为容器组件：
-启动时装载一次（before_start）；热更新走显式 reload()，而不是再 new loader。
+启动时装载一次（on_init）；热更新走显式 reload()，而不是再 new loader。
 """
 import json
 import re
@@ -39,8 +39,8 @@ class SkillManager(BaseComponent):
 
     # ------------------------------------------------------------------ lifecycle
 
-    def before_start(self) -> None:
-        """启动时装载全部内置 skill（同步目录扫描，无需事件循环）。"""
+    def on_init(self) -> None:
+        """注册完成后同步装载全部内置 skill（目录扫描，无需事件循环）。"""
         self.load()
 
     # ------------------------------------------------------------------ loading

@@ -233,7 +233,7 @@ def initialize_components(app: SystemApp) -> None:
 def init_app(app: SystemApp | None = None) -> SystemApp:
     """同步装配（main.py lifespan 前段调用；测试可传入自制实例）：
 
-    创建/安装全局容器 → 注册组件（含 hook 冻结）→ on_init/after_init/before_start。
+    创建/安装全局容器 → 注册组件（含 hook 冻结）→ 广播 on_init（同步钩子）。
     异步启动（连接/后台任务/runtime）由 start_app() 在事件循环内完成。
     """
     global _app
@@ -241,29 +241,24 @@ def init_app(app: SystemApp | None = None) -> SystemApp:
         _app = app if app is not None else SystemApp()
     initialize_components(_app)
     _app.on_init()
-    _app.after_init()
-    _app.before_start()
     return _app
 
 
 async def start_app(app: SystemApp | None = None) -> SystemApp:
-    """异步启动（需事件循环，lifespan 中调用）：async_on_init → async_before_start
-    → after_start → async_after_start。组件级失败语义由各组件钩子内部决定；
+    """异步启动（需事件循环，lifespan 中调用）：广播 async_before_start（主启动钩子）。
+    组件级失败语义由各组件钩子内部决定；
     幂等：已启动的容器重复调用直接返回（防重复拉起后台任务）。"""
     app = app or get_app()
     if app._started:
         return app
-    await app.async_on_init()
     await app.async_before_start()
-    app.after_start()
-    await app.async_after_start()
     app._started = True
     log.info("SystemApp startup completed")
     return app
 
 
 async def stop_app(app: SystemApp | None = None) -> None:
-    """逆序关闭（lifespan shutdown 调用）：组件 async_before_stop → before_stop
+    """逆序关闭（lifespan shutdown 调用）：广播 async_before_stop（注册逆序，异常隔离）
     → 基础设施连接池收尾（redis/qdrant/mysql 为 db/ 模块级单例，不属于任何业务组件，
     由容器统一兜底释放；自 main.py lifespan 收编，close 本身幂等）。"""
     app = app or get_app()
@@ -271,7 +266,6 @@ async def stop_app(app: SystemApp | None = None) -> None:
         # 未成功启动过的容器无需收尾（lifespan 也只在成功 startup 后才调用 shutdown）
         return
     await app.async_before_stop()
-    app.before_stop()
     with suppress(Exception):
         from db.redis.redis_client import redis_client
 

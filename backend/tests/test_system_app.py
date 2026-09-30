@@ -56,14 +56,8 @@ class _StubComponent(BaseComponent):
     def on_init(self) -> None:
         self._order.append(f"{self.name}.on_init")
 
-    def before_start(self) -> None:
-        self._order.append(f"{self.name}.before_start")
-
     async def async_before_start(self) -> None:
         self._order.append(f"{self.name}.async_before_start")
-
-    def before_stop(self) -> None:
-        self._order.append(f"{self.name}.before_stop")
 
     async def async_before_stop(self) -> None:
         if self._boom:
@@ -71,12 +65,22 @@ class _StubComponent(BaseComponent):
         self._order.append(f"{self.name}.async_before_stop")
 
 
-def _stub_app(order: list[str], names: tuple[str, ...] = ("c1", "c2", "c3")) -> SystemApp:
-    """裸容器 + 预置桩组件（_components_ready=True 跳过真实装配，只测广播）。"""
+def _stub_app(
+    order: list[str],
+    names: tuple[str, ...] = ("c1", "c2", "c3"),
+    boom_on_stop: bool = True,
+) -> SystemApp:
+    """裸容器 + 预置桩组件（_components_ready=True 跳过真实装配，只测广播）。
+
+    boom_on_stop=True 时 c2 的 async_before_stop 抛错（异常隔离用例）；
+    广播顺序用例传 False，保证三组件完整记录逆序链。
+    """
     app = SystemApp()
     app._components_ready = True
     for i, name in enumerate(names):
-        app.register_instance(_StubComponent(name, order, boom_on_stop=(i == 1)))
+        app.register_instance(
+            _StubComponent(name, order, boom_on_stop=(boom_on_stop and i == 1))
+        )
     return app
 
 
@@ -128,7 +132,7 @@ def test_accessor_missing_component_raises_value_error():
 def test_start_stop_broadcast_order_and_idempotency():
     """启动按注册序、关闭按注册逆序；重复 start/stop 均幂等。"""
     order: list[str] = []
-    app = _stub_app(order)
+    app = _stub_app(order, boom_on_stop=False)
 
     init_app(app)  # 同步钩子：c1 → c2 → c3
     assert order.index("c1.on_init") < order.index("c2.on_init") < order.index("c3.on_init")
@@ -143,8 +147,8 @@ def test_start_stop_broadcast_order_and_idempotency():
     assert len(order) == n
 
     asyncio.run(stop_app(app))  # 逆序：c3 → c2 → c1
-    assert order.index("c3.before_stop") < order.index("c2.before_stop")
-    assert order.index("c2.before_stop") < order.index("c1.before_stop")
+    assert order.index("c3.async_before_stop") < order.index("c2.async_before_stop")
+    assert order.index("c2.async_before_stop") < order.index("c1.async_before_stop")
     assert app._started is False
 
     n = len(order)
@@ -161,11 +165,11 @@ def test_stop_exception_isolated_per_component():
     order.clear()
     asyncio.run(stop_app(app))
 
-    assert "c3.before_stop" in order
-    assert "c1.before_stop" in order
+    assert "c3.async_before_stop" in order
+    assert "c1.async_before_stop" in order
     assert "c2.async_before_stop" not in order  # c2 抛错被隔离记录
     # 异常组件之后的组件（逆序更早注册的 c1）仍完成收尾
-    assert order.index("c3.before_stop") < order.index("c1.before_stop")
+    assert order.index("c3.async_before_stop") < order.index("c1.async_before_stop")
 
 
 def test_stop_before_start_is_noop():
@@ -183,7 +187,12 @@ def test_runtime_rejects_empty_default_model(monkeypatch):
     import codegenx.ai_service.agent.runtime as runtime_mod
 
     init_app()  # 组件就绪，AgentRuntime 构造依赖 tools 注册表
-    fake_config = SimpleNamespace(get_default_agent=lambda: AgentConfig(model=""))
+    # llm 组件化后构造期即解析默认模型链（get_default_model），stub 需一并补齐
+    fake_config = SimpleNamespace(
+        get_default_agent=lambda: AgentConfig(model=""),
+        get_default_model=lambda: "",
+        models={"stub": object()},
+    )
     monkeypatch.setattr(runtime_mod, "config", fake_config)
 
     rt = runtime_mod.AgentRuntime()

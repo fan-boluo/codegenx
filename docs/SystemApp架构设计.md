@@ -85,17 +85,13 @@ backend/src/codegenx/ai_service/
 
 纯框架模块：**不 import 任何业务组件**。
 
-### 3.1 LifeCycle —— 9 个生命周期钩子（同步/异步成对，重写需要的即可）
+### 3.1 LifeCycle —— 3 个生命周期钩子（重写需要的即可，其余空实现）
 
-| 钩子 | 方向 | 顺序 | 典型用途 |
-|---|---|---|---|
-| `on_init` / `after_init` | 启动（同步） | 注册序 | 轻量字段装配 / 较重同步装配 |
-| `async_on_init` | 启动（异步） | 注册序 | 需事件循环的初始化 |
-| `before_start` | 启动（同步） | 注册序 | 注册表装载/目录扫描（如 SkillManager.load） |
-| `async_before_start` | 启动（异步，**主钩子**） | 注册序 | 连接/后台任务/预热/校验 |
-| `after_start` / `async_after_start` | 启动（通知位） | 注册序 | 启动完成回调 |
-| `before_stop` | 关闭（同步） | **注册逆序** | 同步清理 |
-| `async_before_stop` | 关闭（异步，**主钩子**） | **注册逆序** | 后台任务/连接池释放 |
+| 钩子 | 方向 | 广播入口 | 顺序 | 典型用途 |
+|---|---|---|---|---|
+| `on_init` | 启动（同步） | init_app() | 注册序 | 轻量装配/同步装载（如 SkillManager.load） |
+| `async_before_start` | 启动（异步，**主钩子**） | start_app() | 注册序 | 连接/后台任务/预热/校验 |
+| `async_before_stop` | 关闭（异步，**主钩子**） | stop_app() | **注册逆序** | 后台任务/连接池释放 |
 
 ### 3.2 ComponentType —— 组件名注册表（15 项）
 
@@ -138,13 +134,13 @@ class SystemApp(LifeCycle):
     def get_component(name, type, ...) -> 实例            # 缺失 → ValueError（fail fast）
 
     # 启动广播：注册顺序串行（顺序即依赖，非 gather）
-    on_init / after_init / async_on_init / before_start / async_before_start / after_start / async_after_start
+    on_init            # init_app() 同步阶段
+    async_before_start # start_app() 事件循环内（主启动钩子）
     # 关闭广播：注册逆序，异常逐组件隔离记录，保证全部组件都有机会收尾
-    before_stop        # _stop_event 守卫：进程级幂等
-    async_before_stop  # _async_stop_event 守卫
+    async_before_stop  # stop_app() 内；_stop_event 守卫：进程级幂等
 ```
 
-关闭异常隔离：单组件 `before_stop` 抛错只记录日志，其余组件照常收尾（§5.4 用例覆盖）。
+关闭异常隔离：单组件 `async_before_stop` 抛错只记录日志，其余组件照常收尾（§5.4 用例覆盖）。
 
 ---
 
@@ -207,14 +203,12 @@ import 本模块的框架再导出（`BaseComponent/ComponentType`）或 `compon
 main.py lifespan
 ├─ startup:  AgentAdapterService.startup()
 │    ├─ app = init_app()        # 同步：安装全局容器 → initialize_components（注册15组件+hook冻结）
-│    │                          #       → 广播 on_init / after_init / before_start
-│    └─ await start_app(app)    # 异步：async_on_init → async_before_start（主启动钩子）
-│                               #       → after_start → async_after_start；置 _started=True
+│    │                          #       → 广播 on_init（同步钩子，如 skill 装载）
+│    └─ await start_app(app)    # 异步：广播 async_before_start（主启动钩子）；置 _started=True
 │                               # 幂等：已 _started 直接返回（防重复拉起后台任务）
 └─ shutdown: await stop_app()
      ├─ 未 _started → 直接返回（lifespan 只在成功启动后才调 shutdown）
-     ├─ 广播 async_before_stop（逆序，异常隔离）
-     ├─ 广播 before_stop（逆序，stop_event 幂等守卫）
+     ├─ 广播 async_before_stop（逆序，异常隔离，stop_event 幂等守卫）
      └─ 基础设施收尾（各 suppress）：redis.aclose → qdrant.shutdown → mysql.shutdown
         （db/ 模块级单例不属于任何业务组件，由容器统一兜底释放，close 幂等）
 ```
@@ -245,7 +239,7 @@ app_started()  # 诊断：容器是否已完成启动
 |---|---|---|---|---|
 | 1 | llm_facade | LLMFacade | 预热默认模型（`preheat_default_model`）；关闭时 `close_llm_clients()` | 降级 |
 | 2 | tool_registry | ToolRegistry | 构造即扫描 tools/ 目录（无钩子）；`child_view()` 产出过滤子视图 | — |
-| 3 | skill_manager | SkillManager | `before_start()`（同步）→ load() | — |
+| 3 | skill_manager | SkillManager | `on_init()`（同步）→ load() | — |
 | 4 | agent_registry | AgentRegistry | `load_from_config(config)` + `validate_against(tools, skills)`：工具/skill 名真实存在、persona 非空、name 不重复 | **fail fast** |
 | 5 | context_service | ContextService | 无（无状态组装 + 骨架 TTL 缓存 60s/容量 200） | — |
 | 6 | session_persistence | SessionPersistence | 无（纯落盘 + 按 (user,app,session) 锁表） | — |
@@ -419,7 +413,7 @@ SystemApp 只接管生命周期：`LLMFacade.async_before_start` 预热默认模
       get_app().agents.get(...) / .tools.child_view(...) / .memory.load(...) / .tasks / ...
       LLM 调用：resilient_invoke(SCENARIO_X, ...)（模块函数，不经过 app）
 
-关闭：stop_app() [组件逆序 async_before_stop→before_stop（异常隔离）→ redis/qdrant/mysql]
+关闭：stop_app() [组件逆序 async_before_stop（异常隔离）→ redis/qdrant/mysql]
 
 会话数增长：每会话新增成本 ≈ chat_messages（固有，idle swap-out 压峰）+ 若干锁与小对象；
       组件/连接池/注册表实例数与会话数无关。
