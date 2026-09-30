@@ -21,11 +21,9 @@ from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import LLMRecovery
 from codegenx.ai_service.llm.resilience import get_breaker
 from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
-from codegenx.ai_service.agent.tool_executor import ToolExecutor
-from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from codegenx.ai_service.bus import MessageBus, RuntimeTurnEvent
 from codegenx.ai_service.utils.config import AgentConfig, config
-
+from codegenx.ai_service.system_app import get_app
 from shared import log
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.compact.thresholds import estimate_tokens as _thresholds_estimate
@@ -51,7 +49,7 @@ class AgentRuntime(BaseComponent):
         self.config = config
         self.agent_config = self.config.get_default_agent() or AgentConfig()
         self.max_tool_iterations = max(1, int(self.agent_config.max_tool_iterations or 40))
-        self.max_same_tool_calls = 3
+        self.max_same_tool_calls = self.agent_config.max_same_tool_calls or 3
         self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
         self.max_steps = self.agent_config.max_steps
 
@@ -63,8 +61,8 @@ class AgentRuntime(BaseComponent):
         self._llm_recovery = LLMRecovery(self)
 
         self.message_bus = MessageBus()
-        self.tool_registry = get_tool_registry()
-        self.tool_executor = ToolExecutor(self.tool_registry)
+        self.tool_registry = get_app().tools
+        self.tool_executor = get_app().tools_executor
         log.info("共加载{}个工具", len(self.tool_registry.tools))
 
         # hook 监听器随组件模块 import 链完成 @on 收集，由 initialize_components() 末尾冻结（docs/Hook设计.md §6）
@@ -195,7 +193,6 @@ class AgentRuntime(BaseComponent):
         session_id: str,
         request_id: str,
         reason: str = "user-stop",
-        grace_seconds: float | None = None,
     ) -> dict[str, Any]:
         active_tasks: list[tuple[str, asyncio.Task[Any]]] = []
         dropped_requests: list[AiServiceGenerateRequest] = []
@@ -237,12 +234,9 @@ class AgentRuntime(BaseComponent):
             await self._publish_stopped_request(queued_request, reason=stop_reason)
 
         # Wait for active tasks with timeout
-        timeout_seconds = (
-            self.stop_grace_seconds if grace_seconds is None else max(0.0, float(grace_seconds))
-        )
         if active_tasks:
             done, pending = await asyncio.wait(
-                [task for _, task in active_tasks], timeout=timeout_seconds
+                [task for _, task in active_tasks], timeout=self.stop_grace_seconds
             )
             if pending:
                 for pending_task in pending:

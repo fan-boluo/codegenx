@@ -38,7 +38,6 @@ class AgentAdapterService:
         trace_id: str,
         request_id: str,
         reason: str | None = None,
-        grace_seconds: float | None = None,
     ) -> dict[str, object]:
         # 容器未启动（lifespan 未跑完）时与旧「runtime 未创建」行为一致：不受理
         try:
@@ -59,5 +58,4 @@ class AgentAdapterService:
             session_id=session_id,
             request_id=request_id,
             reason=str(reason or "user-stop"),
-            grace_seconds=grace_seconds,
         )

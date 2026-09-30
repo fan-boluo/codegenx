@@ -27,7 +27,6 @@ class AiServiceStopRequest(CamelBaseModel):
     trace_id: str | None = Field(default=None, alias="traceId")
     request_id: str | None = Field(default=None, alias="requestId")
     reason: str | None = None
-    grace_seconds: float | None = Field(default=None, alias="graceSeconds")
 
 
 class AiServiceStopResponse(CamelBaseModel):

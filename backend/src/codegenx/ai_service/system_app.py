@@ -64,6 +64,12 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.TOOL_REGISTRY, ToolRegistry)
 
     @property
+    def tools_executor(self) -> "ToolExecutor":
+        from codegenx.ai_service.agent.tool_executor import ToolExecutor
+
+        return self.get_component(ComponentType.Tool_EXECUTOR, ToolExecutor)
+
+    @property
     def skills(self) -> "SkillManager":
         from codegenx.ai_service.skill.skill_loader import SkillManager
 
@@ -171,6 +177,7 @@ def initialize_components(app: SystemApp) -> None:
 
     from codegenx.ai_service.llm.facade import initialize_llm
     from codegenx.ai_service.agent.tool_handler import initialize_tools
+    from codegenx.ai_service.agent.tool_executor import initialize_tools_executor
     from codegenx.ai_service.skill.skill_loader import initialize_skill
     from codegenx.ai_service.agent.agent_registry import initialize_agents
     from codegenx.ai_service.context.context_service import initialize_context
@@ -187,6 +194,7 @@ def initialize_components(app: SystemApp) -> None:
 
     initialize_llm(app)
     initialize_tools(app)
+    initialize_tools_executor(app)
     initialize_skill(app)
     initialize_agents(app)
     initialize_context(app)

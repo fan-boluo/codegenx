@@ -141,6 +141,17 @@ class ToolRegistry(BaseComponent):
         # return f"以下是你可以使用的工具：\n{tool_prompt}"
 
 
+def get_tool_registry() -> ToolRegistry:
+    """取全局工具注册表组件（经容器查表；须在 initialize_components 注册 tools 之后）。"""
+    from codegenx.ai_service.system_app import get_app
+
+    return ToolRegistry.get_instance(get_app())
+
+
+def initialize_tools(system_app) -> ToolRegistry:
+    """注册工具注册表组件（system_app.initialize_components 调用；构造即扫描目录）。"""
+    return system_app.register(ToolRegistry)
+
 
 
 if __name__ == '__main__':
@@ -168,15 +179,3 @@ if __name__ == '__main__':
 
     handler = ToolRegistry()
     handler.regist_tools()  # 二次执行
-
-
-def get_tool_registry() -> ToolRegistry:
-    """取全局工具注册表组件（经容器查表；须在 initialize_components 注册 tools 之后）。"""
-    from codegenx.ai_service.system_app import get_app
-
-    return ToolRegistry.get_instance(get_app())
-
-
-def initialize_tools(system_app) -> ToolRegistry:
-    """注册工具注册表组件（system_app.initialize_components 调用；构造即扫描目录）。"""
-    return system_app.register(ToolRegistry)

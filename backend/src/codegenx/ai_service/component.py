@@ -40,6 +40,7 @@ class ComponentType(str, Enum):
 
     LLM_FACADE = "llm_facade"
     TOOL_REGISTRY = "tool_registry"
+    Tool_EXECUTOR = "tool_executor"
     SKILL_MANAGER = "skill_manager"
     AGENT_REGISTRY = "agent_registry"
     CONTEXT_SERVICE = "context_service"

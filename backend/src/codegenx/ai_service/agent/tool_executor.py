@@ -4,7 +4,9 @@ from typing import Any, Dict, List
 
 from codegenx.ai_service.agent.runtime_schema import ActivateTurn, RuntimeSessionState
 from codegenx.ai_service.agent.tool_handler import ToolRegistry
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
+from codegenx.ai_service.system_app import get_app
 from shared import log
 from shared.constants import get_code_dir
 
@@ -103,9 +105,15 @@ async def safe_path_guard(ctx: "HookContext") -> "HookDecision | None":
     return None
 
 
-class ToolExecutor:
-    def __init__(self, tools_registry: ToolRegistry):
+class ToolExecutor(BaseComponent):
+    name = ComponentType.Tool_EXECUTOR
+
+    def __init__(self, system_app=None,tools_registry: ToolRegistry=None):
+        BaseComponent.__init__(self, system_app)
         self.tools_registry = tools_registry
+
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
 
     async def execute(self, tool_call: Dict[str, Any], turn_state: ActivateTurn,
                       session_state: RuntimeSessionState | None = None) -> Any:
@@ -166,3 +174,15 @@ class ToolExecutor:
             result = func(**call_kwargs)
 
         return result
+
+
+def get_tool_executor() -> ToolExecutor:
+    """取全局工具执行器"""
+    from codegenx.ai_service.system_app import get_app
+
+    return ToolExecutor.get_instance(get_app())
+
+
+def initialize_tools_executor(system_app) -> ToolExecutor:
+    """注册工具执行器组件（system_app.initialize_components 调用；在工具注册之后）。"""
+    return system_app.register(ToolExecutor,tools_registry=get_app().tools)

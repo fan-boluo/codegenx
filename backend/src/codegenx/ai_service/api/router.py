@@ -110,7 +110,6 @@ async def stop_code_stream(
         request.app_id,
         session_id,
         request.reason,
-        request.grace_seconds,
     )
     try:
         result = await agent_service.stop_session(
@@ -120,7 +119,6 @@ async def stop_code_stream(
             trace_id=trace_id,
             request_id=request_id,
             reason=request.reason,
-            grace_seconds=request.grace_seconds,
         )
         return success(AiServiceStopResponse.model_validate(result).model_dump(by_alias=True))
     except BusinessException:

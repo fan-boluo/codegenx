@@ -409,6 +409,9 @@ class LLMConfig(Base):
         validation_alias=AliasChoices("breakerHalfOpenSuccessRate", "breaker_half_open_success_rate"),
     )  # 探测成功率达标则闭合
 
+class SessionConfig(Base):
+    pass
+
 class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
@@ -422,6 +425,7 @@ class Config(BaseSettings):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     monitor:MonitorConfig = Field(default_factory=MonitorConfig)
     compact: CompactConfig = Field(default_factory=CompactConfig)
+    session: SessionConfig = Field(default_factory=SessionConfig)
 
     def get_default_agent(self) -> AgentConfig:
         if not self.agents:
