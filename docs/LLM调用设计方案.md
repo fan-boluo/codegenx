@@ -46,6 +46,7 @@ LLM 调用按职责分三层，上层只声明自己的模型链，传输细节�
 |--------|------|------|
 | 模型选择 | 各组件 | 从自身配置字段解析，不经全局路由 |
 | 重试 / 退避 / 降级 | 韧性层 | 业务层不感知重试细节 |
+| 业务结果校验（输出是否可用） | 各业务组件 | 通用层只管调用成败；校验分层与兜底出口见 §5 |
 | 熔断（模型级） | 韧性层 | per `provider:model`，全局注册表 |
 | 压缩失败兜底 | CompactionService | 压缩失败/无效统一保守截断（保底可用），不属模型故障、不进熔断 |
 | 连接池 / 客户端生命周期 | 客户端层 | per-provider 单例，应用级启停 |
@@ -238,7 +239,93 @@ LLMRecovery 通过 `resilient_invoke_stream(chain=runtime.resolve_agent_chain(..
 
 ---
 
-## 5. 可观测性
+## 5. 错误处理方案（两层：通用 + 业务）
+
+异常处理分两层，各自回答一个问题：
+
+- **第一层·通用层**（`llm/errors.py` + `llm/resilience.py`）：**这次模型 API 调用本身成不成立**——连接失败、超时、限流、鉴权、参数错误、上下文超长。输入是消息列表，输出是「成功的内容」或「已分类异常」；对返回内容的业务含义不做任何判断。
+- **第二层·业务层**（四个业务组件各自）：**返回的内容能不能用于本业务**——空响应、格式坏、效果不达标。校验逻辑与兜底动作全部写在各组件内，通用层不感知。
+
+四个业务：记忆提炼、会话摘要、上下文压缩（均非流式）、Agent 运行时（流式）。
+
+**衔接原则**：通用异常与业务校验失败**同路归一**——业务侧先把通用异常 catch 成「无效结果」，再与「内容校验不通过」汇入同一个兜底出口。每个业务只有一个失败终点，排障按出口归因。
+
+### 5.1 通用层的流式 / 非流式差异
+
+通用层异常处理按流式/非流式拆成两个入口（`resilient_invoke` / `resilient_invoke_stream`），错误分类共用 `errors.py` 四分类，不重复实现：
+
+| 阶段 | 非流式 | 流式 |
+|------|--------|------|
+| 调用前 | 熔断 acquire，打开即跳过该模型 | 相同 |
+| 有产出之前（返回前 / 首 chunk 前） | 同模型退避重试 → 链上降级，对上层透明 | 相同（重试窗口只到此为止） |
+| 已有产出之后 | ——（无此阶段） | 任何失败**立即显式抛出**，不透明重放（防用户看到重复内容） |
+| 用户停止 / 取消 | 直接上抛 | 直接上抛 |
+
+### 5.2 业务校验的分层标准
+
+业务侧对「成功返回」的校验按由廉到贵四层组织，逐层只在前一层通过后进行：
+
+| 层 | 判定内容 | 成本 |
+|----|---------|------|
+| 句法 | 能否解析：非空文本、JSON 可解析 | 确定性，零成本 |
+| 结构 | 形状正确：字段/类型/枚举白名单 | 确定性，零成本 |
+| 语义 | 效果达标：如压缩后 token 下降 | 按业务规则计算 |
+| 策略 | 安全/合规 | hook 层（`output_safety_check`），不在 LLM 调用层内 |
+
+### 5.3 四个业务的校验点与兜底（安插位置）
+
+| 业务 | 调用位置 | 通用异常到达点 | 业务校验点 | 兜底出口 |
+|------|---------|---------------|-----------|---------|
+| memory | `MemoryScheduler._invoke_llm` → `resilient_invoke(label="memory")` | 上抛至 `_process` → `mark_failed` 退避重试（1m/5m/30m），超限置 `dead`（死信）；水位不推进（at-least-once，重跑幂等） | `parse_extracted_memories` / `parse_conflict_pairs`（句法：剥包裹+JSON 容错截取；结构：类型白名单、推断置信度封顶）；坏条目跳过 | 空候选 = 合法 no-op：清账推进水位，不重试（「没提炼出记忆」是正常业务结果） |
+| summary | `SessionSummaryService._summarize` → `resilient_invoke(label="summary")` | 上抛至 `_extract` 的 catch-all → 记日志、`extracting` 复位，不重试 | 句法层：空输出即无效；摘要结构由提示词模板保证，不做结构强校验 | 回退保留旧摘要 `current_notes`，等下次阈值再触发（异步可重算） |
+| compact | `_call_llm_for_summary` → `resilient_invoke(label="compact")` | `_llm_compact` catch → 无效结果 | 句法：空摘要；语义：压缩无效（`tokens_after ≥ tokens_before`） | `compact_if_needed` 统一出口 = 保守截断（确定性本地操作，保底可用，绝不向上抛错） |
+| agent | `LLMRecovery.invoke` → `resilient_invoke_stream(label="agent")` | 首 chunk 前已由通用层透明处理；首 chunk 后显式抛出 → LLMRecovery **不做透明重放**，直接上抛至 runtime turn 级收尾（失败状态 + 事件上报） | 业务语义恢复：`finish_reason=length` → continuation 续写；`CONTEXT_OVERFLOW` → 压缩后重试（`force_compact`） | 恢复次数耗尽即失败返回（部分内容），不再重试 |
+
+选型依据按业务性质区分：
+
+| 业务性质 | 兜底选型 | 实例 |
+|---------|---------|------|
+| 同步必答（在线对话 / 压缩） | 确定性本地兜底，永不向上抛 | 保守截断 / 拦截消息回复 |
+| 异步可重算（摘要） | 保留旧值，等下轮 | `current_notes` 回退 |
+| 离线有账本（记忆） | 任务状态机重试 / 死信 + 水位不推进 | `memory_task` 退避 + `dead` + 卡死回收巡检 |
+
+### 5.4 通用异常 → 业务兜底的衔接模式
+
+固定四步（各业务一致，安插在「调用点之后的第一个 await 边界」）：
+
+1. 通用层职责终点：抛已分类异常或返回原始输出，不做业务判断；
+2. 业务组件设两道闸：
+   - **异常闸**：catch 通用层异常，按 `LLMErrorClass` 记因，转「无效结果」；
+   - **校验闸**：对成功返回做 §5.2 分层校验，不通过同样转「无效结果」；
+3. 「无效结果」汇入该业务**唯一兜底出口**（§5.3 选型表）；
+4. 兜底动作必须可观测：warn/error 日志 + 指标（通用层 outcome 分类、`memory_extract_total`、`memory_write_rejected_total`、`llm_recoveries_total`）。
+
+告警按错误类别区分：通用层 429/5xx 激增 → 调退避/熔断参数；业务校验失败激增 → 提示词或模型回归。两类指标分开看。
+
+### 5.5 Agent 业务侧恢复的通用范式
+
+`llm_recovery.py` 的业务恢复机制可抽象为三条范式；未来其他业务需要同类恢复时，照此安插在各自调用点之后：
+
+1. **有界恢复**：每类恢复独立计数上限（`max_continuation_attempts` / `max_compact_attempts`），防恢复风暴；
+2. **无副作用恢复**：恢复动作不修改输入源（continuation 消息在本地重建，不写入 `context.chat_messages`），失败可干净退出；
+3. **恢复可观测**：每次恢复计数上报（`turn_state.llm_recovery_count` + `llm_recoveries_total` 指标）。
+
+### 5.6 与业界机制的对应
+
+| 业界机制 | 本项目落点 |
+|---------|-----------|
+| 传输类 / 语义类错误双清单（Portkey、LiteLLM 等） | 通用层四分类（`errors.py`）+ 业务校验闸（§5.4） |
+| 校验四分层（句法→结构→语义→策略） | §5.2 标准；memory 落实句法+结构，compact 落实句法+语义，策略层在 hook |
+| Instructor 式「带校验反馈重问」 | 暂不采用：离线任务坏输出按 no-op 处理（重问成本不划算）；若未来 JSON 产出率低，可对 memory 解析失败加一次带反馈重问 |
+| 结构化输出约束（JSON mode / 约束解码） | 提示词约定 + 容错解析（剥包裹/截取括号）；provider 支持 JSON mode 时可在 memory 提炼启用 |
+| Guardrails AI / NeMo Guardrails 输出护栏 | 轻量对应：memory 类型白名单校验、agent 侧 `output_safety_check`（hook 层，策略级） |
+| 死信队列 / 重试队列 | `memory_task` 退避重试 + `dead` 状态 + 卡死回收巡检 |
+| 舱壁隔离（Bulkhead） | `MemoryScheduler` 信号量限并发 + 在线让位 |
+| 有界自愈（Bounded self-healing） | LLMRecovery 每类恢复独立次数上限（§5.5） |
+
+---
+
+## 6. 可观测性
 
 每次调用产出结构化记录（不打消息内容，只记元数据）：
 
@@ -260,7 +347,7 @@ usage（prompt/completion tokens）由 Agent 侧 hook（`report_prompt_tokens` /
 
 ---
 
-## 6. 配置参考
+## 7. 配置参考
 
 ```
 models:                          # 模型列表；第一个为默认模型
@@ -292,7 +379,7 @@ llm:
 
 ---
 
-## 7. 参考资料
+## 8. 参考资料
 
 - [Portkey — Retries, Fallbacks, and Circuit Breakers in LLM Apps](https://portkey.ai)
 - [Maxim AI — Retries, Fallbacks, and Circuit Breakers](https://www.getmaxim.ai)
@@ -303,3 +390,6 @@ llm:
 - [Azure Architecture Center — Circuit Breaker Pattern（三态参考实现）](https://learn.microsoft.com)
 - [groundcover — Circuit Breaker half-open 机制](https://www.groundcover.com)
 - [Splunk — Agent 成本优化 via Model Routing](https://www.splunk.com)
+- [Instructor — 结构化输出校验与带反馈重试](https://python.useinstructor.com)
+- [Guardrails AI — 输出护栏与 re-ask 修复循环](https://github.com/guardrails-ai/guardrails)
+- [NVIDIA NeMo Guardrails — 输入/输出/对话三段 rails](https://github.com/NVIDIA/NeMo-Guardrails)
