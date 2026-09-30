@@ -16,13 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from codegenx.ai_service.router import (
+from codegenx.ai_service.api.router import (
     chat_router as ai_chat_router,
     metrics_router,
     monitor_router,
     get_agent_service,
 )
-from codegenx.ai_service.memory.admin import memory_admin_router
+from codegenx.ai_service.api.memory_router import memory_admin_router
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.app_service.router import router as app_router
 from codegenx.gateway.api.blacklist import router as blacklist_router

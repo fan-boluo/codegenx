@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from codegenx.ai_service.router import generate_code_stream, stop_code_stream
+from codegenx.ai_service.api.router import generate_code_stream, stop_code_stream
 from codegenx.app_service.services.access import require_participant_by_id
 from codegenx.gateway.middleware.auth import require_login
 from codegenx.gateway.middleware.jwt_auth import JWTUser

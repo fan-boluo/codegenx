@@ -40,8 +40,8 @@ class MonitorMaintenanceService(BaseComponent):
         self._query_service = query_service or get_monitor_query_service()
         self._retention_targets = [
             ("spans", "start_time"),
-            ("turn_metrics", "created_at"),
-            ("session_metrics", "updated_at"),
+            ("turn_metrics", "started_at"),
+            ("session_metrics", "started_at"),
             ("monitor_alerts", "triggered_at"),
         ]
 

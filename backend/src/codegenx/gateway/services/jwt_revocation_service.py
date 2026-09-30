@@ -105,6 +105,6 @@ async def get_revocation_service() -> JWTRevocationService:
     """Get or create the JWT revocation service singleton."""
     global _revocation_service
     if _revocation_service is None:
-        from infra.redis.redis_client import redis_client as _redis
+        from db.redis.redis_client import redis_client as _redis
         _revocation_service = JWTRevocationService(_redis)
     return _revocation_service

@@ -212,7 +212,7 @@ class ChatMessageStore(BaseComponent):
         """物理删除 cutoff 之前的消息（保留期清理），返回删除行数。"""
         async with session_maker() as session:
             cur = await session.execute(
-                text("DELETE FROM chat_message WHERE started_at < :c"),
+                text("DELETE FROM chat_message WHERE created_at < :c"),
                 {"c": cutoff},
             )
             await session.commit()
