@@ -55,7 +55,7 @@ class ToolRegistry(BaseComponent):
                             and not isinstance(obj, ABC)  # 不是抽象类
                     ):
                         classes.append(obj)
-                        log.debug(f"✅ 找到工具类: {module_name}.{name}")
+                        # log.debug(f"✅ 找到工具类: {module_name}.{name}")
 
             except Exception as e:
                 log.error(f"导入失败 {file_path}: {e}")
@@ -79,7 +79,7 @@ class ToolRegistry(BaseComponent):
                 existing_tool = next((t for t in self.tools if t.name == name), None)
                 if existing_tool is None:
                     self.tools.append(tool)
-                    log.info(f"🚀 注册工具成功: {name}")
+                    log.info(f"注册工具成功: {name}")
                 else:
                     log.info(f"工具已注册跳过: {name}")
 

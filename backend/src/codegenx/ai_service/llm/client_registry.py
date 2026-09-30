@@ -1,6 +1,7 @@
 """Provider 级 AsyncOpenAI 客户端注册表（P0-1：连接池复用）。
 
-进程内每个 provider 只创建一个 AsyncOpenAI（其底层 httpx.AsyncClient 即连接池），
+真正的连接池所在，async_client从此处获取模型对应的client
+进程内每个 provider（不是每个模型，是模型的提供商） 只创建一个 AsyncOpenAI（其底层 httpx.AsyncClient 即连接池），
 全项目所有 LLM 调用共享同一实例，TCP/TLS 连接真正可复用；
 修复原 AsyncLLMClient 即用即弃、从不 close 导致的连接零复用与句柄泄漏。
 应用退出时在 lifespan 中调用 close_llm_clients() 统一释放。
