@@ -89,13 +89,13 @@ class SystemApp(ComponentSystemApp):
 
     @property
     def session_pool(self) -> "SessionPool":
-        from codegenx.ai_service.agent.session_pool import SessionPool
+        from codegenx.ai_service.session.session_pool import SessionPool
 
         return self.get_component(ComponentType.SESSION_POOL, SessionPool)
 
     @property
     def session_io(self) -> "SessionPersistence":
-        from codegenx.ai_service.session.manager import SessionPersistence
+        from codegenx.ai_service.chat_message.persist import SessionPersistence
 
         return self.get_component(ComponentType.SESSION_PERSISTENCE, SessionPersistence)
 
@@ -187,7 +187,7 @@ def initialize_components(app: SystemApp) -> None:
     from codegenx.ai_service.skill.skill_loader import initialize_skill
     from codegenx.ai_service.agent.agent_registry import initialize_agents
     from codegenx.ai_service.context.context_service import initialize_context
-    from codegenx.ai_service.session.manager import initialize_session_io
+    from codegenx.ai_service.chat_message.persist import initialize_session_io
     from codegenx.ai_service.task.task_manager import initialize_tasks
     from codegenx.ai_service.memory.memory_manager import initialize_memory
     from codegenx.ai_service.compact.session_summary import initialize_summary
@@ -196,7 +196,7 @@ def initialize_components(app: SystemApp) -> None:
     from codegenx.ai_service.monitor.monitor_pipeline import initialize_monitor
     from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
     from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
-    from codegenx.ai_service.agent.session_pool import initialize_session_pool
+    from codegenx.ai_service.session.session_pool import initialize_session_pool
     from codegenx.ai_service.agent.runtime import initialize_runtime
 
     initialize_llm(app)

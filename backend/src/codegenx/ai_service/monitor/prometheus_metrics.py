@@ -294,6 +294,7 @@ llm_last_call_latency_seconds_gauge = Gauge(
 # ---------------------------------------------------------------------------
 
 def record_session_start(session_telemetry) -> None:
+    """ session总数+1；活跃session数+1 """
     app_id = _app_id(session_telemetry)
     status = _status(session_telemetry)
     sessions_total.labels(app_id=app_id, status=status).inc()

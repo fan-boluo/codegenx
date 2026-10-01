@@ -266,30 +266,23 @@ class AgentRuntime(BaseComponent):
                 continue
             
             # Get or create session using pool (no lock needed)
-            session_state = await self._get_or_create_session_state(request)
+            session_state, is_new = await self.session_pool.get_or_create(request)
+
+            if is_new:
+                await hook_manager.emit(
+                    HookEvent.SESSION_START,
+                    HookContext(event=HookEvent.SESSION_START, session=session_state),
+                )
+                log.debug(f"新建一个session_state:{request.session_id}")
+            else:
+                # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
+                # （复用 on_session_start 已有的快照重载逻辑，docs/SystemApp架构设计.md §7）
+                await self._restore_swapped_session(session_state)
             
             # Add request to session pending queue and trigger processing
             await self._enqueue_session_request(session_state, request)
             log.debug("{} 已加入 session pending_requests", request.request_id)
 
-    async def _get_or_create_session_state(
-        self, request: AiServiceGenerateRequest
-    ) -> RuntimeSessionState:
-        """Get existing session or create new one using pool."""
-        session_id = str(request.session_id or "")
-        session_state, is_new = await self.session_pool.get_or_create(session_id, request)
-
-        if is_new:
-            await hook_manager.emit(
-                HookEvent.SESSION_START,
-                HookContext(event=HookEvent.SESSION_START, session=session_state),
-            )
-            log.debug("新建一个session_state")
-        else:
-            # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
-            # （复用 on_session_start 已有的快照重载逻辑，docs/SystemApp架构设计.md §7）
-            await self._restore_swapped_session(session_state)
-        return session_state
 
     async def _restore_swapped_session(self, session_state: RuntimeSessionState) -> None:
         if not getattr(session_state, "swapped_out", False):

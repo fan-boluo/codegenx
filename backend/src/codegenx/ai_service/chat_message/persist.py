@@ -1,4 +1,4 @@
-"""SessionPersistence —— 会话落盘服务（P2 服务化，docs/SystemApp架构设计.md §4.3）。
+"""SessionPersistence —— 聊天消息落盘服务（P2 服务化，docs/SystemApp架构设计.md §4.3）。
 
 原 SessionManager（每会话一个实例、只持 3 个 id 字符串 + Lock）改为全局无状态服务：
 方法保留，实例消失，ids 进签名（user_id=/app_id=/session_id= 关键字传参，防维度错配）。

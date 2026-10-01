@@ -4,22 +4,7 @@
 > 相关代码：`backend/src/codegenx/ai_service/hook/`
 > 触发方：`backend/src/codegenx/ai_service/agent/runtime.py`
 
-## 1. 背景与现状问题
-
-当前 hook 实现（`hook/runner.py` 的 `HookRunner`）本质上只是一个
-`dict[事件名 → 回调列表]` + 顺序 for 循环，**并不是真正的事件系统**：
-
-| 问题 | 现状 |
-|---|---|
-| 注册方式 | 硬编码在 `registry.py.register_all_hooks()` 中逐个 `runner.register()`，新增钩子必须改注册代码 |
-| 分发模式 | 只有顺序执行一种，无并行、无洋葱（waterfall） |
-| 排序能力 | 无优先级、无依赖声明，完全按注册顺序 |
-| 事件数量 | 9 个（OnSessionStart 等 PascalCase 命名），缺 `before_build`、`on_complete` |
-| Trace | 无统一的用时记录与调用路径追踪 |
-| 历史包袱 | `hook/events.py` 是从 cordis 移植的 EventsService，**无任何引用**（死代码）；两套事件总线并存易混淆 |
-| 可扩展性 | 业务/插件无法在不修改框架代码的情况下挂载自己的钩子 |
-
-## 2. 设计目标
+## 1. 设计目标
 
 1. **事件监听 + 注册**：观察者模式，事件总线（HookManager）为中心，监听器自注册
 2. **注解注册**：函数上直接 `@on("on_session_start", ...)` 即完成注册，零接线
@@ -28,13 +13,13 @@
 5. **依赖与优先级**：每个 hook 声明 `priority` 与 `depends_on`，按拓扑排序执行
 6. **洋葱模型 trace**：session / turn / llm / tool 四层洋葱包裹，自动记录用时与 trace 路径
 7. **故障隔离**：钩子异常不影响主循环（lifecycle 类钩子除外）
-8. **监听器按模块归属**：内置 hook 写在各功能模块的**原有文件**内（监控归 monitor、记忆归 memory、上下文归 context……），不新建集中的 builtin 目录；仅真正无归属的才单写文件
+8. **监听器按模块归属**：内置 hook 写在各功能模块的**原有组件文件**内（监控归 monitor、记忆归 memory、上下文归 context……），不新建集中的 builtin 目录；
 
-## 3. 事件清单与职责分析（10 类）
+## 2. 事件清单与职责分析（10 类）
 
 事件命名统一 snake_case。每类事件定义：触发时机、默认分发模式、payload、内置监听器职责、可短路性。
 
-### 3.1 触发点与 runtime.py 对应关系
+### 2.1 触发点与 runtime.py 对应关系
 
 ```
 会话生命周期        on_session_start ──────────► session_pool.get_or_create(is_new=True)
@@ -50,7 +35,7 @@
                    on_turn_end ────────────────► _execute_request() finally
 ```
 
-### 3.2 事件定义表
+### 2.2 事件定义表
 
 | # | 事件 | 触发时机 | 默认模式 | 可短路 | 关键 payload | 内置监听器职责（归属模块见 §4.2） |
 |---|---|---|---|---|---|---|
@@ -71,13 +56,13 @@
 - **`internal/*` 前缀**保留给框架内部事件，不参与业务 trace。
 - 事件模式由 `events.py` 的 `EVENT_DEFINITIONS` 统一声明，单个 hook 可用 `mode=` 覆盖（如把某个 `after_llm_invoke` 监听器改回 serial 以控制顺序）。
 
-### 3.3 为什么各事件选择该默认模式
+### 2.3 为什么各事件选择该默认模式
 
 - **serial（顺序）**：`on_session_start` / `on_turn_start` / `on_turn_end` / `on_session_end` 存在隐式先后依赖（先初始化 manager 才能加载历史）；`before_llm_invoke` / `before_tool_call` / `on_complete` 需要短路语义（任一 hook 拒绝即终止），必须顺序评估。
 - **parallel（并行）**：`after_llm_invoke` / `after_tool_call` 的监听器（监控上报、日志落盘、计费、记忆信号）彼此独立、只读入参、互不依赖，并行可降低对主循环时延的叠加。
 - **waterfall（洋葱）**：`before_build` 需要"包住"组装过程——既能在前置修改输入，也能在后置修改产物（messages），且支持短路（某个 hook 直接给出组装结果）。
 
-## 4. 总体架构
+## 3. 总体架构
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -98,22 +83,21 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 4.1 hook/ 框架层模块划分（只含机制）
+### 3.1 hook/ 框架层模块划分（只含机制）
 
 ```
 hook/
 ├── __init__.py        # 导出 on、hook_manager、HookContext、HookDecision、事件常量
 ├── events.py          # 事件常量 + EVENT_DEFINITIONS（默认模式/payload/可短路声明）
-├── core.py            # HookManager、HookRegistration、拓扑排序、三种分发、span
-├── context.py         # HookContext 统一上下文、HookDecision 决策对象
-└── core.py            # （含启动冻结入口 load_and_freeze，由 AgentAdapterService.startup() 调用）
+├── core.py            # HookManager、HookRegistration、拓扑排序、三种分发、span,（含启动冻结入口 load_and_freeze，由 systemApp on_init 调用）
+└── context.py         # HookContext 统一上下文、HookDecision 决策对象 
 ```
 
-### 4.2 内置监听器归属（**不新建 builtin 目录，写进模块原有文件**）
+### 3.2 内置监听器归属（**不新建 builtin 目录，写进模块原有文件**）
 
 归属原则：**监听器跟功能走**——某个模块提供的能力，其 hook 监听器就写在该模块的原有文件内；
 多个模块可在同一事件上各自注册监听器（如 `on_turn_end` 上 session 层存快照、memory 层发信号、
-monitor 层上报，互不相干）。仅当确实无模块归属时，才在 `hook/` 下单写一个文件（如未来的独立 safety 模块）。
+monitor 层上报，互不相干）。
 
 | 监听器 | 所在文件（原有文件，不新建） | 说明 |
 |---|---|---|
@@ -127,9 +111,8 @@ monitor 层上报，互不相干）。仅当确实无模块归属时，才在 `h
 
 装载机制：**零配置、无手工清单、无全量扫描**。`@on` 在模块 import 时即把监听器
 自动上报进全局 `hook_manager`（pending），而内置监听器都写在业务模块原有文件内，
-这些模块本就在应用正常 import 链上（router → services → runtime/…）——模块被加载，
-监听器即注册。仅两个惰性子模块由所属包的 `__init__` 门面装配（包加载即完成本包 hook 注册）：
-
+这些模块本就在应用正常 import 链上,systemapp 的 on_init 方法调用后，所有组件都被装备，装备后即加载，其实在这之前fastapi启动时，加载router就已经import了部分组件
+仅两个惰性子模块由所属包的 `__init__` 门面装配（包加载即完成本包 hook 注册）：
 - `monitor/__init__.py` 装配 `monitor_pipeline`（监控上报监听器所在）
 - `memory/__init__.py` 装配 `trigger`（记忆漏斗信号监听器所在）
 
@@ -137,9 +120,7 @@ monitor 层上报，互不相干）。仅当确实无模块归属时，才在 `h
 唯一约束：不要放在无人 import 的孤立模块里
 ——`backend/tests/test_hook_coverage.py` 以「应用 import 链加载后 11 类事件全覆盖」兜底防回归。
 
-删除：`hook/runner.py`（HookRunner）、`hook/registry.py`（register_all_hooks）、现 `hook/events.py`（cordis 移植死代码）。
-
-## 5. `@on` 装饰器设计
+## 4. `@on` 装饰器设计
 
 ```python
 from codegenx.ai_service.hook import on, HookContext, HookDecision
@@ -165,7 +146,7 @@ async def file_tool_param_guard(ctx: HookContext) -> HookDecision | None:
     return None   # None = 放行，继续后续 hook
 ```
 
-### 5.1 参数语义
+### 4.1 参数语义
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -177,17 +158,18 @@ async def file_tool_param_guard(ctx: HookContext) -> HookDecision | None:
 | `condition` | Callable | None | 谓词 `(ctx) -> bool`，False 则本次分发跳过该 hook |
 | `once` | bool | False | 首次执行后自动移除 |
 
-### 5.2 注册时机与幂等
+### 4.2 注册时机与幂等
 
 - `@on` 在**模块 import 时**执行：只把 `HookRegistration` 放入 `hook_manager` 的待注册列表（pending），**不立即生效**——避免模块重复导入导致重复注册，也允许启动前统一校验。
 - 启动时装载（见 §6）：`load_and_freeze()` 逐个正式注册 → 校验 → 拓扑排序 → 冻结；冻结后调用 `@on` 直接抛错（防止运行期热改注册表引发并发问题）。
 
-## 6. 启动注册流程
+## 5. 启动注册流程
 
 ```
 main.py lifespan
   └─ AgentAdapterService.startup()
-      ├─ hook_manager.load_and_freeze()
+      ├─ systemApp.init_app()                # 各个组件imort  
+      ├──────└─ hook_manager.load_and_freeze()
       │                                     # ① 内置监听器已随应用 import 链完成 @on 收集
       │                                     #    （惰性子模块由所属包 __init__ 门面装配）
       │                                     # ② 校验（任一失败 → 启动失败）：
@@ -199,11 +181,9 @@ main.py lifespan
       └─ runtime.start()
 ```
 
-配置项：**无**。注册收集靠 import 链自然完成，启动冻结内置于 `AgentAdapterService.startup()`，零配置。
+## 6. 分发协议
 
-## 7. 分发协议
-
-### 7.1 统一签名
+### 6.1 统一签名
 
 监听器**只接收一个 `HookContext`**（不再像现在 `(turn, **kwargs)` 散参），返回值约定：
 
@@ -218,7 +198,7 @@ async def hook(ctx: HookContext) -> HookDecision | None | dict
 | `HookDecision(action="inject", message=...)` | 不阻断，但注入一条提示消息到上下文（现有 PreToolUse inject 协议保留） |
 | waterfall 模式 | 签名为 `(ctx, call_next)`，**必须** `return await call_next(ctx)` 透传；不调用即短路，其返回值成为整个链的结果 |
 
-### 7.2 三种分发的执行语义
+### 6.2 三种分发的执行语义
 
 ```python
 class HookManager:
@@ -245,9 +225,9 @@ class HookManager:
 | `on_session_start` / `on_session_end` 等 lifecycle | 异常上抛（现状如此：初始化失败会话应可见地失败） |
 | `on_turn_end` | 异常吞掉记日志（finally 语义，不能掩盖原始异常） |
 
-## 8. HookContext 与 trace（洋葱模型）
+## 7. HookContext 与 trace（洋葱模型）
 
-### 8.1 HookContext
+### 7.1 HookContext
 
 ```python
 @dataclass
@@ -263,7 +243,7 @@ class HookContext:
     trace: list[Span] = field(default_factory=list)        # 当前 span 栈（只读视图）
 ```
 
-### 8.2 洋葱 span 树
+### 7.2 洋葱 span 树
 
 session → turn → step → (llm_invoke | tool_call) 四层嵌套，与真实调用结构一致：
 
@@ -283,7 +263,7 @@ session(s1)                         # on_session_start ~ on_session_end
 - Span 通过 `set_trace_sink(sink)` 输出，**默认接 `monitor_pipeline` / span_collector**（已有基础设施），上报路径形如 `session/turn/step_3/llm_invoke`；
 - runtime 侧只需在 4 处包上 span（见 §9），耗时统计与 trace 路径即全自动。
 
-## 9. runtime.py 触发点改造明细
+## 8. runtime.py 触发点改造明细
 
 现 9 处 `hook_runner.dispatch(...)` 全部替换，并新增 2 个触发点（before_build、on_complete）：
 
@@ -303,29 +283,29 @@ session(s1)                         # on_session_start ~ on_session_end
 
 AgentRuntime 构造函数中 `HookRunner` / `register_all_hooks` 相关代码删除，改为直接使用模块级 `hook_manager` 单例。
 
-## 10. 内置监听器迁移对照
+## 9. 内置监听器迁移对照
 
 现 `handlers.py` 中 9 个函数的职责拆分迁移（签名统一改为 `(ctx: HookContext)`），**一个现函数可能拆成多个归属模块的监听器**：
 
-| 现 handler | 职责 | → 归属文件 | 监听器名 |
-|---|---|---|---|
-| `on_session_start` | 初始化 SessionManager/TaskManager/SessionContext、加载历史、消息入库、索引更新 | `agent/runtime.py` | `init_session_objects` |
-| `on_session_start`（末尾 monitor 调用） | monitor 上报 | `monitor/monitor_pipeline.py` | `report_session_start` |
-| `on_turn_start` | monitor turn_start 上报 | `monitor/monitor_pipeline.py` | `report_turn_start` |
-| `pre_llm_call` | token 预估上报 | `monitor/monitor_pipeline.py` | `report_prompt_tokens` |
-| `post_llm_call` | usage 上报 | `monitor/monitor_pipeline.py` | `report_llm_usage` |
-| `pre_tool_use` | monitor 上报 | `monitor/monitor_pipeline.py` | `report_tool_start` |
-| `post_tool_use`（前半） | 工具快照落盘 | `session/manager.py` | `persist_tool_log` |
-| `post_tool_use`（后半） | monitor 上报 | `monitor/monitor_pipeline.py` | `report_tool_end` |
-| `on_turn_end`（前半） | 保存聊天快照 | `agent/runtime.py` | `persist_chat_snapshot` |
-| `on_turn_end`（`_funnel_turn_signal`） | 记忆漏斗信号 | `memory/trigger.py` | `memory_turn_signal` |
-| `on_turn_end`（末尾 monitor 调用） | monitor 上报 | `monitor/monitor_pipeline.py` | `report_turn_end` |
-| `on_error` | monitor 上报 | `monitor/monitor_pipeline.py` | `report_error`（挂 `internal/on_error`） |
-| `on_session_end`（前半） | 记忆会话末触发 | `memory/trigger.py` | `memory_session_end` |
-| `on_session_end`（后半） | monitor 上报 | `monitor/monitor_pipeline.py` | `report_session_end` |
-| **新增**（runtime.py L616-656 内联逻辑迁出） | 文件工具参数守卫 | `tools/base.py` | `file_tool_param_guard` |
+| 现 handler | 职责 | → 归属文件                                       | 监听器名 |
+|---|---|----------------------------------------------|---|
+| `on_session_start` | 初始化 SessionManager/TaskManager/SessionContext、加载历史、消息入库、索引更新 | `agent/runtime.py`                           | `init_session_objects` |
+| `on_session_start`（末尾 monitor 调用） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_session_start` |
+| `on_turn_start` | monitor turn_start 上报 | `monitor/monitor_pipeline.py`                | `report_turn_start` |
+| `pre_llm_call` | token 预估上报 | `monitor/monitor_pipeline.py`                | `report_prompt_tokens` |
+| `post_llm_call` | usage 上报 | `monitor/monitor_pipeline.py`                | `report_llm_usage` |
+| `pre_tool_use` | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_tool_start` |
+| `post_tool_use`（前半） | 工具快照落盘 | `chat_message/persist.py`                    | `persist_tool_log` |
+| `post_tool_use`（后半） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_tool_end` |
+| `on_turn_end`（前半） | 保存聊天快照 | `agent/runtime.py`                           | `persist_chat_snapshot` |
+| `on_turn_end`（`_funnel_turn_signal`） | 记忆漏斗信号 | `memory/trigger.py`                          | `memory_turn_signal` |
+| `on_turn_end`（末尾 monitor 调用） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_turn_end` |
+| `on_error` | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_error`（挂 `internal/on_error`） |
+| `on_session_end`（前半） | 记忆会话末触发 | `memory/trigger.py`                          | `memory_session_end` |
+| `on_session_end`（后半） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_session_end` |
+| **新增**（runtime.py L616-656 内联逻辑迁出） | 文件工具参数守卫 | `tools/base.py`                              | `file_tool_param_guard` |
 | **新增** | 输出安全校验 | `guardrail/prompt_safety_input_guardrail.py` | `output_safety_check` |
-| **新增** | before_build 默认实现（透传） | `context/assembler.py` | `inject_dynamic_prompts` |
+| **新增** | before_build 默认实现（透传） | `context/assembler.py`                       | `inject_dynamic_prompts` |
 
 依赖与优先级示例（`on_turn_end` 事件）：`persist_chat_snapshot(priority=10)` →
 `memory_turn_signal(priority=20, depends_on=["persist_chat_snapshot"])` → `report_turn_end(priority=100)`——
@@ -333,7 +313,7 @@ AgentRuntime 构造函数中 `HookRunner` / `register_all_hooks` 相关代码删
 
 迁移期间 `PreToolUse` 的 `action: continue/blocked/inject` 协议**原样保留**，仅承载对象从 dict 换成 `HookDecision`/`ctx.action`。
 
-## 11. 扩展示例
+## 10. 扩展示例
 
 ```python
 # 业务方自定义钩子（如 app 级审计），无需改框架与配置：
@@ -351,7 +331,7 @@ async def collect_tool_metrics(ctx: HookContext):
     metrics.counter("tool_calls", tags={"tool": tool}).inc()
 ```
 
-## 12. 测试计划
+## 11. 测试计划
 
 固化到 `backend/tests/`：
 
@@ -362,10 +342,3 @@ async def collect_tool_metrics(ctx: HookContext):
 | `test_hook_context.py` | HookContext.action 由分发器回填；errors 收集；once 注销 |
 | `test_hook_runtime_integration.py` | mock LLM 跑一次完整请求，断言事件触发序列：`on_session_start → on_turn_start → [before_build → before_llm_invoke → after_llm_invoke → (before_tool_call → after_tool_call)*] → on_complete → on_turn_end → on_session_end`；span 树的父子关系与 duration 非空 |
 
-## 13. 实施步骤
-
-1. 新建 `hook/context.py`、`hook/events.py`（替换现 events.py 死代码）、`hook/core.py`
-2. 各模块原有文件内添加 @on 监听器（按 §4.2 归属表）：`agent/runtime.py`、`monitor/monitor_pipeline.py`、`memory/trigger.py`、`context/assembler.py`、`tools/base.py`、`session/manager.py`、`guardrail/prompt_safety_input_guardrail.py`；包门面装配惰性子模块（`monitor/__init__.py`、`memory/__init__.py`）
-3. `AgentAdapterService.startup()` 接入 `load_and_freeze()`；`AgentRuntime` 11 处触发点替换 + 2 处新增（before_build / on_complete），删除 `register_all_hooks` / `HookRunner` 引用
-4. 删除 `hook/runner.py` / `hook/registry.py` / 旧 `hook/events.py`，清理 `hook/handlers.py`
-5. 固化测试脚本并回归

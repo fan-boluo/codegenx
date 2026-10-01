@@ -43,7 +43,7 @@ backend/src/codegenx/ai_service/
 │   └── tool_executor.py    # ToolExecutor + safe_path_guard 监听器
 ├── skill/skill_loader.py   # SkillManager     —— skill 注册表
 ├── context/context_service.py  # ContextService + TurnPrompts + inject_dynamic_prompts 监听器
-├── session/manager.py      # SessionPersistence + persist_tool_log 监听器
+├── chat_message/persist.py      # SessionPersistence + persist_tool_log 监听器
 ├── task/task_manager.py    # TaskBoardService —— 任务看板（磁盘持久）
 ├── memory/memory_manager.py    # MemoryFacade（含类体内无 self 的 memory_session_end 监听器）
 ├── compact/session_summary.py  # SessionSummaryService + SummaryState（会话级阈值状态）

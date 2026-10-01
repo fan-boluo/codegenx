@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
-from codegenx.ai_service.session.manager import SessionPersistence
+from codegenx.ai_service.chat_message.persist import SessionPersistence
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.chat_message import get_chat_message_store
 from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import validate_prompt_safety

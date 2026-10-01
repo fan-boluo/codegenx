@@ -95,7 +95,7 @@ class SessionPool(BaseComponent):
         await self.stop()
 
     async def get_or_create(
-        self, session_id: str, request: Any
+        self,  request: Any
     ) -> tuple[Any, bool]:
         """
         Get existing session or create new one.
@@ -109,6 +109,7 @@ class SessionPool(BaseComponent):
         """
         from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
 
+        session_id = str(request.session_id or "")
         async with self._lock:
             if session_id in self._sessions:
                 session = self._sessions[session_id]

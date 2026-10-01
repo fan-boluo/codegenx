@@ -88,7 +88,7 @@ class ChatMessageStore(BaseComponent):
                 except OSError as exc:
                     log.error("超长消息 blob 写盘失败，回退直存: {}", exc)
             role = str(message.get("role") or "user")
-            # 用量四列：仅 assistant 行随 meta 写入（BUG-5 修复前为全库死列）
+
             chat_meta = meta if meta else {}
             await session.execute(
                 text(
