@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
-from codegenx.ai_service.chat_message.persist import SessionPersistence
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.chat_message import get_chat_message_store
 from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import validate_prompt_safety
@@ -141,17 +140,12 @@ async def list_sessions(
     login_user: JWTUser = Depends(require_login),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """列出「当前用户 + app」下最近的 session（会话按用户隔离）。"""
+    """列出「当前用户 + app」下最近的 session（会话按用户隔离，chat_message 表聚合）。"""
     await require_participant_by_id(db, app_id, login_user)
-    entries = SessionPersistence.read_session_index(str(login_user.user_id), str(app_id))
-    return success([
-        SessionListItem(
-            session_id=e.get("session_id", ""),
-            first_message=e.get("first_message", ""),
-            create_time=e.get("create_time", ""),
-        )
-        for e in entries[:limit]
-    ])
+    entries = await get_chat_message_store().list_sessions(
+        user_id=str(login_user.user_id), app_id=str(app_id), limit=limit
+    )
+    return success([SessionListItem(**e) for e in entries])
 
 
 @chat_router.get("/sessions/{app_id}/{session_id}/messages")

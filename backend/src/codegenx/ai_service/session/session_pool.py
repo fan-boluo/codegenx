@@ -294,7 +294,7 @@ async def init_session_objects(ctx: HookContext) -> None:
     """初始化会话级对象（迁自 handlers.on_session_start）：
 
     SessionContext（纯会话状态）、加载聊天历史快照、
-    用户消息入库、更新会话索引、state→RUNNING。
+    用户消息入库、state→RUNNING。
     """
     session = ctx.session
     req = session.request
@@ -329,12 +329,6 @@ async def init_session_objects(ctx: HookContext) -> None:
         )
     except Exception as exc:
         log.warning("user 消息入库失败（不影响对话）: {}", exc)
-
-    # 更新会话索引，供快速列出历史会话
-    await session_io.upsert_session_index(
-        req.message,
-        user_id=session.user_id, app_id=session.app_id, session_id=session.session_id,
-    )
 
     session.state = AgentState.RUNNING
     session.started_at = datetime.utcnow()

@@ -206,6 +206,50 @@ class ChatMessageStore(BaseComponent):
             result.append(message)
         return result
 
+    async def list_sessions(
+        self, user_id: str, app_id: str, limit: int = 5
+    ) -> list[dict]:
+        """列出「用户 + app」下最近的会话（直接聚合 chat_message 表，无独立索引）。
+
+        每会话取首条 user 消息正文前 50 字符作 first_message（与原
+        session_index.json 口径一致）；按会话最后一条 user 消息时间倒序，
+        create_time 为会话首条消息时间。
+        """
+        # 窗口函数（MySQL 8.0）：rn=1 取每会话首条 user 消息，
+        # last_time 用于"最近活跃"排序；user 消息总是先于本轮其余消息落库，
+        # 故 last user 消息时间即最后一轮起点
+        sql = (
+            "SELECT session_id, first_message, create_time FROM ("
+            " SELECT session_id,"
+            " COALESCE(SUBSTRING(JSON_UNQUOTE(JSON_EXTRACT(content, '$.content')), 1, 50), '')"
+            "   AS first_message,"
+            " created_at AS create_time,"
+            " ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq ASC) AS rn,"
+            " MAX(created_at) OVER (PARTITION BY session_id) AS last_time"
+            " FROM chat_message"
+            " WHERE user_id = :u AND app_id = :a AND role = 'user'"
+            ") t WHERE rn = 1"
+            " ORDER BY last_time DESC LIMIT :l"
+        )
+        async with session_maker() as session:
+            rows = (
+                await session.execute(
+                    text(sql), {"u": str(user_id), "a": str(app_id), "l": int(limit)}
+                )
+            ).all()
+        return [
+            {
+                "session_id": str(sid or ""),
+                "first_message": str(first_message or ""),
+                "create_time": (
+                    created_at.isoformat()
+                    if isinstance(created_at, datetime)
+                    else str(created_at or "")
+                ),
+            }
+            for sid, first_message, created_at in rows
+        ]
+
     # === 清理 ===
 
     async def delete_before(self, cutoff: datetime) -> int:
