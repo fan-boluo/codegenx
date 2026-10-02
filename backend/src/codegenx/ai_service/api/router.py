@@ -14,10 +14,10 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from codegenx.ai_service.hook import hook_manager, HookEvent, HookContext, HookAction
 from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.chat_message import get_chat_message_store
-from codegenx.ai_service.guardrail.prompt_safety_input_guardrail import validate_prompt_safety
 from codegenx.ai_service.monitor.monitor_query_service import get_monitor_query_service
 from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
 from codegenx.app_service.services.access import require_participant_by_id
@@ -67,6 +67,10 @@ async def generate_code_stream(
     # 身份一律取 JWT 登录态，请求体 userId 不可信（防会话/工作区挂错用户）
     request.user_id = str(login_user.user_id)
     trace_id, request_id, session_id = _validate_call_context(request)
+    ctx = HookContext(event=HookEvent.ON_USER_INPUT,data={"user_input":request.message})
+    res = hook_manager.emit(HookEvent.ON_USER_INPUT,ctx)
+    if res.action == HookAction.BLOCKED:
+        raise BusinessException(ErrorCode.FORBIDDEN_ERROR, str(res.message))
     log.info(
         "ai-service public stream request traceId={} requestId={} appId={} messageLen={} preview={}",
         trace_id,
@@ -340,7 +344,7 @@ def _validate_call_context(request: AiServiceGenerateRequest) -> tuple[str, str,
         raise BusinessException(ErrorCode.PARAMS_ERROR, "requestId 不能为空")
     if not session_id:
         raise BusinessException(ErrorCode.PARAMS_ERROR, "sessionId 不能为空")
-    validate_prompt_safety(request.message)
+
     return trace_id, request_id, session_id
 
 

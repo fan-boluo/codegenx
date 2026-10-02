@@ -45,13 +45,18 @@ CLEAR_TOOL_INPUTS = frozenset({
     "write_file",
 })
 
-# Token threshold above which a single tool result gets cleared.
-MAX_TOOL_RESULT_TOKENS = 2000
+
 
 
 from codegenx.ai_service.compact.thresholds import AUTOCOMPACT_THRESHOLD, estimate_tokens
-
-
+from codegenx.ai_service.utils.config import config
+compact_config = config.compact
+# 工具结果 token 阈值，超过则清除。
+max_result_tokens = compact_config.max_tool_result_tokens
+# 保护最近 N 次的工具调用结果不被清除，保证大模型在后续 turn 中能看到刚刚执行的结果。
+protect_last_n_results = compact_config.protect_last_n_results
+# 消息整体 token 低于此值时完全跳过压缩。默认取压缩触发阈值的 60%， 确保上下文空间充裕时不会丢失信息。
+min_total_tokens = int(AUTOCOMPACT_THRESHOLD * 0.6)
 # ── Token estimation ──────────────────────────────────────────────────────────
 def _rough_tokens(text: str) -> int:
     return estimate_tokens([{"content": text}])
@@ -59,12 +64,7 @@ def _rough_tokens(text: str) -> int:
 
 # ── Core micro-compaction ──────────────────────────────────────────────────────
 
-def microcompact_messages(
-    messages: list[dict],
-    protect_last_n_results: int = 1,
-    max_result_tokens: int | None = None,
-    min_total_tokens: int | None = None,
-) -> list[dict]:
+def microcompact_messages(messages: list[dict]) -> list[dict]:
     """
     将工具执行结果超长的压缩
     Return a shallow-copied message list with oversized tool results cleared.
@@ -73,12 +73,6 @@ def microcompact_messages(
       - tool:      {"role":"tool", "content":"<str>", "tool_call_id":"<str>", "name":"<str>"}
       - assistant: {"role":"assistant", "content":"<str>",
                      "tool_calls":[{"id":"...", "function":{"name":"..."}}]}
-
-    protect_last_n_results: 保护最近 N 次的工具调用结果不被清除，保证大模型
-                            在后续 turn 中能看到刚刚执行的结果。默认 1。
-    max_result_tokens: 工具结果 token 阈值，超过则清除。不传则使用 MAX_TOOL_RESULT_TOKENS。
-    min_total_tokens: 消息整体 token 低于此值时完全跳过压缩。默认取压缩触发阈值的 60%，
-                      确保上下文空间充裕时不会丢失信息。
 
     The function:
       1. Builds an index: tool_call_id → msg_index for every tool message.
@@ -94,12 +88,10 @@ def microcompact_messages(
     Returns a new list; the input is never mutated.
     """
 
-    # 单个执行的结果，现在这个数字是3000,来自配置文件
-    threshold = max_result_tokens if max_result_tokens is not None else MAX_TOOL_RESULT_TOKENS
-    min_total = min_total_tokens if min_total_tokens is not None else int(AUTOCOMPACT_THRESHOLD * 0.6)
-    log.debug("micro compact total messages threshold: {}, single result threshold: {}", min_total, threshold)
+
+    log.debug("micro compact total messages threshold: {}, single result threshold: {}", min_total_tokens, max_result_tokens)
     # 上下文还很宽松，无需清理，保留所有信息
-    if estimate_tokens(messages) < min_total:
+    if estimate_tokens(messages) < min_total_tokens:
         return messages
     log.debug("micro compact 超过上下文压缩窗口阈值")
     # Build tool_call_id → msg_index map (one result per tool message)
@@ -144,7 +136,7 @@ def microcompact_messages(
             if msg_i is None:
                 continue
             result_content = messages[msg_i].get("content", "")
-            if isinstance(result_content, str) and _rough_tokens(result_content) > threshold:
+            if isinstance(result_content, str) and _rough_tokens(result_content) > max_result_tokens:
                 to_clear.add(uid)
             # Also mark for input clearing if tool is in CLEAR_TOOL_INPUTS
             if name in CLEAR_TOOL_INPUTS:

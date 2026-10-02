@@ -22,7 +22,7 @@
 ### 2.1 触发点与 runtime.py 对应关系
 
 ```
-会话生命周期        on_session_start ──────────► session_pool.get_or_create(is_new=True)
+会话生命周期        on_session_start ──────────► 
                    on_session_end ─────────────► _close_session_state()
 
 单轮（一个请求）    on_turn_start ──────────────► _execute_request() 入口
@@ -37,18 +37,18 @@
 
 ### 2.2 事件定义表
 
-| # | 事件 | 触发时机 | 默认模式 | 可短路 | 关键 payload | 内置监听器职责（归属模块见 §4.2） |
-|---|---|---|---|---|---|---|
-| 1 | `on_session_start` | 会话首次创建 | serial | 否 | `session` | 会话级对象初始化：SessionManager / TaskManager / SessionContext、加载聊天历史快照、用户消息入库、更新会话索引（agent 层）；monitor 上报（monitor 层） |
-| 2 | `on_turn_start` | 每次请求开始 | serial | 否 | `session, turn` | monitor turn_start 上报；turn 快照（预留） |
-| 3 | `before_build` | 上下文组装前（每 step 的 `assemble()` 之前） | **waterfall** | 是（不调 call_next） | `session, turn, build_input` | 注入 memory_prompt / skill_prompt / persona / task_prompt / extra 提醒；修改或替换组装输入（context 模块） |
-| 4 | `before_llm_invoke` | LLM 调用前 | serial | **是** | `session, turn, messages, prompt_tokens` | token 预估上报（monitor）；限流/预算控制；消息改写（waterfall 覆盖时） |
-| 5 | `after_llm_invoke` | LLM 返回后 | **parallel** | 否 | `session, turn, response, usage` | usage 上报（monitor）；响应审计/计费；相互独立故并行 |
+| # | 事件 | 触发时机 | 默认模式 | 可短路 | 关键 payload | 内置监听器职责（归属模块见 §4.2）                                                                        |
+|---|---|---|---|---|---|--------------------------------------------------------------------------------------------|
+| 1 | `on_session_start` | 会话首次创建 | serial | 否 | `session` | monitor 上报（monitor 层）                                                                      |
+| 2 | `on_turn_start` | 每次请求开始 | serial | 否 | `session, turn` | monitor turn_start 上报；turn 快照（预留）                                                          |
+| 3 | `before_build` | 上下文组装前（每 step 的 `assemble()` 之前） | **waterfall** | 是（不调 call_next） | `session, turn, build_input` | 注入 memory_prompt / skill_prompt / persona / task_prompt / extra 提醒；修改或替换组装输入（context 模块）   |
+| 4 | `before_llm_invoke` | LLM 调用前 | serial | **是** | `session, turn, messages, prompt_tokens` | token 预估上报（monitor）；限流/预算控制（没有）；                                                           |
+| 5 | `after_llm_invoke` | LLM 返回后 | **parallel** | 否 | `session, turn, response, usage` | usage 上报（monitor）；相互独立故并行                                                       |
 | 6 | `before_tool_call` | 每次工具调用前 | serial | **是** | `session, turn, tool_call` | 权限与安全校验（`action=blocked`）；文件工具参数守卫（`action=inject`，从 runtime.py 内联校验迁入，tools 模块）；monitor 上报 |
-| 7 | `after_tool_call` | 工具执行返回后 | **parallel** | 否 | `session, turn, tool_call, result` | 工具执行快照落盘 append_tool_log（session 模块）；monitor 上报；记忆漏斗信号（memory 模块） |
-| 8 | `on_complete` | turn 正常产生最终回复后、发布完成事件前 | serial | **是** | `session, turn, final_output` | **输出安全校验**（敏感内容/合规审查，guardrail 模块）；失败时 `action=blocked`，以安全提示替换最终回复 |
-| 9 | `on_turn_end` | 单轮结束（finally，含异常路径） | serial | 否 | `session, turn` | 保存聊天消息快照（session 层）；记忆两级漏斗信号 warm_extract（memory 层）；monitor turn_end |
-| 10 | `on_session_end` | 会话关闭 | serial | 否 | `session, end_reason` | 记忆会话末触发（memory 层）；monitor session_end；资源清理 |
+| 7 | `after_tool_call` | 工具执行返回后 | **parallel** | 否 | `session, turn, tool_call, result` | 工具执行快照落盘 append_tool_log（session 模块）；monitor 上报；记忆漏斗信号（memory 模块）                          |
+| 8 | `on_complete` | turn 正常产生最终回复后、发布完成事件前 | serial | **是** | `session, turn, final_output` | **输出安全校验**（敏感内容/合规审查，guardrail 模块）；失败时 `action=blocked`，以安全提示替换最终回复                        |
+| 9 | `on_turn_end` | 单轮结束（finally，含异常路径） | serial | 否 | `session, turn` | 保存聊天消息快照（session 层）；记忆两级漏斗信号 warm_extract（memory 层）；monitor turn_end                       |
+| 10 | `on_session_end` | 会话关闭 | serial | 否 | `session, end_reason` | 记忆会话末触发（memory 层）；monitor session_end；资源清理                                                 |
 
 补充约定：
 
@@ -99,14 +99,14 @@ hook/
 多个模块可在同一事件上各自注册监听器（如 `on_turn_end` 上 session 层存快照、memory 层发信号、
 monitor 层上报，互不相干）。
 
-| 监听器 | 所在文件（原有文件，不新建） | 说明 |
-|---|---|---|
-| 会话/turn 生命周期编排：`init_session_objects`、`persist_chat_snapshot` 等 | `agent/runtime.py` | 跨模块对象创建（SessionManager/TaskManager/SessionContext）是 agent 运行时组合根的职责，写在 runtime.py 内 |
-| monitor 上报 ×8：`report_turn_start`、`report_prompt_tokens`、`report_llm_usage`、`report_tool_start`、`report_tool_end`、`report_turn_end`、`report_session_start`、`report_session_end` | `monitor/monitor_pipeline.py` | 现 handlers.py 里对 `get_monitor_pipeline()` 的全部转发调用收口到此，各事件上独立注册 |
-| 记忆信号：`memory_turn_signal`（on_turn_end）、`memory_session_end`（on_session_end） | `memory/trigger.py` | 薄封装调同文件的 `process_turn_signal` / `process_session_end` |
-| 上下文注入：`inject_dynamic_prompts`（before_build 默认实现，透传洋葱） | `context/assembler.py` | 与 prompt 组装同文件，直接访问 persona/memory_prompt 等字段 |
-| 工具参数守卫：`file_tool_param_guard`（before_tool_call） | `tools/base.py` | 从 runtime.py L616-656 的内联校验迁入（path/content 为空检查） |
-| 工具日志落盘：`persist_tool_log`（after_tool_call） | `session/manager.py` | append_tool_log 本就是 SessionManager 方法，监听器与其同文件 |
+| 监听器 | 所在文件（原有文件，不新建）                               | 说明 |
+|---|----------------------------------------------|---|
+| 会话/turn 生命周期编排：`init_session_objects`、`persist_chat_snapshot` 等 | `agent/runtime.py`                           | 跨模块对象创建（SessionManager/TaskManager/SessionContext）是 agent 运行时组合根的职责，写在 runtime.py 内 |
+| monitor 上报 ×8：`report_turn_start`、`report_prompt_tokens`、`report_llm_usage`、`report_tool_start`、`report_tool_end`、`report_turn_end`、`report_session_start`、`report_session_end` | `monitor/monitor_pipeline.py`                | 现 handlers.py 里对 `get_monitor_pipeline()` 的全部转发调用收口到此，各事件上独立注册 |
+| 记忆信号：`memory_turn_signal`（on_turn_end）、`memory_session_end`（on_session_end） | `memory/trigger.py`                          | 薄封装调同文件的 `process_turn_signal` / `process_session_end` |
+| 上下文注入：`inject_dynamic_prompts`（before_build 默认实现，透传洋葱） | `context/assembler.py`                       | 与 prompt 组装同文件，直接访问 persona/memory_prompt 等字段 |
+| 工具参数守卫：`file_tool_param_guard`（before_tool_call） | `tools/base.py`                              | 从 runtime.py L616-656 的内联校验迁入（path/content 为空检查） |
+| 工具日志落盘：`persist_tool_log`（after_tool_call） | `chat_message/persist.py`                    | append_tool_log 本就是 SessionManager 方法，监听器与其同文件 |
 | 输出安全校验：`output_safety_check`（on_complete） | `guardrail/prompt_safety_input_guardrail.py` | 与输入安全校验同文件；新增输出侧检测方法。若未来安全能力独立成模块，随迁 |
 
 装载机制：**零配置、无手工清单、无全量扫描**。`@on` 在模块 import 时即把监听器

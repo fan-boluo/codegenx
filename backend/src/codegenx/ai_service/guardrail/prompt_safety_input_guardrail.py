@@ -28,23 +28,23 @@ class PromptSafetyInputGuardrail:
         re.compile(r"(?i)new\s+(?:instructions?|commands?|prompts?)\s*:"),
     ]
 
-    def validate(self, user_input: str) -> None:
+    @on(HookEvent.ON_USER_INPUT, name="inputput_safety_check", priority=10)
+    def inputput_safety_check(self, ctx: "HookContext") -> "HookDecision | None":
+        user_input = ctx.data.get("user_input")
         text = (user_input or "").strip()
+        # TODO 这两个校验放前端
         if not text:
-            raise BusinessException(ErrorCode.PARAMS_ERROR, "输入内容不能为空")
+            return HookDecision.block("输入内容不能为空")
         if len(text) > 1000:
-            raise BusinessException(ErrorCode.PARAMS_ERROR, "输入内容过长，不要超过 1000 字")
+            return HookDecision.block("输入内容过长，不要超过 1000 字")
         lowered = text.lower()
         for sensitive_word in self.SENSITIVE_WORDS:
             if sensitive_word.lower() in lowered:
-                raise BusinessException(ErrorCode.FORBIDDEN_ERROR, "输入包含不当内容，请修改后重试")
+                return HookDecision.block("输入包含不当内容，请修改后重试")
+
         for pattern in self.INJECTION_PATTERNS:
             if pattern.search(text):
-                raise BusinessException(ErrorCode.FORBIDDEN_ERROR, "检测到恶意输入，请求被拒绝")
-
-
-def validate_prompt_safety(user_input: str) -> None:
-    PromptSafetyInputGuardrail().validate(user_input)
+                return HookDecision.block("检测到恶意输入，请求被拒绝")
 
 
 # ── Hook 监听器：输出安全校验接入事件总线（docs/Hook设计.md §4.2） ───────────

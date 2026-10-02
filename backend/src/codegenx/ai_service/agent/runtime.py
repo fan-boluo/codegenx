@@ -267,24 +267,39 @@ class AgentRuntime(BaseComponent):
             
             # Get or create session using pool (no lock needed)
             session_state, is_new = await self.session_pool.get_or_create(request)
-
             if is_new:
+                self.session_pool.init_session_state(session_state)
                 await hook_manager.emit(
                     HookEvent.SESSION_START,
                     HookContext(event=HookEvent.SESSION_START, session=session_state),
                 )
                 log.debug(f"新建一个session_state:{request.session_id}")
-            else:
-                # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
-                # （复用 on_session_start 已有的快照重载逻辑，docs/SystemApp架构设计.md §7）
-                await self._restore_swapped_session(session_state)
-            
+
+            # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
+            # （复用 on_session_start 已有的快照重载逻辑，docs/SystemApp架构设计.md §7）
+            await self._restore_swapped_session(session_state)
+
+
+            # 用户发送的消息入库
+            user_dict = {"role": "user", "content": request.message}
+            try:
+                from codegenx.ai_service.chat_message import get_chat_message_store
+                await get_chat_message_store().append_message(
+                    request.user_id, str(request.app_id), request.session_id, user_dict
+                )
+            except Exception as exc:
+                log.warning("user 消息入库失败（不影响对话）: {}", exc)
+
+            session_state.state = AgentState.RUNNING
+            session_state.started_at = datetime.utcnow()
+
             # Add request to session pending queue and trigger processing
             await self._enqueue_session_request(session_state, request)
             log.debug("{} 已加入 session pending_requests", request.request_id)
 
 
     async def _restore_swapped_session(self, session_state: RuntimeSessionState) -> None:
+        # 这一步是每轮都会执行的，目前，不管是新建session还是复用
         if not getattr(session_state, "swapped_out", False):
             return
         session_state.swapped_out = False
@@ -349,8 +364,11 @@ class AgentRuntime(BaseComponent):
                         return
                     request = session_state.pending_requests.pop(0)
 
-                log.debug("session event triggered, processing request: {}", request.request_id)
-                await self._reset_request_state(session_state, request)
+                log.debug("session 中的请求任务触发, 处理请求: {}", request.request_id)
+
+                session_state.request = request
+                session_state.activate_turn = ActivateTurn()
+
                 request_task = asyncio.create_task(
                     self._execute_request(session_state),
                     name=f"agent-request-{session_state.request_id}",
@@ -385,9 +403,6 @@ class AgentRuntime(BaseComponent):
                     session_state.worker_task = None
                 log.info("{},{}",session_state.session_id,"finished")
 
-
-
-
     async def _close_session_state(
         self, session_state: RuntimeSessionState, *, end_reason: str
     ) -> None:
@@ -416,27 +431,6 @@ class AgentRuntime(BaseComponent):
         # Pool will automatically remove closed sessions during cleanup
         log.info("Session {} closed: end_reason={}", session_state.session_id, end_reason)
 
-    # ------------------------------------------------------------------ request state
-
-    async def _reset_request_state(
-        self, session_state: RuntimeSessionState, request: AiServiceGenerateRequest
-    ) -> None:
-        """Reset per-request fields."""
-        session_state.request = request
-        session_state.tool_iterations = 0
-        session_state.last_tool_signature = None
-        session_state.consecutive_same_tool_calls = 0
-
-        activate_turn = session_state.activate_turn
-        activate_turn.step_counter = 0
-        activate_turn.active_step_id = ""
-        activate_turn.active_steps.clear()
-        activate_turn.requires_followup = False
-        activate_turn.state = AgentState.IDLE
-
-        now = datetime.utcnow()
-        request_dict = request.model_dump()
-        request_dict["started_at"] = now.isoformat()
 
 
     # ------------------------------------------------------------------ request execution
@@ -456,129 +450,132 @@ class AgentRuntime(BaseComponent):
 
     async def _execute_request(self, session_state: RuntimeSessionState) -> None:
         """Process all turns. Always publishes a terminal event; re-raises CancelledError."""
+
         request_id = session_state.request_id
         activate_turn = session_state.activate_turn
         activate_turn.state = AgentState.RUNNING
         activate_turn.started_at = time.time()
 
-        # turn 级 hook 上下文：整个 turn 复用同一 ctx，保证 span 栈跨事件连续（洋葱树 §8.2）
+        # turn 级 hook 上下文：整个 turn 复用同一 ctx）
         hook_ctx = HookContext(
             event=HookEvent.TURN_START, session=session_state, turn=activate_turn
         )
+        await hook_manager.emit(HookEvent.TURN_START, hook_ctx)
+        try:
+            # 加入聊天历史
+            user_message = session_state.request.message
+            context_manager = session_state.context_manager
+            if context_manager is None:
+                raise RuntimeError("context_manager is not initialized — on_session_start hook may not have run")
+            context_manager.add_user_message(user_message)
+            await context_manager.build_system_prompt(user_message)
 
-        async with hook_manager.span("turn", hook_ctx):
-            try:
-                # 加入聊天历史
-                user_message = session_state.request.message
-                context_manager = session_state.context_manager
-                if context_manager is None:
-                    raise RuntimeError("context_manager is not initialized — on_session_start hook may not have run")
-                context_manager.add_user_message(user_message)
-                await context_manager.build_system_prompt(user_message)
+            await self._publish_runtime_event(
+                session_state,
+                AgentEvent(event_type=AgentEventType.ON_TURN_START, data={
+                    "request_id": request_id,
+                    "step_counter": activate_turn.step_counter,
+                }, state=activate_turn.state))
+            log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
+            # 执行turn的任务
+            # 偏差③修复：spec.limits 主路径落地消费（原 max_steps 全库零生效）
+            limits = self._spec_limits(session_state)
+            effective_max_steps = (
+                int(limits.max_steps)
+                if limits is not None and getattr(limits, "max_steps", None)
+                else self.max_steps
+            )
+            while activate_turn.step_counter < effective_max_steps:
+                self._raise_if_stop_requested(session_state)
+                # 聊天历史微压，清除工具执行结果
+                await context_manager.micro_compact()
+                log.debug("{},{},{}",request_id, activate_turn.step_counter, " micro_compact")
+                # 初始化step_id step_counter
+                activate_turn.step_counter += 1
+                step_id = f"{session_state.request_id}_{activate_turn.step_counter}"  # reqid_1,2,3
+                activate_turn.active_step_id = step_id
+                activate_turn.active_steps.append(step_id)
+                activate_turn.state = AgentState.RUNNING
 
-                await self._fire(HookEvent.TURN_START, hook_ctx)
-                await self._publish_runtime_event(
-                    session_state,
-                    AgentEvent(event_type=AgentEventType.ON_TURN_START, data={
-                        "request_id": request_id,
-                        "step_counter": activate_turn.step_counter,
-                    }, state=activate_turn.state))
-                log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
-                # 执行turn的任务
-                # 偏差③修复：spec.limits 主路径落地消费（原 max_steps 全库零生效）
-                limits = self._spec_limits(session_state)
-                effective_max_steps = (
-                    int(limits.max_steps)
-                    if limits is not None and getattr(limits, "max_steps", None)
-                    else self.max_steps
-                )
-                while activate_turn.step_counter < effective_max_steps:
-                    self._raise_if_stop_requested(session_state)
-                    # 聊天历史微压，清除工具执行结果
-                    await context_manager.micro_compact(self.config.compact.maxToolResultTokens)
-                    log.debug("{},{},{}",request_id, activate_turn.step_counter, " micro_compact")
-                    # 初始化step_id step_counter
-
-                    activate_turn.step_counter += 1
-                    step_id = f"{session_state.request_id}_{activate_turn.step_counter}"  # reqid_1,2,3
-                    activate_turn.active_step_id = step_id
-                    activate_turn.active_steps.append(step_id)
-                    activate_turn.state = AgentState.RUNNING
-
-                    try:
-                        # step 层洋葱 span：记录单个 step 用时与 trace 路径
-                        async with hook_manager.span(step_id, hook_ctx):
-                            await self._execute_step(session_state, activate_turn, hook_ctx)
-                    finally:
-                        activate_turn.active_steps.pop()
-                        activate_turn.active_step_id = ""
-                        async for compact_event in context_manager.compact_after_step():
-                            activate_turn.last_step_compacted = True
-                            await self._publish_runtime_event(session_state, compact_event)
-                    if not activate_turn.requires_followup:
-                        break
-                log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
                 try:
-                    await context_manager.compact_after_turn()
-                except Exception as exc:
-                    log.debug(traceback.format_exc())
-                    log.exception("compact_after_turn 执行异常（非致命）")
-                # 输出安全校验（on_complete）：blocked 时以安全提示替换最终回复
-                final_output = self._last_assistant_content(session_state)
-                await self._fire(HookEvent.ON_COMPLETE, hook_ctx, final_output=final_output)
-                if hook_ctx.action == HookAction.BLOCKED:
-                    self._replace_last_assistant_content(session_state, hook_ctx.message)
-                await self._publish_runtime_event(
-                    session_state,
-                    AgentEvent(
-                        event_type=AgentEventType.REQUEST_COMPLETED,
-                        data={"request_id": request_id},
-                        state=AgentState.COMPLETED,
-                    ),
-                )
-                activate_turn.finished_at = time.time()
-                activate_turn.state = AgentState.COMPLETED
-
-            except TurnStoppedError as exc:
-                activate_turn.error_text = str(exc)
-                activate_turn.state = AgentState.STOPPED
-                await self._publish_runtime_event(
-                    session_state,
-                    AgentEvent(
-                        event_type=AgentEventType.REQUEST_STOPPED,
-                        data={"request_id": request_id, "reason": str(exc)},
-                        state=AgentState.STOPPED,
-                    ),
-                )
-                log.debug("{},{},{}",request_id, activate_turn.step_counter, " TurnStoppedError：",exc)
-            except asyncio.CancelledError:
-                reason = self._stop_reason(session_state)
-                activate_turn.error_text = reason
-                activate_turn.state = AgentState.STOPPED
-                await self._publish_runtime_event(
-                    session_state,
-                    AgentEvent(
-                        event_type=AgentEventType.REQUEST_STOPPED,
-                        data={"request_id": request_id, "reason": reason},
-                        state=AgentState.STOPPED,
-                    ),
-                )
-                log.debug("{},{},{}",request_id, activate_turn.step_counter, " CancelledError")
-                raise
+                    await self._execute_step(session_state, activate_turn, hook_ctx)
+                finally:
+                    activate_turn.active_steps.pop()
+                    activate_turn.active_step_id = ""
+                    async for compact_event in context_manager.compact_after_step():
+                        activate_turn.last_step_compacted = True
+                        await self._publish_runtime_event(session_state, compact_event)
+                if not activate_turn.requires_followup:
+                    break
+            log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
+            try:
+                await context_manager.compact_after_turn()
             except Exception as exc:
-                log.opt(exception=True).error("_execute_request failed: {}", exc)
-                activate_turn.error_text = str(exc)
-                activate_turn.state = AgentState.FAILED
-                await self._fire(HookEvent.INTERNAL_ON_ERROR, hook_ctx, error=exc)
-                await self._publish_runtime_event(
-                    session_state,
-                    AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
-                )
-                log.debug("{},{}, Exception:{}",request_id, activate_turn.step_counter,  exc)
-            finally:
-                activate_turn.finished_at = time.time()
-                await self._fire(HookEvent.TURN_END, hook_ctx)
-                log.debug("OnTurnEnd {},{}",request_id, activate_turn.step_counter)
+                log.debug(traceback.format_exc())
+                log.exception("compact_after_turn 执行异常（非致命）")
+            # 输出安全校验（on_complete）：blocked 时以安全提示替换最终回复
+            final_output = self._last_assistant_content(session_state)
+            await self._fire(HookEvent.ON_COMPLETE, hook_ctx, final_output=final_output)
+            if hook_ctx.action == HookAction.BLOCKED:
+                self._replace_last_assistant_content(session_state, hook_ctx.message)
+            await self._publish_runtime_event(
+                session_state,
+                AgentEvent(
+                    event_type=AgentEventType.REQUEST_COMPLETED,
+                    data={"request_id": request_id},
+                    state=AgentState.COMPLETED,
+                ),
+            )
+            activate_turn.finished_at = time.time()
+            activate_turn.state = AgentState.COMPLETED
+
+        except TurnStoppedError as exc:
+            activate_turn.error_text = str(exc)
+            activate_turn.state = AgentState.STOPPED
+            await self._publish_runtime_event(
+                session_state,
+                AgentEvent(
+                    event_type=AgentEventType.REQUEST_STOPPED,
+                    data={"request_id": request_id, "reason": str(exc)},
+                    state=AgentState.STOPPED,
+                ),
+            )
+            log.debug("{},{},{}",request_id, activate_turn.step_counter, " TurnStoppedError：",exc)
+        except asyncio.CancelledError:
+            reason = self._stop_reason(session_state)
+            activate_turn.error_text = reason
+            activate_turn.state = AgentState.STOPPED
+            await self._publish_runtime_event(
+                session_state,
+                AgentEvent(
+                    event_type=AgentEventType.REQUEST_STOPPED,
+                    data={"request_id": request_id, "reason": reason},
+                    state=AgentState.STOPPED,
+                ),
+            )
+            log.debug("{},{},{}",request_id, activate_turn.step_counter, " CancelledError")
+            raise
+        except Exception as exc:
+            log.opt(exception=True).error("_execute_request failed: {}", exc)
+            activate_turn.error_text = str(exc)
+            activate_turn.state = AgentState.FAILED
+            await self._fire(HookEvent.INTERNAL_ON_ERROR, hook_ctx, error=exc)
+            await self._publish_runtime_event(
+                session_state,
+                AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
+            )
+            log.debug("{},{}, Exception:{}",request_id, activate_turn.step_counter,  exc)
+        finally:
+            activate_turn.finished_at = time.time()
+            # 留存快照
+            await get_app().session_io.save_turn_chat_message_snapshot(
+                session_state.context_manager.chat_messages,
+                user_id=session_state.user_id,
+                app_id=session_state.app_id,
+                session_id=session_state.session_id,
+            )
+            await self._fire(HookEvent.TURN_END, hook_ctx)
+            log.debug("OnTurnEnd {},{}",request_id, activate_turn.step_counter)
     # ------------------------------------------------------------------ turn execution
 
     async def _execute_step(
@@ -591,8 +588,9 @@ class AgentRuntime(BaseComponent):
             hook_ctx,
             inner=session_state.context_manager.assemble,
         )
-        prompt_tokens = self._estimate_message_tokens(messages)
 
+        # 这里计算的prompt_token数字不准，和实际invoke后返回的值差别很大
+        prompt_tokens = self._estimate_message_tokens(messages)
         await self._fire(
             HookEvent.BEFORE_LLM_INVOKE,
             hook_ctx,
@@ -621,13 +619,15 @@ class AgentRuntime(BaseComponent):
             ),
         )
         log.debug("PreLLMCALL {},{},{}",session_state.request_id, turn_state.step_counter,turn_state.active_step_id)
-        # LLM 调用层洋葱 span：记录用时与 trace 路径
-        async with hook_manager.span("llm_invoke", hook_ctx):
-            llm_response = await self._llm_recovery.invoke(
-                messages, turn_state, session_state
-            )
+
+        llm_response = await self._llm_recovery.invoke(
+            messages, turn_state, session_state
+        )
         log.debug(llm_response)
         completion_tokens = self._estimate_completion_tokens(llm_response)
+        meta_usage = llm_response.get("usage") or {}
+        prompt_tokens = int(meta_usage.get("prompt_tokens") or 0) or prompt_tokens
+        completion_tokens = int(meta_usage.get("completion_tokens") or 0) or completion_tokens
         usage = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -664,12 +664,11 @@ class AgentRuntime(BaseComponent):
         session_state.context_manager.add_assistant_message(assistant_message)
         # BUG-5 接线：model/finish_reason/真实 usage 作为独立 meta 落 chat_message 用量列
         # （不塞进 assistant_message，避免随 assemble 回传 LLM；缺省回退本地估算）
-        meta_usage = llm_response.get("usage") or {}
         chat_meta = {
             "model": str(llm_response.get("model") or "") or None,
             "finish_reason": str(llm_response.get("finish_reason") or "") or None,
-            "prompt_tokens": int(meta_usage.get("prompt_tokens") or 0) or prompt_tokens,
-            "completion_tokens": int(meta_usage.get("completion_tokens") or 0) or completion_tokens,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
         }
         # assistant 消息入库（MySQL chat_message 表；失败不阻断对话）
         try:
@@ -684,7 +683,7 @@ class AgentRuntime(BaseComponent):
         turn_state.requires_followup = bool(tool_calls)
         for tool_call in tool_calls:
             self._raise_if_stop_requested(session_state)
-            session_state.tool_iterations += 1
+            turn_state.tool_iterations += 1
             # 偏差③修复：spec.limits.max_tool_iterations 主路径消费
             limits = self._spec_limits(session_state)
             effective_max_tool_iterations = (
@@ -692,31 +691,31 @@ class AgentRuntime(BaseComponent):
                 if limits is not None and getattr(limits, "max_tool_iterations", None)
                 else self.max_tool_iterations
             )
-            if session_state.tool_iterations > effective_max_tool_iterations:
+            if turn_state.tool_iterations > effective_max_tool_iterations:
                 raise RuntimeError(
                     f"Agent exceeded max tool iterations ({effective_max_tool_iterations})"
                 )
 
             signature = self._tool_call_signature(tool_call)
-            if signature == session_state.last_tool_signature:
-                session_state.consecutive_same_tool_calls += 1
+            if signature == turn_state.last_tool_signature:
+                turn_state.consecutive_same_tool_calls += 1
             else:
-                session_state.last_tool_signature = signature
-                session_state.consecutive_same_tool_calls = 1
-            if session_state.consecutive_same_tool_calls >= self.max_same_tool_calls:
+                turn_state.last_tool_signature = signature
+                turn_state.consecutive_same_tool_calls = 1
+            if turn_state.consecutive_same_tool_calls >= self.max_same_tool_calls:
                 tc_name = tool_call.get('name', 'unknown')
                 tc_args = tool_call.get('arguments', {}) or {}
                 arg_path = (tc_args.get('path') or '').strip() if isinstance(tc_args, dict) else ''
                 arg_content = (tc_args.get('content') or '').strip() if isinstance(tc_args, dict) else ''
                 if tc_name in ('write_file', 'read_file', 'edit_file') and (not arg_path or (tc_name == 'write_file' and not arg_content)):
                     raise RuntimeError(
-                        f"模型连续 {session_state.consecutive_same_tool_calls} 次调用 {tc_name} "
+                        f"模型连续 {turn_state.consecutive_same_tool_calls} 次调用 {tc_name} "
                         f"但未提供有效参数(path={repr(arg_path)}, content_len={len(arg_content)})。"
                         f"可能是上下文过长导致大模型参数丢失，建议新建会话重试。"
                     )
                 raise RuntimeError(
                     f"Agent repeated the same tool call "
-                    f"{session_state.consecutive_same_tool_calls} times: "
+                    f"{turn_state.consecutive_same_tool_calls} times: "
                     f"{tool_call.get('name')}"
                 )
 
@@ -749,9 +748,8 @@ class AgentRuntime(BaseComponent):
                     event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
                 ),
             )
-            # 工具层洋葱 span：记录单次工具执行用时与 trace 路径
-            async with hook_manager.span(f"tool_call:{tool_call.get('name', 'unknown')}", hook_ctx):
-                result = await self.tool_executor.execute(tool_call, turn_state, session_state)
+
+            result = await self.tool_executor.execute(tool_call, turn_state, session_state)
             self._raise_if_stop_requested(session_state)
             await self._fire(
                 HookEvent.AFTER_TOOL_CALL,
@@ -883,7 +881,7 @@ class AgentRuntime(BaseComponent):
     async def _fire(
         self, event: str, ctx: HookContext, *, parallel: bool = False, **data: Any
     ) -> HookContext:
-        """复用 turn 级 ctx 触发 hook 事件：重置 event/data/action，保持 span 栈连续。"""
+        """复用 turn 级 ctx 触发 hook 事件：重置 event/data/action。"""
         ctx.event = event
         ctx.data = data
         ctx.action = HookAction.CONTINUE

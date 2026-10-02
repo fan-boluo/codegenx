@@ -18,7 +18,7 @@ class DispatchMode:
 
 class HookEvent:
     """10 类业务事件 + 内部事件名常量（snake_case）。"""
-
+    ON_USER_INPUT = "on_user_input"
     SESSION_START = "on_session_start"
     TURN_START = "on_turn_start"
     BEFORE_BUILD = "before_build"

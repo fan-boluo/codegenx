@@ -121,13 +121,9 @@ class SessionContext:
             raise RuntimeError("SystemApp.context 未装配")
         return await service.assemble(self.system_prompt,self.chat_messages)
 
-    async def micro_compact(self,max_tokens:int):
+    async def micro_compact(self):
         log.debug("micro compact 前,{}", estimate_tokens(self.chat_messages))
-        self.chat_messages = microcompact_messages(
-            self.chat_messages,
-            protect_last_n_results=5,
-            max_result_tokens=max_tokens,
-        )
+        self.chat_messages = microcompact_messages(self.chat_messages)
         log.debug("micro compact 后,{}",estimate_tokens(self.chat_messages))
 
     async def persist_large_output(self,tool_call:Dict[str, Any], output:ToolResult) -> str:

@@ -361,11 +361,13 @@ class MonitorConfig(Base):
 
 
 class CompactConfig(Base):
-    maxToolResultTokens: int = Field(
+    max_tool_result_tokens: int = Field(
         default=3000,
         validation_alias=AliasChoices("maxToolResultTokens", "max_tool_result_tokens"),
     )
     model_name: str | None = Field(default=None)
+
+    protect_last_n_results: int = Field(default=5)
 
 class ModelsConfig(Base):
     name: str = Field(default="qwen3.8-flash")

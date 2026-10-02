@@ -44,7 +44,6 @@ from codegenx.ai_service.compact.prompt import (
 from codegenx.ai_service.compact.micro import (
     COMPACTABLE_TOOLS,
     CLEARED_MARKER,
-    MAX_TOOL_RESULT_TOKENS,
     microcompact_messages,
     microcompact_stats,
 )
@@ -73,7 +72,6 @@ __all__ = [
     # micro
     "COMPACTABLE_TOOLS",
     "CLEARED_MARKER",
-    "MAX_TOOL_RESULT_TOKENS",
     "microcompact_messages",
     "microcompact_stats",
     # full compaction

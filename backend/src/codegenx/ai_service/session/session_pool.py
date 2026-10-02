@@ -4,12 +4,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict
-from datetime import datetime
 from typing import Any, Optional
-
-from codegenx.ai_service.agent.agent_schema import AgentState
+from codegenx.ai_service.context.session_context import SessionContext
 from codegenx.ai_service.component import BaseComponent, ComponentType
-from codegenx.ai_service.hook import  HookContext, HookEvent, on
 from codegenx.ai_service.utils.config import config
 from shared import log
 
@@ -132,6 +129,17 @@ class SessionPool(BaseComponent):
                 session_id=session_id,
                 request=request,
             )
+            session.context_manager = SessionContext(
+                session_id=session.session_id,
+                app_id=session.app_id,
+                user_id=session.user_id,
+                db_name=session.db_name,
+                agent_name=session.agent_name,
+            )
+
+            # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体）
+            session.agent_name = str((getattr(request, "metadata", None) or {}).get("agent_name", "") or "")
+
             session.touch()
             self._sessions[session_id] = session
             return session, True
@@ -282,71 +290,6 @@ class SessionPool(BaseComponent):
             "max_sessions": self.max_sessions,
             "idle_timeout_seconds": self.idle_timeout_seconds,
         }
-
-
-# ── Hook 监听器：会话/turn 生命周期编排（docs/Hook设计.md §4.2） ─────────────
-# 会话级对象只剩 SessionContext（纯状态）；落盘/任务看板走 SystemApp 无状态服务
-# 注意：@on 装饰时注册裸函数对象，监听器必须是无 self 的模块级函数
-
-
-@on(HookEvent.SESSION_START, name="init_session_objects", priority=10)
-async def init_session_objects(ctx: HookContext) -> None:
-    """初始化会话级对象（迁自 handlers.on_session_start）：
-
-    SessionContext（纯会话状态）、加载聊天历史快照、
-    用户消息入库、state→RUNNING。
-    """
-    session = ctx.session
-    req = session.request
-    if req is None:
-        log.warning("on_session_start: request is None, skipping")
-        return
-    from codegenx.ai_service.system_app import get_app
-    from codegenx.ai_service.context.session_context import SessionContext
-
-    session_io = get_app().session_io
-
-    # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体）
-    session.agent_name = str((getattr(req, "metadata", None) or {}).get("agent_name", "") or "")
-
-    session.context_manager = SessionContext(
-        session_id=session.session_id,
-        app_id=session.app_id,
-        user_id=session.user_id,
-        db_name=session.db_name,
-        agent_name=session.agent_name,
-    )
-    # 加载上次聊天时的历史记录到内存
-    session.context_manager.chat_messages = await session_io.get_turn_chat_message_snapshot(
-        user_id=session.user_id, app_id=session.app_id, session_id=session.session_id
-    ) or []
-    user_dict = {"role": "user", "content": req.message}
-    # 聊天消息入库（MySQL chat_message 表；失败不阻断对话）
-    try:
-        from codegenx.ai_service.chat_message import get_chat_message_store
-        await get_chat_message_store().append_message(
-            session.user_id, str(req.app_id), session.session_id, user_dict
-        )
-    except Exception as exc:
-        log.warning("user 消息入库失败（不影响对话）: {}", exc)
-
-    session.state = AgentState.RUNNING
-    session.started_at = datetime.utcnow()
-
-
-@on(HookEvent.TURN_END, name="persist_chat_snapshot", priority=10)
-async def persist_chat_snapshot(ctx: HookContext) -> None:
-    """保留上下文快照（迁自 handlers.on_turn_end 前半）。"""
-    session = ctx.session
-    if session.context_manager is not None:
-        from codegenx.ai_service.system_app import get_app
-
-        await get_app().session_io.save_turn_chat_message_snapshot(
-            session.context_manager.chat_messages,
-            user_id=session.user_id,
-            app_id=session.app_id,
-            session_id=session.session_id,
-        )
 
 
 def initialize_session_pool(system_app) -> SessionPool:

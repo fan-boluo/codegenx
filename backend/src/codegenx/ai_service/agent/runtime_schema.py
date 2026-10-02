@@ -33,6 +33,10 @@ class ActivateTurn:
     last_recovery_kind: str = ""
     error_text: str = ""
     last_step_compacted: bool = False  # 上一步是否执行了压缩，供告警评估使用
+    # tool
+    tool_iterations: int = 0
+    last_tool_signature: str | None = None
+    consecutive_same_tool_calls: int = 0
 
     def add_turn_span_id(self, key: str, span_id: str) -> None:
         """Register an active span id for the current turn (e.g. 'turn_span_id', 'llm_span_id')."""
@@ -57,7 +61,6 @@ class RuntimeSessionState:
     # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体，现行为不变）
     agent_name: str = ""
 
-
     # Monitoring (initialised by on_session_start hook)
     session_record: SpanRecord | None = None
     # span_collector: Any = None
@@ -69,12 +72,6 @@ class RuntimeSessionState:
     pending_requests: list[AiServiceGenerateRequest] = field(default_factory=list)  # 等待的请求
     active_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)  # 活跃的请求任务
     activate_turn:ActivateTurn = field(default_factory=ActivateTurn)  # 当前获取的turn
-
-    # tool
-    tool_iterations: int = 0
-    last_tool_signature: str | None = None
-    consecutive_same_tool_calls: int = 0
-
 
     # Session lifecycle
     started_at: datetime | None = None
