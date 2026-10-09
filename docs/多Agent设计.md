@@ -177,7 +177,7 @@ AgentSpec 注册表  ai_service/agent/agent_registry.py
 子agent工具：ai_service/tools/subagent
 核心循环AgentRuntime：ai_service/agent/runtime.py，重要改造点
 
-### 8.3 差异注入点
+### 10.1 差异注入点
 
 | 差异 | 注入点 |
 |---|---|
