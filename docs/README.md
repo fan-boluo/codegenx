@@ -187,9 +187,7 @@ python虚拟环境所在位置: .venv\Scripts\pyhton.exe
 ```bash
 # 安装依赖
 cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+uv sync --default-index https://mirrors.aliyun.com/pypi/simple/
 
 # 配置环境变量 (.env config.json)
 
