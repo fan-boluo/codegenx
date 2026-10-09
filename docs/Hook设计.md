@@ -3,6 +3,9 @@
 > 版本：v2.1（设计方案） · 2026-09-25
 > 相关代码：`backend/src/codegenx/ai_service/hook/`
 > 触发方：`backend/src/codegenx/ai_service/agent/runtime.py`
+> 【重要原则】对于要不要放hook的原则：
+Hook 是执行流上的**拦截 / 扩展点**，核心价值是把**横切关注点**（监控、日志、安全、记忆、注入、策略）从核心执行循环里抽离出来 —— 让主流程保持显式、可推理，同时允许这些能力按需插入。判断 "要不要放 hook" 只有一个试金石：**删掉这个 hook，主流程是否还能正确运行**
+
 
 ## 1. 设计目标
 
@@ -19,36 +22,36 @@
 
 事件命名统一 snake_case。每类事件定义：触发时机、默认分发模式、payload、内置监听器职责、可短路性。
 
-### 2.1 触发点与 runtime.py 对应关系
 
-```
-会话生命周期        on_session_start ──────────► 
-                   on_session_end ─────────────► _close_session_state()
+### 2.2 事件定义
+目前的事件及触发点对于函数名称
+event：on_user_input ,name:inputput_safety_check 用户安全检查
+event：on_session_start ,name:report_session_start 初始化session，turn,telemetry对象，上报session总数、活跃session数到监控
+event：on_turn_start ,name:report_turn_start monitor 监控
+event：before_build ,name:inject_dynamic_prompts  目前什么也没有，保持现状
 
-单轮（一个请求）    on_turn_start ──────────────► _execute_request() 入口
-（一次请求=一个    before_build ───────────────► _execute_step() 中 assemble() 之前
- turn，内含多      before_llm_invoke ──────────► _invoke_llm_with_recovery() 之前
- 个 step）         after_llm_invoke ───────────► LLM 返回后
-                   before_tool_call ───────────► tool_executor.execute() 之前（逐个工具）
-                   after_tool_call ────────────► 工具返回后（逐个工具）
-                   on_complete ────────────────► turn 正常结束、发布 REQUEST_COMPLETED 前
-                   on_turn_end ────────────────► _execute_request() finally
-```
+event：before_llm_invoke ,name:report_prompt_tokens  这个prompt token计算和实际差别太大，也没有任何拦截
+event：after_llm_invoke ,name:report_llm_usage  模型返回的实际使用量
 
-### 2.2 事件定义表
+event：before_tool_call ,name:report_tool_start   具体怎么检查后续再说吧
+event：before_tool_call ,name:safe_path_guard
+event：before_tool_call ,name:file_tool_param_guard
 
-| # | 事件 | 触发时机 | 默认模式 | 可短路 | 关键 payload | 内置监听器职责（归属模块见 §4.2）                                                                        |
-|---|---|---|---|---|---|--------------------------------------------------------------------------------------------|
-| 1 | `on_session_start` | 会话首次创建 | serial | 否 | `session` | monitor 上报（monitor 层）                                                                      |
-| 2 | `on_turn_start` | 每次请求开始 | serial | 否 | `session, turn` | monitor turn_start 上报；turn 快照（预留）                                                          |
-| 3 | `before_build` | 上下文组装前（每 step 的 `assemble()` 之前） | **waterfall** | 是（不调 call_next） | `session, turn, build_input` | 注入 memory_prompt / skill_prompt / persona / task_prompt / extra 提醒；修改或替换组装输入（context 模块）   |
-| 4 | `before_llm_invoke` | LLM 调用前 | serial | **是** | `session, turn, messages, prompt_tokens` | token 预估上报（monitor）；限流/预算控制（没有）；                                                           |
-| 5 | `after_llm_invoke` | LLM 返回后 | **parallel** | 否 | `session, turn, response, usage` | usage 上报（monitor）；相互独立故并行                                                       |
-| 6 | `before_tool_call` | 每次工具调用前 | serial | **是** | `session, turn, tool_call` | 权限与安全校验（`action=blocked`）；文件工具参数守卫（`action=inject`，从 runtime.py 内联校验迁入，tools 模块）；monitor 上报 |
-| 7 | `after_tool_call` | 工具执行返回后 | **parallel** | 否 | `session, turn, tool_call, result` | 工具执行快照落盘 append_tool_log（session 模块）；monitor 上报；记忆漏斗信号（memory 模块）                          |
-| 8 | `on_complete` | turn 正常产生最终回复后、发布完成事件前 | serial | **是** | `session, turn, final_output` | **输出安全校验**（敏感内容/合规审查，guardrail 模块）；失败时 `action=blocked`，以安全提示替换最终回复                        |
-| 9 | `on_turn_end` | 单轮结束（finally，含异常路径） | serial | 否 | `session, turn` | 保存聊天消息快照（session 层）；记忆两级漏斗信号 warm_extract（memory 层）；monitor turn_end                       |
-| 10 | `on_session_end` | 会话关闭 | serial | 否 | `session, end_reason` | 记忆会话末触发（memory 层）；monitor session_end；资源清理                                                 |
+event：after_tool_call ,name:persist_tool_log 
+event：after_tool_call ,name:report_tool_end
+
+event：on_complete ,name:output_safety_check  ? 必须要经过的一个环节，做成hook不好吧
+event：internal/on_error ,name:report_error
+
+event：on_turn_end ,name:report_turn_end
+event：on_turn_end ,name:memory_turn_signal
+
+event：on_session_end ,name:report_session_end
+event：on_session_end ,name:memory_session_end
+
+
+关于span: 现在的span做的是监控，已经在monitor部分有这类功能了，这里就去掉了
+链路追踪，后续有可能再补充吧
 
 补充约定：
 
@@ -58,9 +61,9 @@
 
 ### 2.3 为什么各事件选择该默认模式
 
-- **serial（顺序）**：`on_session_start` / `on_turn_start` / `on_turn_end` / `on_session_end` 存在隐式先后依赖（先初始化 manager 才能加载历史）；`before_llm_invoke` / `before_tool_call` / `on_complete` 需要短路语义（任一 hook 拒绝即终止），必须顺序评估。
-- **parallel（并行）**：`after_llm_invoke` / `after_tool_call` 的监听器（监控上报、日志落盘、计费、记忆信号）彼此独立、只读入参、互不依赖，并行可降低对主循环时延的叠加。
-- **waterfall（洋葱）**：`before_build` 需要"包住"组装过程——既能在前置修改输入，也能在后置修改产物（messages），且支持短路（某个 hook 直接给出组装结果）。
+- **serial（顺序）**：
+- **parallel（并行）**：
+- **waterfall（洋葱）**：
 
 ## 3. 总体架构
 
@@ -76,11 +79,7 @@
 │   HookManager：注册表 + 拓扑排序 + 三种分发 + span          │
 └────────────────────────▲────────────────────────────────┘
                          │ import 时自注册（@on）
-┌────────────────────────┴────────────────────────────────┐
-│ 各功能模块原有文件内的监听器（归属见 §4.2）                    │
-│   monitor/ memory/ context/ tools/ session/ guardrail/   │
-│   agent/（生命周期编排）                                    │
-└─────────────────────────────────────────────────────────┘
+
 ```
 
 ### 3.1 hook/ 框架层模块划分（只含机制）
@@ -92,33 +91,6 @@ hook/
 ├── core.py            # HookManager、HookRegistration、拓扑排序、三种分发、span,（含启动冻结入口 load_and_freeze，由 systemApp on_init 调用）
 └── context.py         # HookContext 统一上下文、HookDecision 决策对象 
 ```
-
-### 3.2 内置监听器归属（**不新建 builtin 目录，写进模块原有文件**）
-
-归属原则：**监听器跟功能走**——某个模块提供的能力，其 hook 监听器就写在该模块的原有文件内；
-多个模块可在同一事件上各自注册监听器（如 `on_turn_end` 上 session 层存快照、memory 层发信号、
-monitor 层上报，互不相干）。
-
-| 监听器 | 所在文件（原有文件，不新建）                               | 说明 |
-|---|----------------------------------------------|---|
-| 会话/turn 生命周期编排：`init_session_objects`、`persist_chat_snapshot` 等 | `agent/runtime.py`                           | 跨模块对象创建（SessionManager/TaskManager/SessionContext）是 agent 运行时组合根的职责，写在 runtime.py 内 |
-| monitor 上报 ×8：`report_turn_start`、`report_prompt_tokens`、`report_llm_usage`、`report_tool_start`、`report_tool_end`、`report_turn_end`、`report_session_start`、`report_session_end` | `monitor/monitor_pipeline.py`                | 现 handlers.py 里对 `get_monitor_pipeline()` 的全部转发调用收口到此，各事件上独立注册 |
-| 记忆信号：`memory_turn_signal`（on_turn_end）、`memory_session_end`（on_session_end） | `memory/trigger.py`                          | 薄封装调同文件的 `process_turn_signal` / `process_session_end` |
-| 上下文注入：`inject_dynamic_prompts`（before_build 默认实现，透传洋葱） | `context/assembler.py`                       | 与 prompt 组装同文件，直接访问 persona/memory_prompt 等字段 |
-| 工具参数守卫：`file_tool_param_guard`（before_tool_call） | `tools/base.py`                              | 从 runtime.py L616-656 的内联校验迁入（path/content 为空检查） |
-| 工具日志落盘：`persist_tool_log`（after_tool_call） | `chat_message/persist.py`                    | append_tool_log 本就是 SessionManager 方法，监听器与其同文件 |
-| 输出安全校验：`output_safety_check`（on_complete） | `guardrail/prompt_safety_input_guardrail.py` | 与输入安全校验同文件；新增输出侧检测方法。若未来安全能力独立成模块，随迁 |
-
-装载机制：**零配置、无手工清单、无全量扫描**。`@on` 在模块 import 时即把监听器
-自动上报进全局 `hook_manager`（pending），而内置监听器都写在业务模块原有文件内，
-这些模块本就在应用正常 import 链上,systemapp 的 on_init 方法调用后，所有组件都被装备，装备后即加载，其实在这之前fastapi启动时，加载router就已经import了部分组件
-仅两个惰性子模块由所属包的 `__init__` 门面装配（包加载即完成本包 hook 注册）：
-- `monitor/__init__.py` 装配 `monitor_pipeline`（监控上报监听器所在）
-- `memory/__init__.py` 装配 `trigger`（记忆漏斗信号监听器所在）
-
-因此**在任何被应用 import 链可达的文件里新写 `@on` 即完成注册**，框架与配置都不用动。
-唯一约束：不要放在无人 import 的孤立模块里
-——`backend/tests/test_hook_coverage.py` 以「应用 import 链加载后 11 类事件全覆盖」兜底防回归。
 
 ## 4. `@on` 装饰器设计
 
@@ -185,7 +157,7 @@ main.py lifespan
 
 ### 6.1 统一签名
 
-监听器**只接收一个 `HookContext`**（不再像现在 `(turn, **kwargs)` 散参），返回值约定：
+监听器**只接收一个 `HookContext`**，返回值约定：
 
 ```python
 async def hook(ctx: HookContext) -> HookDecision | None | dict
@@ -246,7 +218,7 @@ class HookContext:
 ### 7.2 洋葱 span 树
 
 session → turn → step → (llm_invoke | tool_call) 四层嵌套，与真实调用结构一致：
-
+目前去掉了，与监控部分功能重合
 ```
 session(s1)                         # on_session_start ~ on_session_end
 └─ turn(t1, req_1)                  # on_turn_start ~ on_turn_end
@@ -262,56 +234,6 @@ session(s1)                         # on_session_start ~ on_session_end
 - `ctx.turn.active_step_id` 天然是 step 层 span 的 id；waterfall 分发中每个 hook 就是洋葱的一层，其执行用时并入所在 span；
 - Span 通过 `set_trace_sink(sink)` 输出，**默认接 `monitor_pipeline` / span_collector**（已有基础设施），上报路径形如 `session/turn/step_3/llm_invoke`；
 - runtime 侧只需在 4 处包上 span（见 §9），耗时统计与 trace 路径即全自动。
-
-## 8. runtime.py 触发点改造明细
-
-现 9 处 `hook_runner.dispatch(...)` 全部替换，并新增 2 个触发点（before_build、on_complete）：
-
-| 位置（行号对应 main@5fb2064） | 现调用 | 目标调用 |
-|---|---|---|
-| L237 `_get_or_create_session_state` | `dispatch("OnSessionStart", session_state)` | `emit(HookEvent.SESSION_START, HookContext(session=…))` |
-| L391 `_execute_request` | `dispatch("OnTurnStart", …)` | `emit(ON_TURN_START, ctx)`，外套 `span("turn", ctx)` |
-| L486 `_execute_step` assemble() 前 | **无** | `waterfall(BEFORE_BUILD, ctx, inner=assemble)` |
-| L489 | `dispatch("PreLLMCall", …)` | `emit(BEFORE_LLM_INVOKE, ctx)`，外套 `span("llm_invoke", ctx)` |
-| L522 | `dispatch("PostLLMCall", …)` | `emit_parallel(AFTER_LLM_INVOKE, ctx)` |
-| L599 | `dispatch("PreToolUse", …)`（读 `pre_result["action"]`） | `emit(BEFORE_TOOL_CALL, ctx)`（读 `ctx.action`），外套 `span("tool_call", ctx)` |
-| L665 | `dispatch("PostToolUse", …)` | `emit_parallel(AFTER_TOOL_CALL, ctx)` |
-| **新增** while 循环正常退出后、发布 REQUEST_COMPLETED 前 | **无** | `emit(ON_COMPLETE, ctx)`；`ctx.action=="blocked"` 时以 `ctx.message` 替换最终回复 |
-| L478 finally | `dispatch("OnTurnEnd", …)` | `emit(ON_TURN_END, ctx)` |
-| L470 异常分支 | `dispatch("OnError", …)` | `emit(INTERNAL_ON_ERROR, ctx)` |
-| L345 `_close_session_state` | `dispatch("OnSessionEnd", …)` | `emit(ON_SESSION_END, ctx)` |
-
-AgentRuntime 构造函数中 `HookRunner` / `register_all_hooks` 相关代码删除，改为直接使用模块级 `hook_manager` 单例。
-
-## 9. 内置监听器迁移对照
-
-现 `handlers.py` 中 9 个函数的职责拆分迁移（签名统一改为 `(ctx: HookContext)`），**一个现函数可能拆成多个归属模块的监听器**：
-
-| 现 handler | 职责 | → 归属文件                                       | 监听器名 |
-|---|---|----------------------------------------------|---|
-| `on_session_start` | 初始化 SessionManager/TaskManager/SessionContext、加载历史、消息入库、索引更新 | `agent/runtime.py`                           | `init_session_objects` |
-| `on_session_start`（末尾 monitor 调用） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_session_start` |
-| `on_turn_start` | monitor turn_start 上报 | `monitor/monitor_pipeline.py`                | `report_turn_start` |
-| `pre_llm_call` | token 预估上报 | `monitor/monitor_pipeline.py`                | `report_prompt_tokens` |
-| `post_llm_call` | usage 上报 | `monitor/monitor_pipeline.py`                | `report_llm_usage` |
-| `pre_tool_use` | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_tool_start` |
-| `post_tool_use`（前半） | 工具快照落盘 | `chat_message/persist.py`                    | `persist_tool_log` |
-| `post_tool_use`（后半） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_tool_end` |
-| `on_turn_end`（前半） | 保存聊天快照 | `agent/runtime.py`                           | `persist_chat_snapshot` |
-| `on_turn_end`（`_funnel_turn_signal`） | 记忆漏斗信号 | `memory/trigger.py`                          | `memory_turn_signal` |
-| `on_turn_end`（末尾 monitor 调用） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_turn_end` |
-| `on_error` | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_error`（挂 `internal/on_error`） |
-| `on_session_end`（前半） | 记忆会话末触发 | `memory/trigger.py`                          | `memory_session_end` |
-| `on_session_end`（后半） | monitor 上报 | `monitor/monitor_pipeline.py`                | `report_session_end` |
-| **新增**（runtime.py L616-656 内联逻辑迁出） | 文件工具参数守卫 | `tools/base.py`                              | `file_tool_param_guard` |
-| **新增** | 输出安全校验 | `guardrail/prompt_safety_input_guardrail.py` | `output_safety_check` |
-| **新增** | before_build 默认实现（透传） | `context/assembler.py`                       | `inject_dynamic_prompts` |
-
-依赖与优先级示例（`on_turn_end` 事件）：`persist_chat_snapshot(priority=10)` →
-`memory_turn_signal(priority=20, depends_on=["persist_chat_snapshot"])` → `report_turn_end(priority=100)`——
-记忆信号必须在快照保存后读 chat_messages，用 depends_on 显式声明。
-
-迁移期间 `PreToolUse` 的 `action: continue/blocked/inject` 协议**原样保留**，仅承载对象从 dict 换成 `HookDecision`/`ctx.action`。
 
 ## 10. 扩展示例
 

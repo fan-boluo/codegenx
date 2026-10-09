@@ -63,7 +63,6 @@ async def write_memories(
     app_id: str,
     session_id: str,
     candidates: list[dict],
-    llm_invoke=None,
     source_msg_ids: list[str] | None = None,
     task_id: int | None = None,
     source_agent: str | None = None,

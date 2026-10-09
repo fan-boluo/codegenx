@@ -4,6 +4,7 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
 ![img_1.png](img_1.png)
 ## 技术架构
 
+uv单体架构
 ```
 ┌──────────────────────────────────────────────────────┐
 │                     Frontend (Vue 3)                  │
@@ -12,16 +13,16 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
 └──────────────────────┬───────────────────────────────┘
                        │ HTTP/SSE
 ┌──────────────────────▼───────────────────────────────┐
-│                  API Gateway (FastAPI)                │
-│         动态路由 · JWT 认证 · 限流 · IP 黑名单        │
-│                    Port: 8456                         │
-└───┬──────────┬──────────┬──────────┬─────────────────┘
-    │ gRPC     │ HTTP     │ HTTP     │ HTTP
-┌───▼────┐ ┌──▼──────┐ ┌─▼──────┐ ┌─▼──────────────┐
-│ User   │ │ App     │ │ AI     │ │ Infrastructure │
-│ Service│ │ Service │ │ Service│ │ MySQL · Redis  │
-│ gRPC   │ │ FastAPI │ │FastAPI │ │ Nacos · Prometheus│
-└────────┘ └─────────┘ └────────┘ └────────────────┘
+│                  API Gateway (FastAPI)               │
+│         动态路由 · JWT 认证 · 限流 · IP 黑名单            │
+│                    Port: 8456                        │
+└─────────────────────────────────────────────────┘
+                       │ 
+┌──────────────────────▼──────────────────────────┐
+│ User        App      AI             shared      │
+│                                                 │
+│ Infrastructure MySQL · Redis FastAPI  Prometheus│
+└─────────────────────────────────────────────────┘
                                   
 ```
 
@@ -30,33 +31,29 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + Ant Design Vue 4 |
 | 编辑器 | Monaco Editor (`@guolao/vue-monaco-editor`) |
 | 后端框架 | FastAPI (Python 3.12) |
-| RPC | gRPC (protobuf) |
-| 服务发现 | Nacos |
 | 数据库 | MySQL 8.0 (SQLAlchemy + aiomysql 异步) |
 | 缓存 | Redis 7 |
 | 监控 | Prometheus + OpenTelemetry |
 | 容器化 | Docker Compose / Kubernetes |
 
-## 微服务说明
+## 模块说明
 
-### 1. API Gateway (`backend/api-gateway/`) · Port 8456
+### 1. API Gateway (`backend/api-gateway/`)
 
 统一入口网关，负责请求路由、认证鉴权、限流、IP 黑名单。
 
-- **动态路由** — 基于 `routes.yaml` 配置自动转发 HTTP/gRPC 请求到下游微服务
 - **JWT 认证** — 登录签发 Token，后续请求 Bearer 校验
-- **显式路由** — 网关特有逻辑（SSE 流式转发、文件上传/下载、Redis 黑名单管理）不走动态路由
+- **显式路由** — 网关特有逻辑（SSE 流式转发、文件上传/下载、Redis 黑名单管理）
 
-### 2. User Service (`backend/services/user-service/`) · gRPC :50051
+### 2. User Service (`backend/src/codegenx/user-service/`)
 
 用户中心微服务，管理账号体系。
 
 - 注册 / 登录 / 登出
 - 用户信息查询与修改
 - 密码 MD5+盐加密存储
-- gRPC 协议，由网关透传调用
 
-### 3. App Service (`backend/services/app-service/`) · Port 8004
+### 3. App Service (`backend/src/codegenx/app-service/`)
 
 项目管理微服务，管理代码项目全生命周期。
 
@@ -67,7 +64,7 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
 - 代码打包下载
 - 数据库创建删除
 
-### 4. AI Service (`backend/services/ai-service/`) · Port 8002
+### 4. AI Service (`backend/src/codegenx/ai-service/`)
 
 核心 AI 能力微服务，承载 Agent 运行时、会话管理、监控。
 
@@ -153,94 +150,35 @@ AI 驱动数据应用快速交付平台，支持自然语言生成代码、数�
 
 ### 核心组件
 
-| 组件 | 说明                                                                  |
-|---|---------------------------------------------------------------------|
-| **AgentRuntime** | 中央调度器，管理消息总线、会话池、工具注册、钩子系统                                          |
-| **SessionPool** | 内存会话池，最多 1000 个并发会话，空闲 1 小时自动回收                                     |
-| **Turn Loop** | 多轮对话循环，限制每轮最大迭代次数，每次迭代组装上下文 → LLM 推理 → 工具调用                         |
-| **Context Builder** | 动态组装系统提示词 + 历史消息 + 工具结果，超长自动压缩                                      |
-| **LLM Client** | 基于 OpenAI 兼容协议，支持 DashScope / DeepSeek / Zhipu / vLLM / 自定义         |
+| 组件 | 说明                                                                 |
+|---|--------------------------------------------------------------------|
+| **AgentRuntime** | 中央调度器，管理消息总线、会话池、工具注册、钩子系统                                         |
+| **SessionPool** | 内存会话池，最多 1000 个并发会话，空闲自动回收                                     |
+| **Turn Loop** | 多轮对话循环，限制每轮最大迭代次数，每次迭代组装上下文 → LLM 推理 → 工具调用                        |
+| **Context Builder** | 动态组装系统提示词 + 历史消息 + 工具结果，超长自动压缩                                     |
+| **LLM Client** | 基于 OpenAI 兼容协议，支持 DashScope / DeepSeek / Zhipu / vLLM / 自定义        |
 | **Tool System** | 20+ 工具：代码检查、CSV/MySQL 数据操作、文件读写、搜索（find/grep）、任务面板、子 Agent、Skill 加载 |
-| **Hook System** | 生命周期钩子：会话启停、轮次启停、LLM 前后、工具前后、错误处理                                   |
-| **Memory** | 三级记忆：Hot（全局 MEMORY.md）、Warm（关键词召回主题文件）、Session（当前会话）                |
-| **Skill Runtime** | 可插拔技能系统：数据清洗、特征工程、建模、绘图、Python 分析、SQL 分析、报告生成                       |
-| **Task Board** | 会话内持久化任务面板，Agent 可自行规划/追踪子任务                                        |
-| **Monitor Pipeline** | 全链路追踪：会话录制 → Span 采集 → 指标计算 → 告警评估 → Prometheus 暴露                  |
-
-### LLM 配置
-
-`backend/config.json` 中配置模型与 Provider：
-
-```json
-{
-  "default_model": "dashscope-qwen/qwen3.7-plus",
-  "default_provider": "dashscope",
-  "temperature": 0.1,
-  "max_tool_iterations": 40,
-  "max_steps": 10,
-  "providers": {
-    "dashscope": { "base_url": "...", "api_key": "..." },
-    "deepseek":  { "base_url": "...", "api_key": "..." },
-    "openai":    { "base_url": "...", "api_key": "..." },
-    "zhipu":     { "base_url": "...", "api_key": "..." },
-    "custom":    { "base_url": "...", "api_key": "..." },
-    "vllm":      { "base_url": "...", "api_key": "..." }
-  }
-}
-```
-
-## 项目结构
-
-```
-CodeGenX/
-├── frontend/                     # Vue 3 前端
-├── backend/
-│   ├── api-gateway/              # API 网关
-│   │   ├── api/                  # 显式路由
-│   │   ├── core/                 # 动态路由、代理
-│   │   ├── middleware/           # 中间件
-│   │   ├── grpc_client/          # gRPC 客户端
-│   │   └── proxy/                # 服务代理
-│   ├── services/
-│   │   ├── user-service/         # 用户服务 (gRPC)
-│   │   ├── app-service/          # 应用服务
-│   │   └── ai-service/           # AI 服务
-│   │       ├── bot/              # 核心智能体
-│   │       └── monitor/          # 监控采集
-│   ├── shared/                   # 共享库
-│   ├── infra/                    # 基础设施
-│   │   ├── mysql/                # MySQL 会话
-│   │   ├── redis/                # Redis 客户端
-│   │   ├── nacos/                # Nacos 注册中心
-│   │   ├── nginx/                # Nginx 配置
-│   │   ├── k8s/                  # Kubernetes 部署
-│   │   └── monitoring/           # Prometheus 配置
-│   ├── config.json               # Agent LLM 配置    # TODO 这三个合并一下
-│   ├── routes.yaml               # 动态路由规则
-│   └── .env                      # 环境变量
-├── docker-compose.yml            # Docker 编排
-├── startup.bat                   # Windows 启动脚本
-└── shutdown.bat                  # Windows 关闭脚本
-```
-
-## 快速启动
-
-<!-- TODO: 请在此处补充你的启动说明 -->
+| **Hook System** | 生命周期钩子：会话启停、轮次启停、LLM 前后、工具前后、错误处理                                  |
+| **Memory** | 三级记忆：Hot（全局 MEMORY.md）、Warm（关键词召回主题文件）、Session（当前会话）               |
+| **Skill Runtime** | 可插拔技能系统：数据清洗、特征工程、建模、绘图、Python 分析、SQL 分析、报告生成                      |
+| **Task Board** | 会话内持久化任务面板，Agent 可自行规划/追踪子任务                                       |
+| **Monitor Pipeline** | 全链路追踪：会话录制 → Span 采集 → 指标计算 → 告警评估 → Prometheus 暴露                 |
 
 
 ### 环境要求
+
+python虚拟环境所在位置: .venv\Scripts\pyhton.exe
 
 - Python 3.12+
 - Node.js 20+
 - MySQL 8.0
 - Redis 7
-- Nacos 2.0+
 
-> 启动myql  redis  nacos Prometheus
-并修改配置文件中的参数为实际参数 ：backeng/routes.yaml,.env
-
-> 修改backend/config.json 选择默认使用的模型，并设置agents列表中的参数defaults=True,填写你需要的provider
-并在下面的providers列表中补充url及密钥
+> 启动myql  redis  Prometheus
+并修改配置文件中的参数为实际参数 ：
+ 系统参数：backend/.env 
+ 智能体参数：backend/config.json
+     选择默认使用的模型，并设置agents列表中的参数defaults=True,填写你需要的provider ，并在下面的providers列表中补充url及密钥
 
 
 ### 手动
@@ -253,13 +191,11 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 配置环境变量 (.env)
+# 配置环境变量 (.env config.json)
 
-# 启动全部服务（Windows）
-startup.bat
+# 启动
+python backend/src/codegenx/__main__.py
 
-# 或按需启动
-startup.bat user ai app gateway
 ```
 
 #### 2. 前端启动
@@ -272,13 +208,16 @@ pnpm dev
 
 #### 3. 停止服务
 
-```bash
-shutdown.bat
-```
+
 
 ### docker方式 TODO
 
 ## 其它详细设计说明
-session管理： SessionState管理.md
-Memory管理：
-Compact:
+docs/ 下
+SystemApp架构设计.md
+上下文工程设计.md
+LLM调用设计方案.md
+Agent记忆系统设计方案v2.md(docs下其它的记忆设计方案为历史的)
+SessionState管理.md
+用户项目权限与存储隔离方案.md
+数据分析工具技能设计.md

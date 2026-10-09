@@ -109,14 +109,6 @@ AI 调用本身有秒级延迟，请求不是瞬时密集到达，不存在窗�
 
 TODO 待补充动态路由实现、区分路由类型等细节
 
-# 微服务协议选择
-
-表格
-服务    协议    选型原因
-user-service    gRPC    纯内部 RPC 调用，Protobuf 强类型契约
-ai-service    HTTP/SSE    LLM 流式响应推前端，浏览器原生支持，零协议转换
-app-service    HTTP    文件上传下载 + SSE 流式执行，HTTP 标准性能最优
-
 # Runtime 架构
 
 整体基于事件驱动循环结构，核心三大组件：MessageBus 消息管线、session_pool 会话管理、runtime 循环
@@ -194,63 +186,12 @@ LRU 策略若被淘汰的会话正在执行业务，session 被强制关闭后�
      - 设置这些属性为 None，打破循环引用
 2. 在 _close_session_unsafe 的 finally 块中调用 session.dispose()
 
-# memory 三层记忆体系
 
-分层：warm、hot、session，全部通过 md 文件持久存储，每个文件附带 description 描述；session 层隔离会话数据
-warm：全局通用文档集合，大模型自动判断工具调用生成，初始化提示词附带说明。存储在 `~/.bot/memory/topics/*.md`，每个文件有 YAML frontmatter（name、description、type）。当用户提问时，做两阶段检索：第一阶段用字符 bigram （字符二元组）的 Jaccard 相似度快速粗筛（Top 20），如果筛选后的topic个数超过阈值则启动第二阶段，第二阶段调用 LLM 对候选打分（0-10 分），选出最相关的 5 个文件（每个上限 4KB、会话总上限 60KB）注入 system prompt。同一会话内已命中过的主题自动去重，避免重复注入。
-hot：每个 App 独立维护 memory.md 索引文件，存储业务关键摘要信息。持久化在磁盘的全局记忆，路径是 `~/.bot/memory/MEMORY.md`，按 app_id 隔离。每次构建 system prompt 时都会全量注入（上限 200 行 / 25KB）。用户说"记住这个偏好"时，通过 `append_to_hot_memory()` 追加写入，下次对话立即可用。这层是跨会话持久化的，类似"永久记忆"。
-session：每轮对话结束生成上下文摘要，下一轮直接复用，无需重复 LLM 调用。触发条件是工具调用次数 ≥ 3 且新增 token ≥ 150。触发后异步调用 LLM 生成结构化摘要。这层是给上下文压缩（compaction）用的——当上下文窗口不够时，直接用 session memory 回填，避免丢失关键信息。
-
-## 使用规则
-
-warm 记忆筛选；记忆数量过载时执行筛选，通过相似度计算（LLM 向量 / 降级 Jaccard 相似度）做裁剪
-session memory：单会话上下文存储
-
-# 上下文组装
-
-memory 分层记忆
-workspace_metadata 项目工作区元数据：可操作目录、项目文件树、当前时间等
-task_manager 当前运行任务，持久写入文件
-skill 工具集定义
-session_memory 单会话历史摘要
-
-# 上下文压缩策略
-
-**微压缩**：历史工具输出使用占位符替代，仅保留最近 5 次完整结果
-**step 快速压缩**：session_memory + 历史 N 条消息替换原始上下文；无 session_memory 时使用 LLM 降级处理
-**每轮 turn** 执行 LLM 摘要压缩，更新 session_memory
-
-**LLM 摘要压缩（Path B）**
-完整对话送入 LLM 生成摘要，支持 PTL (Prompt Too Long) 重试策略：每次截断最旧 20% 消息重试，最多重试 3 次
-
-**熔断降级策略**
-Path B 连续失败达到阈值触发熔断器 (Circuit Breaker)，临时禁用 LLM 摘要路径，仅使用截断回溯（保留最近消息），防止级联故障
-TODO：服务恢复后，如何切换回 LLM 摘要策略？
-**方案**
-使用半开放式的熔断策略，ｌｌｍ不可用后打开降级使用截断策略，设置５分钟的冷静期，之后再次尝试一次ｌｌｍ，如果恢复了就关闭降级
-因为这个ｌｌｍ压缩的场景属于优化路径，所以设计的简单的熔断策略
-
-# chat_history 完整聊天历史
-
-存储格式：jsonl 文件，单文件最大 10M，滚动更新，配置留存天数，后台定时清理过期文件
-独立持久最新对话文件，用于前端续聊加载
-**续聊逻辑**:
-持久保留用户最新五次会话，每次会话加载最新 50 条消息展示
-续聊上下文衔接：每轮 turn 结束后，将最新一轮对话存入独立文件(session索引文件)，续聊时读取复用历史上下文
+# 上下文
+上下文工程设计.md
 
 # Hook 钩子系统
-
-生命周期钩子：
-OnSessionStart：session_state 初始化、上下文初始化、chat_history 加载、taskManager 初始化、session 索引文件更新(session_index.json，用于快速列出会话历史)
-OnSessionEnd：会话级资源回收清理，调用session_state的close方法进行数据库、文件等资源回收
-OnTurnStart / OnTurnEnd：监控模块指标采集
-PreLLMCall / PostLLMCall：LLM 调用前后 token 估算、监控采集、安全防护（TODO）
-PreToolUse / PostToolUse：工具调用权限校验、注入提示纠正、执行拦截、结果记录
-OnError：异常捕获、告警上报
-
-Hook 实际业务价值
-核心 AgentRuntime 流程保持简洁，扩展点通过 Hook 解耦；例如新增安全护栏仅需注册 PreToolUse Hook，无需修改主运行时代码
-监控指标采集完全通过 Hook 接入，与业务逻辑解耦
+Hook设计.md
 
 # tool
 
@@ -268,7 +209,7 @@ Hook 实际业务价值
 
 # 可观测性和监控
 
-代码路径：backend/services/ai-service/monitor/monitor_pipeline.py
+代码路径：/ai-service/monitor/monitor_pipeline.py
 **链路 Span 追踪**
 层级：Session → Turn → LLM Call → Tool Call 均生成独立 Span，记录父子关系、起止时间、执行状态；Span 数据持久化 MySQL，支持全链路回溯
 onSessionStart: 父span

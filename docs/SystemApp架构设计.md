@@ -3,10 +3,6 @@
 > 版本 v2.0（2026-09-29，按落地实现重写）。本文档描述**已实现**的组件化运行时架构：
 > 框架层（component.py）+ 组合根（system_app.py）+ 分散在各自模块内的组件实现与
 > 生命周期钩子，以及 hook 事件系统、会话层、多智能体扩展的最终形态。
->
-> 历史版本：v1.0~v1.2 为设计方案（容器收编零散单例 → 会话对象瘦身 → 多智能体扩展），
-> 已按 P0~P4 全部落地；本文在其基础上按最终代码形态重写，设计原则（§2 三层模型）
-> 保持不变。
 
 ---
 
@@ -39,7 +35,6 @@ backend/src/codegenx/ai_service/
 │   ├── tool_handler.py     # ToolRegistry     —— 工具注册表（构造即扫描）+ child_view
 │   ├── agent_registry.py   # AgentRegistry    —— AgentSpec 存取 + 启动校验（§8）
 │   ├── runtime.py          # AgentRuntime     —— 对话引擎（LLMRecoveryMixin + BaseComponent）
-│   ├── session_pool.py     # SessionPool + init_session_objects / persist_chat_snapshot 监听器
 │   └── tool_executor.py    # ToolExecutor + safe_path_guard 监听器
 ├── skill/skill_loader.py   # SkillManager     —— skill 注册表
 ├── context/context_service.py  # ContextService + TurnPrompts + inject_dynamic_prompts 监听器
@@ -52,6 +47,7 @@ backend/src/codegenx/ai_service/
 ├── monitor/monitor_pipeline.py      # MonitorPipeline（9 个类体内无 self 监听器）
 ├── monitor/maintenance_service.py   # MonitorMaintenanceService（周期维护）
 ├── schedule/memory.py      # MemoryScheduler  —— 记忆离线任务调度
+├── session/session_pool.py     # SessionPool + init_session_objects / persist_chat_snapshot 监听器
 ├── hook/{core,context,events}.py    # 事件总线（@on 收集 / 冻结校验 / 三种分发）
 └── services/agent_adapter_service.py  # 薄壳：startup→init_app+start_app；shutdown→stop_app
 ```
@@ -255,154 +251,7 @@ app_started()  # 诊断：容器是否已完成启动
 
 ---
 
-## 6. 会话层（瘦身后形态）
-
-### 6.1 运行期对象
-
-```
-RuntimeSessionState（SessionPool 管理，纯会话状态）
-├─ request / 锁 / pending_requests / active_tasks / worker_task / stop_signal
-├─ state / processing / closed / swapped_out / started_at / agent_name
-└─ context_manager: SessionContext
-     ├─ ids（session_id/app_id/user_id/db_name/agent_name）
-     ├─ chat_messages: list[dict]          # 唯一大对象（P3 idle swap-out 卸载）
-     ├─ prompts: TurnPrompts               # 每轮组装产物（memory/skill/task/summary_prompt、workspace_metadata）
-     ├─ summary_state: SummaryState        # 摘要提取阈值状态
-     └─ compact_breaker: CircuitBreaker    # 会话级压缩熔断器（compact:{session_id}，
-                                           #   一个会话压缩失败不熔断别的会话）
-```
-
-### 6.2 会话生命周期监听器（hook 编排，实现于 session_pool.py）
-
-- **SESSION_START `init_session_objects`**（p10）：创建 SessionContext、加载聊天历史快照、
-  用户消息入库（MySQL，失败不阻断）、更新会话索引、state→RUNNING、按
-  `metadata.agent_name` 归属智能体（空=默认）。
-- **TURN_END `persist_chat_snapshot`**（p10）：chat_messages 快照落盘（经 `app.session_io`）。
-- **swap-out（P3）**：闲置超 `swap_idle_seconds` 且无在途任务 → 卸载 chat_messages、标记
-  `swapped_out`；下次请求 `_restore_swapped_session` 从快照按需重载。
-
-### 6.3 服务化清单（方法保留，实例消失，ids 进签名）
-
-| 旧每会话对象 | 新组件访问 | 备注 |
-|---|---|---|
-| SessionManager | `get_app().session_io` | 快照/工具日志/记忆日志/turn 快照/会话索引 |
-| TaskManager（曾被双建） | `get_app().tasks` | 兜底重建问题天然消灭 |
-| MemoryManager | `get_app().memory` | `load(user_id, app_id, query)` |
-| SessionSummaryService | `get_app().summary` | LLM 走 `resilient_invoke(SCENARIO_SUMMARY)` |
-| CompactionEngine | `get_app().compaction` | 熔断器留 SessionContext（会话级语义） |
-| ContextAssembler | `get_app().context` | 无状态逻辑；`get_context_assembler()` 陷阱单例已删除 |
-
-约定：服务方法签名用**关键字参数** `user_id=` / `app_id=` / `session_id=`，防维度错配
-（hot 层是 app+user，快照/看板是 user+app+session）。
-
----
-
-## 7. Hook 事件系统
-
-### 7.1 收集 → 冻结 → 分发
-
-```
-模块加载：@on(event, name=, priority=, depends_on=) 注册裸函数对象到 hook_manager._pending
-启动：    initialize_components() 末尾 load_and_freeze()
-          ├─ 校验：事件已定义 / (event, name) 不重复 → 否则 ValueError 拒绝带病启动
-          ├─ 按事件 Kahn 拓扑排序（depends_on 优先，同级按 priority+收集序）
-          └─ 冻结：运行期注册 → RuntimeError
-分发：    emit（serial，可短路）/ emit_parallel（并发隔离）/ waterfall（洋葱）
-```
-
-**触发方**（runtime.py）：`TURN_START / BEFORE_BUILD(waterfall) / BEFORE_LLM_INVOKE /
-AFTER_LLM_INVOKE / BEFORE_TOOL_CALL / AFTER_TOOL_CALL / ON_COMPLETE / TURN_END /
-SESSION_START / SESSION_END / INTERNAL_ON_ERROR`。
-blocked 短路协议：BEFORE_TOOL_CALL blocked → 工具不执行，注入 blocked 工具消息继续对话。
-
-### 7.2 监听器约束（**关键陷阱**）
-
-- `@on` 装饰时注册**裸函数对象**，分发器直接 `callback(ctx)` 调用——**监听器必须无 self**：
-  模块级函数，或类体内定义但不带 self 参数（内部经 `get_monitor_pipeline()` 等
-  组件 getter 取实例）。带 self 的方法监听器每次分发都会 TypeError；
-- 返回协议：`None`=继续；`HookDecision.block(message)`=短路阻断（返回普通字符串会被
-  `normalize_decision` 静默忽略）；
-- 新增监听器模块必须位于**组件依赖图或应用 import 链**上，否则收集不到
-  （当前全链：main → router → 组件/工具模块）。
-
-### 7.3 监听器清单（冻结后 10 事件 / 16 监听器）
-
-| 事件 | 监听器（priority 序） | 模块 |
-|---|---|---|
-| session_start | init_session_objects(10) / report_session_start(100) | session_pool / monitor_pipeline |
-| turn_start | report_turn_start(100) | monitor_pipeline |
-| before_build | inject_dynamic_prompts（waterfall 透传层） | context_service |
-| before_llm_invoke | report_prompt_tokens(100) | monitor_pipeline |
-| after_llm_invoke | report_llm_usage(100) | monitor_pipeline |
-| before_tool_call | file_tool_param_guard(20) / safe_path_guard(30) / report_tool_start(100) | tools/base / tool_executor / monitor_pipeline |
-| after_tool_call | persist_tool_log(10) / report_tool_end(100) | session/manager / monitor_pipeline |
-| on_complete | output_safety_check(10) | guardrail |
-| turn_end | persist_chat_snapshot(10) / memory_turn_signal(20, depends_on snapshot) / report_turn_end(100) | session_pool / memory/trigger / monitor_pipeline |
-| session_end | memory_session_end(20) / report_session_end(100) | memory_manager / monitor_pipeline |
-| internal/on_error | report_error(100) | monitor_pipeline |
-
-`file_tool_param_guard`（参数空值校验）与 `safe_path_guard`（safe_paths 越界/危险命令拦截，
-迁自旧 ToolExecutor 内联安全检查）分工不同、命名区分；工具安全边界整体前置于 hook。
-
----
-
-## 8. 多智能体（AgentSpec 注册表，已落地）
-
-### 8.1 三条红线
-
-1. **组件无状态**：组件不得持有 per-agent / per-session 可变字段（只读 spec 视图除外）；
-2. **会话状态进 SessionContext**；
-3. **智能体差异进 AgentSpec**：加一个智能体 = agents 段加一条配置，不改代码。
-
-### 8.2 实现（agent/agent_registry.py）
-
-```python
-@dataclass
-class AgentSpec:
-    name / description / persona / tools / skills
-    model_override: dict[scenario -> str | list[str]]
-    limits: AgentConfig（max_steps/max_tool_iterations/temperature 覆盖）
-    memory: MemoryPolicy(read_types, write_enabled, write_types)
-
-class AgentRegistry(BaseComponent):        # 组件 #4
-    get(name) -> spec     # None/未知名回落 default（不配 agents 段 = 单智能体现行为）
-    default() / all_specs()
-    async_before_start:  load_from_config(config) + validate_against(tool_names, skill_names)
-                         # 校验 fail fast：name 重复/非默认智能体 persona 必填/工具与 skill 名存在
-```
-
-### 8.3 差异注入点
-
-| 差异 | 注入点 |
-|---|---|
-| persona | `ContextService.render_turn_context(prompts, persona=spec.persona)`；空=内置模板 |
-| 工具可见 | `app.tools.child_view(excluded, allowed=spec.tools)`（subagent_runner 复用） |
-| 限额 | `spec.limits.max_steps/max_tool_iterations` 覆盖 runtime 默认 |
-| 模型路由 | 解析序：`spec.model_override[scenario]` → `model_roles["{agent}:{scenario}"]` → `model_roles[scenario]` → 默认模型（`config.get_model_chain(scenario, agent=, agent_override=)`） |
-| 记忆策略 | hot/warm 仍按 app+user 共享（用户级记忆跨智能体共享是特性）；防污染/防矛盾靠 MemoryPolicy 元数据过滤 + source_agent 标注，**起步不分片** |
-| 会话归属 | 请求 `metadata.agent_name` → `RuntimeSessionState.agent_name`（空=默认） |
-
-subagent 编排：`SubagentContext.agent_name` → `app.agents.get()` 取 spec → child_view
-工具视图 + persona + 限额；主/子智能体只是调用拓扑差异，同一 AgentRuntime。
-
----
-
-## 9. LLM 调用层（收编不重构）
-
-调用面保持**模块函数**（不改为 `get_app().llm.xxx`）：
-
-```
-resilient_invoke[_stream](scenario, ...)   # 场景路由 + 三态熔断 + fallback 链（llm/resilience.py）
-get_llm(model)                             # 模型级客户端缓存（复用 provider 级共享连接池）
-```
-
-SystemApp 只接管生命周期：`LLMFacade.async_before_start` 预热默认模型（降级）、
-`async_before_stop` 调 `close_llm_clients()`（自 main.py lifespan 收编，幂等）。
-会话侧不持有任何 LLM 客户端；compact/summary/memory 场景直达韧性层。
-
----
-
-## 10. 最终形态一览
+## 6. 最终形态一览
 
 ```
 启动：main.py lifespan → AgentAdapterService.startup()
