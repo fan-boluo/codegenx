@@ -55,6 +55,7 @@ class ComponentType(str, Enum):
     MONITOR_MAINTENANCE = "monitor_maintenance"
     MEMORY_SCHEDULER = "memory_scheduler"
     AGENT_RUNTIME = "agent_runtime"
+    MESSAGE_BUS = "message_bus"
 
 
 _EMPTY_DEFAULT_COMPONENT = "_EMPTY_DEFAULT_COMPONENT"

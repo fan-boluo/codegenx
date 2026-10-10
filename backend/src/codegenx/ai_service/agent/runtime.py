@@ -59,7 +59,7 @@ class AgentRuntime(BaseComponent):
         # LLM 业务恢复协作器（continuation/压缩重试），组合替代原 Mixin 继承
         self._llm_recovery = LLMRecovery(self)
 
-        self.message_bus = MessageBus()
+        self.message_bus = get_app().message_bus
         self.tool_registry = get_app().tools
         self.tool_executor = get_app().tools_executor
         # 会话池为独立进程级组件（参数自读 config.session），此处仅取用
@@ -217,7 +217,7 @@ class AgentRuntime(BaseComponent):
 
         # Publish stopped events for dropped requests
         for queued_request in dropped_requests:
-            await self._publish_stopped_request(queued_request, reason=stop_reason)
+            await self.message_bus.publish_stopped_request(queued_request, reason=stop_reason)
 
         # Wait for active tasks with timeout
         if active_tasks:
@@ -382,7 +382,7 @@ class AgentRuntime(BaseComponent):
                     raise
                 except Exception as exc:
                     log.opt(exception=True).error("Unhandled error in request {}: {}", session_state.request_id, exc)
-                    await self._publish_runtime_event(
+                    await self.message_bus.publish_runtime_event(
                         session_state,
                         AgentEvent(event_type=AgentEventType.ERROR, data=str(exc), state=AgentState.FAILED),
                     )
@@ -470,7 +470,7 @@ class AgentRuntime(BaseComponent):
             context_manager.add_user_message(user_message)
             await context_manager.build_system_prompt(user_message)
 
-            await self._publish_runtime_event(
+            await self.message_bus.publish_runtime_event(
                 session_state,
                 AgentEvent(event_type=AgentEventType.ON_TURN_START, data={
                     "request_id": request_id,
@@ -504,7 +504,7 @@ class AgentRuntime(BaseComponent):
                     activate_turn.active_step_id = ""
                     async for compact_event in context_manager.compact_after_step():
                         activate_turn.last_step_compacted = True
-                        await self._publish_runtime_event(session_state, compact_event)
+                        await self.message_bus.publish_runtime_event(session_state, compact_event)
                 if not activate_turn.requires_followup:
                     break
             log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
@@ -518,7 +518,7 @@ class AgentRuntime(BaseComponent):
             await self._fire(HookEvent.ON_COMPLETE, hook_ctx, final_output=final_output)
             if hook_ctx.action == HookAction.BLOCKED:
                 self._replace_last_assistant_content(session_state, hook_ctx.message)
-            await self._publish_runtime_event(
+            await self.message_bus.publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.REQUEST_COMPLETED,
@@ -532,7 +532,7 @@ class AgentRuntime(BaseComponent):
         except TurnStoppedError as exc:
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.STOPPED
-            await self._publish_runtime_event(
+            await self.message_bus.publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.REQUEST_STOPPED,
@@ -545,7 +545,7 @@ class AgentRuntime(BaseComponent):
             reason = self._stop_reason(session_state)
             activate_turn.error_text = reason
             activate_turn.state = AgentState.STOPPED
-            await self._publish_runtime_event(
+            await self.message_bus.publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.REQUEST_STOPPED,
@@ -560,7 +560,7 @@ class AgentRuntime(BaseComponent):
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.FAILED
             await self._fire(HookEvent.INTERNAL_ON_ERROR, hook_ctx, error=exc)
-            await self._publish_runtime_event(
+            await self.message_bus.publish_runtime_event(
                 session_state,
                 AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
             )
@@ -606,7 +606,7 @@ class AgentRuntime(BaseComponent):
             )
             turn_state.requires_followup = False
             return
-        await self._publish_runtime_event(
+        await self.message_bus.publish_runtime_event(
             session_state,
             AgentEvent(
                 event_type=AgentEventType.LLM_THINKING_START,
@@ -742,7 +742,7 @@ class AgentRuntime(BaseComponent):
                 tool_message["content"] = f" PreToolUse message :{hook_ctx.message}"
                 session_state.context_manager.add_tool_message(tool_message)
 
-            await self._publish_runtime_event(
+            await self.message_bus.publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
@@ -776,7 +776,20 @@ class AgentRuntime(BaseComponent):
             # tool_name = tool_message.get("name", "")
             # if tool_name in ("read_file", "write_file"):
             #     tool_message["path"] = tool_call.get("arguments", {}).get("path", "")
-            await self._publish_runtime_event(
+            from codegenx.ai_service.chat_message import get_chat_message_store
+            await get_chat_message_store().append_message(
+                session_state.user_id,
+                str(session_state.app_id),
+                session_state.session_id,
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_message.get("tool_id", ""),
+                    "name": tool_message.get("tool_name", ""),
+                    "content": str(tool_message.get("description", "")),
+                },
+            )
+
+            await self.message_bus.publish_runtime_event(
                 session_state,
                 AgentEvent(
                     event_type=AgentEventType.TOOL_EXECUTION_END,
@@ -787,96 +800,7 @@ class AgentRuntime(BaseComponent):
 
         log.debug("执行完一次step 迭代, step_id: {}, step_counter:{}", turn_state.active_step_id, turn_state.step_counter)
 
-    # ------------------------------------------------------------------ event helpers
 
-    async def _publish_stopped_request(
-        self, request: AiServiceGenerateRequest, *, reason: str
-    ) -> None:
-        await self.message_bus.publish_outbound(
-            RuntimeTurnEvent(
-                session_id=str(request.session_id or ""),
-                request_id=self._request_id(request),
-                turn_id="",
-                event_type=AgentEventType.REQUEST_STOPPED,
-                state=AgentState.STOPPED.value,
-                data={"reason": reason, "request_id": self._request_id(request)},
-            )
-        )
-
-
-
-    async def _record_chat_history(self, session_state: RuntimeSessionState, event: AgentEvent) -> None:
-        """将工具执行结果写入 chat_message 表，供前端展示完整对话过程。"""
-        if event.event_type == AgentEventType.TOOL_EXECUTION_END:
-            tc = event.data if isinstance(event.data, dict) else {}
-            try:
-                from codegenx.ai_service.chat_message import get_chat_message_store
-                await get_chat_message_store().append_message(
-                    session_state.user_id,
-                    str(session_state.app_id),
-                    session_state.session_id,
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.get("tool_id", ""),
-                        "name": tc.get("tool_name", ""),
-                        "content": str(tc.get("description", "")),
-                    },
-                )
-            except Exception as exc:
-                log.warning("tool 消息入库失败（不影响对话）: {}", exc)
-
-    def _sanitize_event_data(self, event: AgentEvent) -> None:
-        """过滤敏感数据，工具事件只描述正在做什么，不传输原始内容。"""
-        if event.event_type == AgentEventType.TOOL_EXECUTION_START:
-            tc = event.data if isinstance(event.data, dict) else {}
-            event.data =  {
-                "tool_name": tc.get("name", ""),
-                "tool_id": tc.get("id", ""),
-                "description": f"执行工具: {tc.get('name', 'unknown')}",
-            }
-        if event.event_type == AgentEventType.TOOL_EXECUTION_END:
-            tc = event.data if isinstance(event.data, dict) else {}
-            # TODO 添加友好的工具执行描述
-            # desc = tc.get('content')
-            tool_name = tc.get('name')
-            # render = self._render_tool_front(tc)
-            render_raw = tc.get("render", "")
-            desc = render_raw or tc.get("name", "unknown")
-
-            event.data = {
-                "tool_name": tc.get("name", ""),
-                "tool_id": tc.get("tool_call_id", ""),
-                "description": desc,
-                "state": tc.get("state", ""),
-            }
-            # 附加结构化 task_data 供前端任务面板消费
-            if tool_name in ("task_create", "task_update") and render_raw:
-                try:
-                    task_data = json.loads(render_raw)
-                    event.data["task_data"] = task_data
-                    event.data["description"] = task_data.get("task", {}).get("subject", tc.get("name", ""))
-                except Exception:
-                    event.data["description"] = render_raw or tc.get("name", "")
-
-    async def _publish_runtime_event(
-        self,
-        session_state: RuntimeSessionState,
-        event: AgentEvent,
-    ) -> None:
-        # event结果整理后记录、发布
-        self._sanitize_event_data(event)
-
-        await self._record_chat_history(session_state, event)
-        await self.message_bus.publish_outbound(
-            RuntimeTurnEvent(
-                session_id=session_state.session_id,
-                request_id=session_state.request_id,
-                turn_id=session_state.activate_turn.active_step_id,
-                event_type=event.event_type,
-                state=event.state.value,
-                data=event.data,
-            )
-        )
 
     async def _fire(
         self, event: str, ctx: HookContext, *, parallel: bool = False, **data: Any

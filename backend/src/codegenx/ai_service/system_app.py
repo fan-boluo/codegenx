@@ -130,6 +130,12 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.CHAT_MESSAGE_STORE, ChatMessageStore)
 
     @property
+    def message_bus(self) -> "MessageBus":
+        from codegenx.ai_service.bus.queue import MessageBus
+
+        return self.get_component(ComponentType.MESSAGE_BUS, MessageBus)
+
+    @property
     def monitor(self) -> "MonitorPipeline":
         from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline
 
@@ -193,6 +199,7 @@ def initialize_components(app: SystemApp) -> None:
     from codegenx.ai_service.compact.session_summary import initialize_summary
     from codegenx.ai_service.compact.compact import initialize_compaction
     from codegenx.ai_service.chat_message.store import initialize_chat_messages
+    from codegenx.ai_service.bus.queue import initialize_message_bus
     from codegenx.ai_service.monitor.monitor_pipeline import initialize_monitor
     from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
     from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
@@ -211,6 +218,7 @@ def initialize_components(app: SystemApp) -> None:
     initialize_summary(app)
     initialize_compaction(app)
     initialize_chat_messages(app)
+    initialize_message_bus(app)
     initialize_monitor(app)
     initialize_monitor_maintenance(app)
     initialize_memory_scheduler(app)
