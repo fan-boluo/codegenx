@@ -126,6 +126,14 @@ class RuntimeSessionState:
         }
 
     @property
+    def publish_context(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "request_id": self.request.request_id,
+            "step_counter": self.activate_turn.step_counter
+        }
+
+    @property
     def safe_paths(self) -> list|None:
         if self.context_manager:
             return self.context_manager.get_safe_path()

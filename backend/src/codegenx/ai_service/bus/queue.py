@@ -78,32 +78,17 @@ class MessageBus(BaseComponent):
     def unsubscribe_turn(self, turn_id: str, queue: asyncio.Queue[Any]) -> None:
         self.unsubscribe_request(turn_id, queue)
 
-
-    async def publish_stopped_request(
-        self, request: AiServiceGenerateRequest, *, reason: str
-    ) -> None:
-        await self.publish_outbound(
-            RuntimeTurnEvent(
-                session_id=str(request.session_id or ""),
-                request_id=self._request_id(request),
-                turn_id="",
-                event_type=AgentEventType.REQUEST_STOPPED,
-                state=AgentState.STOPPED.value,
-                data={"reason": reason, "request_id": self._request_id(request)},
-            )
-        )
-
-    def _sanitize_event_data(self, event: AgentEvent) -> None:
+    def _sanitize_event_data(self, event_type: AgentEventType,data: Any) -> None:
         """过滤敏感数据，工具事件只描述正在做什么，不传输原始内容。"""
-        if event.event_type == AgentEventType.TOOL_EXECUTION_START:
-            tc = event.data if isinstance(event.data, dict) else {}
-            event.data =  {
+        if event_type == AgentEventType.TOOL_EXECUTION_START:
+            tc = data if isinstance(data, dict) else {}
+            data =  {
                 "tool_name": tc.get("name", ""),
                 "tool_id": tc.get("id", ""),
                 "description": f"执行工具: {tc.get('name', 'unknown')}",
             }
-        if event.event_type == AgentEventType.TOOL_EXECUTION_END:
-            tc = event.data if isinstance(event.data, dict) else {}
+        if event_type == AgentEventType.TOOL_EXECUTION_END:
+            tc = data if isinstance(data, dict) else {}
             # TODO 添加友好的工具执行描述
             # desc = tc.get('content')
             tool_name = tc.get('name')
@@ -111,7 +96,7 @@ class MessageBus(BaseComponent):
             render_raw = tc.get("render", "")
             desc = render_raw or tc.get("name", "unknown")
 
-            event.data = {
+            data = {
                 "tool_name": tc.get("name", ""),
                 "tool_id": tc.get("tool_call_id", ""),
                 "description": desc,
@@ -121,26 +106,30 @@ class MessageBus(BaseComponent):
             if tool_name in ("task_create", "task_update") and render_raw:
                 try:
                     task_data = json.loads(render_raw)
-                    event.data["task_data"] = task_data
-                    event.data["description"] = task_data.get("task", {}).get("subject", tc.get("name", ""))
+                    data["task_data"] = task_data
+                    data["description"] = task_data.get("task", {}).get("subject", tc.get("name", ""))
                 except Exception:
-                    event.data["description"] = render_raw or tc.get("name", "")
+                    data["description"] = render_raw or tc.get("name", "")
 
     async def publish_runtime_event(
         self,
-        session_state: RuntimeSessionState,
-        event: AgentEvent,
+            publish_context:dict,
+        event_type: AgentEventType,
+        state: AgentState,
+        data=None,
     ) -> None:
         # event结果整理后记录、发布
-        self._sanitize_event_data(event)
+        if data is None:
+            data = {}
+        self._sanitize_event_data(event_type,data)
         await self.publish_outbound(
-            RuntimeTurnEvent(
-                session_id=session_state.session_id,
-                request_id=session_state.request_id,
-                turn_id=session_state.activate_turn.active_step_id,
-                event_type=event.event_type,
-                state=event.state.value,
-                data=event.data,
+            AgentEvent(
+                session_id=publish_context["session_id"],
+                request_id=publish_context['request_id'],
+                step_counter=publish_context['step_counter'],
+                event_type=event_type,
+                state=state,
+                data=data,
             )
         )
 

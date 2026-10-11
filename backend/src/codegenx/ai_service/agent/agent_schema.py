@@ -22,9 +22,13 @@ class AgentEventType(str, Enum):
     REQUEST_COMPLETED = "RequestCompleted"
     REQUEST_STOPPED = "RequestStopped"
     ERROR = "Error"
+    PLAN_STEP_CHANGED = "PlanStepChanged"
 
 
 class AgentEvent(BaseModel):
+    session_id:str
+    request_id:str
+    step_counter:int
     event_type: AgentEventType
     data: Any = None
     state: AgentState

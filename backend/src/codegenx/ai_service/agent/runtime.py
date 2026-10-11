@@ -205,7 +205,16 @@ class AgentRuntime(BaseComponent):
 
         # Publish stopped events for dropped requests
         for queued_request in dropped_requests:
-            await self.message_bus.publish_stopped_request(queued_request, reason=stop_reason)
+            await self.message_bus.publish_runtime_event(
+                {
+                    "session_id":str(queued_request.session_id or ""),
+                    "request_id":queued_request.request_id,
+                    "step_counter":0
+                },
+                event_type=AgentEventType.REQUEST_STOPPED,
+                state=AgentState.STOPPED.value,
+                data={"reason": reason}
+            )
 
         # Wait for active tasks with timeout
         if active_tasks:
@@ -371,8 +380,7 @@ class AgentRuntime(BaseComponent):
                 except Exception as exc:
                     log.opt(exception=True).error("Unhandled error in request {}: {}", session_state.request_id, exc)
                     await self.message_bus.publish_runtime_event(
-                        session_state,
-                        AgentEvent(event_type=AgentEventType.ERROR, data=str(exc), state=AgentState.FAILED),
+                        session_state.publish_context,event_type=AgentEventType.ERROR, data=str(exc), state=AgentState.FAILED,
                     )
                 finally:
                     session_state.active_tasks.pop(session_state.request_id, None)
@@ -478,11 +486,8 @@ class AgentRuntime(BaseComponent):
             await context_manager.build_system_prompt(user_message)
 
             await self.message_bus.publish_runtime_event(
-                session_state,
-                AgentEvent(event_type=AgentEventType.ON_TURN_START, data={
-                    "request_id": request_id,
-                    "step_counter": activate_turn.step_counter,
-                }, state=activate_turn.state))
+                session_state.publish_context,event_type=AgentEventType.ON_TURN_START,
+                state=activate_turn.state)
             log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
             # 执行turn的任务
             # 偏差③修复：spec.limits 主路径落地消费（原 max_steps 全库零生效）
@@ -509,9 +514,9 @@ class AgentRuntime(BaseComponent):
                 finally:
                     activate_turn.active_steps.pop()
                     activate_turn.active_step_id = ""
-                    async for compact_event in context_manager.compact_after_step():
+                    async for data in context_manager.compact_after_step():
                         activate_turn.last_step_compacted = True
-                        await self.message_bus.publish_runtime_event(session_state, compact_event)
+                        await self.message_bus.publish_runtime_event(session_state.publish_context, event_type=AgentEventType.COMPACT_EVENT,data=data,state=AgentState.RUNNING)
                 if not activate_turn.requires_followup:
                     break
             log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
@@ -526,12 +531,7 @@ class AgentRuntime(BaseComponent):
             if hook_ctx.action == HookAction.BLOCKED:
                 self._replace_last_assistant_content(session_state, hook_ctx.message)
             await self.message_bus.publish_runtime_event(
-                session_state,
-                AgentEvent(
-                    event_type=AgentEventType.REQUEST_COMPLETED,
-                    data={"request_id": request_id},
-                    state=AgentState.COMPLETED,
-                ),
+                session_state.publish_context,event_type=AgentEventType.REQUEST_COMPLETED,state=AgentState.COMPLETED
             )
             activate_turn.finished_at = time.time()
             activate_turn.state = AgentState.COMPLETED
@@ -540,12 +540,8 @@ class AgentRuntime(BaseComponent):
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.STOPPED
             await self.message_bus.publish_runtime_event(
-                session_state,
-                AgentEvent(
-                    event_type=AgentEventType.REQUEST_STOPPED,
-                    data={"request_id": request_id, "reason": str(exc)},
-                    state=AgentState.STOPPED,
-                ),
+                session_state.publish_context,event_type=AgentEventType.REQUEST_STOPPED,
+                    data={"reason": str(exc)},state=AgentState.STOPPED
             )
             log.debug("{},{},{}",request_id, activate_turn.step_counter, " TurnStoppedError：",exc)
         except asyncio.CancelledError:
@@ -553,12 +549,10 @@ class AgentRuntime(BaseComponent):
             activate_turn.error_text = reason
             activate_turn.state = AgentState.STOPPED
             await self.message_bus.publish_runtime_event(
-                session_state,
-                AgentEvent(
+                    session_state.publish_context,
                     event_type=AgentEventType.REQUEST_STOPPED,
-                    data={"request_id": request_id, "reason": reason},
+                    data={"reason": reason},
                     state=AgentState.STOPPED,
-                ),
             )
             log.debug("{},{},{}",request_id, activate_turn.step_counter, " CancelledError")
             raise
@@ -568,8 +562,7 @@ class AgentRuntime(BaseComponent):
             activate_turn.state = AgentState.FAILED
             await self._fire(HookEvent.INTERNAL_ON_ERROR, hook_ctx, error=exc)
             await self.message_bus.publish_runtime_event(
-                session_state,
-                AgentEvent(event_type="Error", data=str(exc), state=AgentState.FAILED),
+                session_state.publish_context,event_type="Error", data=str(exc), state=AgentState.FAILED
             )
             log.debug("{},{}, Exception:{}",request_id, activate_turn.step_counter,  exc)
         finally:
@@ -614,16 +607,13 @@ class AgentRuntime(BaseComponent):
             turn_state.requires_followup = False
             return
         await self.message_bus.publish_runtime_event(
-            session_state,
-            AgentEvent(
+            session_state.publish_context,
                 event_type=AgentEventType.LLM_THINKING_START,
                 data={
-                    "request_id": session_state.request_id,
                     "prompt_tokens": prompt_tokens,
                     "message_count": len(messages),
                 },
                 state=AgentState.RUNNING,
-            ),
         )
         log.debug("PreLLMCALL {},{},{}",session_state.request_id, turn_state.step_counter,turn_state.active_step_id)
 
@@ -750,10 +740,8 @@ class AgentRuntime(BaseComponent):
                 session_state.context_manager.add_tool_message(tool_message)
 
             await self.message_bus.publish_runtime_event(
-                session_state,
-                AgentEvent(
-                    event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
-                ),
+                session_state.publish_context,
+                event_type=AgentEventType.TOOL_EXECUTION_START, data=tool_call, state=AgentState.RUNNING
             )
 
             result = await self.tool_executor.execute(tool_call, turn_state, session_state)
@@ -780,9 +768,6 @@ class AgentRuntime(BaseComponent):
             # 附加文件路径供前端渲染
             tool_message['render'] = result.get('render', '') if isinstance(result, dict) else (result.render or '')
             tool_message['state'] = tool_message.get('state', '')  # ensure state is set before sanitize strips it
-            # tool_name = tool_message.get("name", "")
-            # if tool_name in ("read_file", "write_file"):
-            #     tool_message["path"] = tool_call.get("arguments", {}).get("path", "")
             from codegenx.ai_service.chat_message import get_chat_message_store
             await get_chat_message_store().append_message(
                 session_state.user_id,
@@ -797,12 +782,10 @@ class AgentRuntime(BaseComponent):
             )
 
             await self.message_bus.publish_runtime_event(
-                session_state,
-                AgentEvent(
+                session_state.publish_context,
                     event_type=AgentEventType.TOOL_EXECUTION_END,
                     data= tool_message,
-                    state=AgentState.RUNNING,
-                ),
+                    state=AgentState.RUNNING
             )
 
         log.debug("执行完一次step 迭代, step_id: {}, step_counter:{}", turn_state.active_step_id, turn_state.step_counter)

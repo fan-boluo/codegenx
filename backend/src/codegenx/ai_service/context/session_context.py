@@ -148,16 +148,12 @@ class SessionContext:
 
         if result is not None:
             log.debug("进行step的压缩了")
-            yield AgentEvent(
-                event_type=AgentEventType.COMPACT_EVENT,
-                data={
+            yield {
                     "path_used": result.path_used,
                     "tokens_before": result.tokens_before,
                     "tokens_after":  result.tokens_after,
                     "messages_removed": result.messages_removed,
-                },
-                state=AgentState.RUNNING,
-            )
+                }
 
     async def compact_after_turn(self):
         """整个 turn 结束后：异步触发会话摘要后台提取（非阻塞任务，属于上下文工程的压缩边界）。"""

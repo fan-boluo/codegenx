@@ -4,8 +4,8 @@ from shared.constants import get_current_session_dir, get_runtime_app_dir
 import uuid
 from shared import log
 
-PERSIST_THRESHOLD = config.tools.persist_threshold
-PREVIEW_CHARS = config.tools.preview_chars
+PERSIST_THRESHOLD = config.tool_registry.persist_threshold
+PREVIEW_CHARS = config.tool_registry.preview_chars
 
 def persist_large_output(tool_call: Dict[str, Any], output: str,user_id:str="",app_id:str="",session_id:str="") -> str:
     if len(output) <= PERSIST_THRESHOLD:
