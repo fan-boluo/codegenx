@@ -1,4 +1,4 @@
-"""LLM 业务语义恢复协作器（组合于 AgentRuntime，非继承）。
+"""LLM 业务语义恢复协作器。
 
 本类只保留 LLM 调用的**业务语义**恢复：
   1. finish_reason length/max_tokens → inject CONTINUATION_MESSAGE and retry.
@@ -7,60 +7,42 @@
 首 chunk 前由 executor 透明重试或切换 fallback 模型；首 chunk 后失败直接抛出，
 本层不再重试（否则前端会出现重复内容）。
 
-模型链来自 runtime.resolve_agent_chain（组件自持：agents[].model，缺省回落默认链）。
+模型链来自 [agent_config.model_name]
 """
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-
+from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.agent.agent_schema import AgentEvent, AgentState, AgentEventType
 from codegenx.ai_service.agent.runtime_schema import TurnStoppedError, ActivateTurn
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
 from codegenx.ai_service.llm.resilience import resilient_invoke_stream
+from codegenx.ai_service.utils.config import AgentConfig
 from shared import log
 
 if TYPE_CHECKING:
-    from codegenx.ai_service.agent.runtime import AgentRuntime
     from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
 
+CONTINUATION_MESSAGE: str = "Please continue from where you left off."
 
 class LLMRecovery:
-    """AgentRuntime 的 LLM 调用协作器（组合）。
-
-    持有 runtime 引用（鸭子类型访问 tools/agent_config/事件发布/停止检查），
-    AgentRuntime.__init__ 中构造：self._llm_recovery = LLMRecovery(self)。
+    """LLM 调用
     """
-
-    def __init__(self, runtime: "AgentRuntime") -> None:
-        self._runtime = runtime
 
     # ------------------------------------------------------------------ public entry
 
     async def invoke(
         self,
+            agent_config:AgentConfig,
+            tools:list[dict],
         messages: list[dict[str, Any]],
         turn_state: ActivateTurn,
         session_state: "RuntimeSessionState",
     ) -> dict[str, Any]:
         """Invoke the LLM with error recovery (s11)."""
-        runtime = self._runtime
-        cfg = runtime.agent_config
         context = session_state.context_manager
-        tools = runtime.tools
-        # 模型链：会话智能体的 model 优先（组件配置 agents[].model），缺省回落默认链
-        chain = runtime.resolve_agent_chain(session_state.agent_name)
-        # P4 §10.3：spec.limits.temperature 覆盖
-        agent_temperature = None
-        agent_name = (getattr(session_state, "agent_name", "") or "").strip()
-        if agent_name:
-            from codegenx.ai_service.system_app import get_app
-
-            registry = get_app().agents
-            if registry is not None:
-                spec = registry.get(agent_name)
-                if spec.limits is not None:
-                    agent_temperature = spec.limits.temperature
+        agent_temperature = agent_config.temperature
         continuation_attempts = 0
         compact_attempts = 0
         accumulated_content = ""
@@ -69,7 +51,8 @@ class LLMRecovery:
 
         while True:
             try:
-                runtime._raise_if_stop_requested(session_state)
+                if session_state.stop_signal.is_set():
+                    raise TurnStoppedError(str(session_state.stop_reason or "user-stop"))
                 round_response: dict[str, Any] = {
                     "content": "",
                     "tool_calls": [],
@@ -79,16 +62,17 @@ class LLMRecovery:
                 # 重试/降级/熔断由韧性层负责（组件解析的模型链）
                 async for chunk in resilient_invoke_stream(
                     messages,
-                    chain=chain,
+                    chain=agent_config.resolved_model_name_chain,
                     label="agent",
                     tools=tools,
-                    timeout=cfg.llm_stream_timeout_seconds,
+                    timeout=agent_config.llm_stream_timeout_seconds,
                     temperature=agent_temperature,
                 ):
-                    runtime._raise_if_stop_requested(session_state)
+                    if session_state.stop_signal.is_set():
+                        raise TurnStoppedError(str(session_state.stop_reason or "user-stop"))
                     if chunk["type"] == "content":
                         round_response["content"] += chunk["data"]
-                        await runtime._publish_runtime_event(
+                        await get_app().message_bus.publish_runtime_event(
                             session_state,
                             AgentEvent(
                                 event_type=AgentEventType.LLM_RESPONSE_CHUNK,
@@ -108,7 +92,7 @@ class LLMRecovery:
                 # Strategy 1: output truncated — inject continuation message and retry
                 finish_reason = str(round_response.get("finish_reason") or "").lower()
                 if finish_reason in {"length", "max_tokens"}:
-                    if continuation_attempts < cfg.max_continuation_attempts:
+                    if continuation_attempts < agent_config.max_continuation_attempts:
                         continuation_attempts += 1
                         accumulated_content += round_response["content"]
                         self._record_recovery(
@@ -120,11 +104,11 @@ class LLMRecovery:
                             "[Recovery] Output truncated, injecting continuation "
                             "(attempt {}/{})",
                             continuation_attempts,
-                            cfg.max_continuation_attempts,
+                            agent_config.max_continuation_attempts,
                         )
                         # 不在 context.chat_messages 中写入中间消息，在本地构建
                         continuation_messages.append({"role": "assistant", "content": round_response["content"]})
-                        continuation_messages.append({"role": "user", "content": runtime.CONTINUATION_MESSAGE})
+                        continuation_messages.append({"role": "user", "content": CONTINUATION_MESSAGE})
                         # 重新组装 messages：原始 + 本地累积的 continuation 消息
                         messages = await context.assemble()
                         messages.extend(continuation_messages)
@@ -148,7 +132,7 @@ class LLMRecovery:
 
                 # Strategy 2: context too long — compact and retry
                 if err_class is LLMErrorClass.CONTEXT_OVERFLOW:
-                    if compact_attempts < cfg.max_compact_attempts:
+                    if compact_attempts < agent_config.max_compact_attempts:
                         compact_attempts += 1
                         self._record_recovery(
                             turn_state,
@@ -159,7 +143,7 @@ class LLMRecovery:
                             "[Recovery] Context too long, compacting history "
                             "(attempt {}/{})",
                             compact_attempts,
-                            cfg.max_compact_attempts,
+                            agent_config.max_compact_attempts,
                         )
                         await context.force_compact()
                         messages = await context.assemble()

@@ -62,7 +62,7 @@ class ToolRegistry(BaseComponent):
             except Exception as e:
                 log.error(f"导入失败 {file_path}: {e}")
         # 注册时即排除不启用的工具（config.tools.excluded），build_tool 直接构建无需再过滤
-        excluded_names = {str(n).strip() for n in (self.config.tools.excluded or [])}
+        excluded_names = {str(n).strip() for n in (self.config.tool_registry.excluded or [])}
         for tool_cls in classes:
             try :
                 tool_instance = tool_cls()
@@ -126,7 +126,7 @@ class ToolRegistry(BaseComponent):
         else:
             return {"error": f"未知工具：{tool_name}"}
 
-    async def build_tool(self) -> list:
+    async def build_tool(self) -> list[dict]:
         """构建 LLM function-calling 工具目录（不启用的工具已在注册时排除）。"""
         # build_tool = await self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
 
@@ -144,9 +144,22 @@ class ToolRegistry(BaseComponent):
             for tool in tool_catalog or []
         ]
 
-        # tool_prompt = json.dumps(tool_list, ensure_ascii=False, indent=2)
-        # self.too_prompt = ""
-        # return f"以下是你可以使用的工具：\n{tool_prompt}"
+    async def build_tools_with_name(self,tools:list[str]) -> list[dict]:
+        """使用传入的工具名称"""
+
+        _tools = [tool for tool in self.tools if tool.name in tools ]
+
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in _tools or []
+        ]
 
 
 def get_tool_registry() -> ToolRegistry:

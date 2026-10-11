@@ -69,7 +69,7 @@ class SessionContext:
             query, user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
             read_types=spec.memory.read_types if spec is not None else None,
         )
-        self.prompts.skill_prompt = app.skills.build_prompt(
+        self.prompts.skill_prompt = app.skill_manager.build_prompt(
             allowlist=spec.skills if spec is not None else None,
         )
         self.prompts.task_prompt = app.tasks.get_board(

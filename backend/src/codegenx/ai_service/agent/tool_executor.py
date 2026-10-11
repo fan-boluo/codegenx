@@ -185,4 +185,4 @@ def get_tool_executor() -> ToolExecutor:
 
 def initialize_tools_executor(system_app) -> ToolExecutor:
     """注册工具执行器组件（system_app.initialize_components 调用；在工具注册之后）。"""
-    return system_app.register(ToolExecutor,tools_registry=get_app().tools)
+    return system_app.register(ToolExecutor, tools_registry=get_app().tool_registry)

@@ -34,7 +34,7 @@ class LoadSkillTool(BaseTool):
             # P2 服务化：经全局容器取 SkillRegistry（原 SkillLoader 临时实例已废弃）
             from codegenx.ai_service.system_app import get_app
 
-            skill_text = get_app().skills.full_text(name)
+            skill_text = get_app().skill_manager.full_text(name)
             return ToolResult(
                 success=True,
                 data=skill_text,

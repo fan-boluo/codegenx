@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 
 from codegenx.ai_service.agent.agent_schema import  AgentEvent,AgentState,AgentEventType
+from codegenx.ai_service.agent.agents.agent import AgentMessage
+from codegenx.ai_service.agent.agents.intention_agent import IntentionRecognitionAgent
 from codegenx.ai_service.agent.runtime_schema import (
     RuntimeSessionState,
     TurnStoppedError, ActivateTurn,
@@ -26,6 +28,7 @@ from codegenx.ai_service.system_app import get_app
 from shared import log
 from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.compact.thresholds import estimate_tokens as _thresholds_estimate
+from codegenx.ai_service.agent.agents.plan_agent import PlannerAgent
 
 class AgentRuntime(BaseComponent):
     """全局对话引擎（进程级组件）：session pool + dispatcher + turn 编排。
@@ -36,8 +39,6 @@ class AgentRuntime(BaseComponent):
     """
 
     name = ComponentType.AGENT_RUNTIME
-
-    CONTINUATION_MESSAGE: str = "Please continue from where you left off."
 
     def __init__(
         self,
@@ -53,18 +54,18 @@ class AgentRuntime(BaseComponent):
         self.max_steps = self.agent_config.max_steps
 
         # 初始化即解析默认智能体模型链（组件自持 LLM 资源；会话级覆盖见 resolve_agent_chain）
-        default_model = (self.agent_config.resolved_model_name or "").strip() \
+        model = (self.agent_config.resolved_model_name or "").strip() \
             or self.config.get_default_model()
-        self._default_chain: list[str] = [default_model]
+        self.model_chain: list[str] = [model]
         # LLM 业务恢复协作器（continuation/压缩重试），组合替代原 Mixin 继承
-        self._llm_recovery = LLMRecovery(self)
+        self._llm_recovery = LLMRecovery()
 
         self.message_bus = get_app().message_bus
-        self.tool_registry = get_app().tools
+        self.tool_registry = get_app().tool_registry
         self.tool_executor = get_app().tools_executor
         # 会话池为独立进程级组件（参数自读 config.session），此处仅取用
         self.session_pool = get_app().session_pool
-        log.info("共加载{}个工具", len(self.tool_registry.tools))
+        log.info("共加载{}个工具", len(self.tool_registry.tool_registry))
 
         # hook 监听器随组件模块 import 链完成 @on 收集，由 initialize_components() 末尾冻结（docs/Hook设计.md §6）
         self._dispatcher_task: asyncio.Task | None = None
@@ -73,19 +74,6 @@ class AgentRuntime(BaseComponent):
     def init_app(self, system_app) -> None:
         self.system_app = system_app
 
-    # ------------------------------------------------------------------ model chain
-
-    def resolve_agent_chain(self, agent_name: str | None) -> list[str]:
-        """会话智能体 → 模型链：spec.limits.model（agents[].model）优先，
-        未指定/未知智能体回落默认智能体链。"""
-        model = ""
-        if str(agent_name or "").strip():
-            registry = getattr(self.system_app, "agents", None) \
-                if self.system_app is not None else None
-            spec = registry.get(agent_name) if registry is not None else None
-            if spec is not None and spec.limits is not None:
-                model = (spec.limits.resolved_model_name or "").strip()
-        return [model] if model else list(self._default_chain)
 
     def _all_agent_models(self) -> list[str]:
         """全部智能体模型（默认 + 各 agents[].model），去重保序（预热用）。"""
@@ -448,7 +436,26 @@ class AgentRuntime(BaseComponent):
         except Exception:  # noqa: BLE001 — 限额解析失败回退默认值，不阻断对话
             return None
 
-    async def _execute_request(self, session_state: RuntimeSessionState) -> None:
+    async def _execute_request(self, session_state: RuntimeSessionState):
+        """
+        自动计划执行
+        Args:
+            session_state:
+
+        Returns:
+
+        """
+        res = IntentionRecognitionAgent().run(session_state)
+
+        if not res.next_agent:
+            return
+
+        planner = PlannerAgent()
+        res = planner.run(session_state)
+        pass
+
+
+    async def _execute_request_bak(self, session_state: RuntimeSessionState) -> None:
         """Process all turns. Always publishes a terminal event; re-raises CancelledError."""
 
         request_id = session_state.request_id
@@ -621,7 +628,7 @@ class AgentRuntime(BaseComponent):
         log.debug("PreLLMCALL {},{},{}",session_state.request_id, turn_state.step_counter,turn_state.active_step_id)
 
         llm_response = await self._llm_recovery.invoke(
-            messages, turn_state, session_state
+            self.agent_config,self.tools,messages, turn_state, session_state
         )
         log.debug(llm_response)
         completion_tokens = self._estimate_completion_tokens(llm_response)

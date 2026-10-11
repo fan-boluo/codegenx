@@ -58,7 +58,7 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.LLM_FACADE, LLMFacade)
 
     @property
-    def tools(self) -> "ToolRegistry":
+    def tool_registry(self) -> "ToolRegistry":
         from codegenx.ai_service.agent.tool_handler import ToolRegistry
 
         return self.get_component(ComponentType.TOOL_REGISTRY, ToolRegistry)
@@ -70,7 +70,7 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.Tool_EXECUTOR, ToolExecutor)
 
     @property
-    def skills(self) -> "SkillManager":
+    def skill_manager(self) -> "SkillManager":
         from codegenx.ai_service.skill.skill_loader import SkillManager
 
         return self.get_component(ComponentType.SKILL_MANAGER, SkillManager)

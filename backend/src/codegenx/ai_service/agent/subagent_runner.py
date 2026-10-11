@@ -41,7 +41,7 @@ class SubagentRunner:
         app = get_app()
         spec = app.agents.get(subagent_context.agent_name) if app.agents is not None else None
 
-        tools_handler = app.tools.child_view(
+        tools_handler = app.tool_registry.child_view(
             excluded=DEFAULT_CHILD_EXCLUDED_TOOLS,
             allowed=subagent_context.allowed_tools or (spec.tools if spec is not None else None),
         )
@@ -98,7 +98,7 @@ class SubagentRunner:
             "details": {
                 "state": final_state.value,
                 "session_id": request.session_id,
-                "tool_names": [tool.name for tool in tools_handler.tools],
+                "tool_names": [tool.name for tool in tools_handler.tool_registry],
             },
         }
 

@@ -88,8 +88,8 @@ class AgentRegistry(BaseComponent):
         self.load_from_config(app_config)
         app = get_app()
         self.validate_against(
-            tool_names={t.name for t in app.tools.tools},
-            skill_names={s.name for s in app.skills.all()},
+            tool_names={t.name for t in app.tool_registry.tool_registry},
+            skill_names={s.name for s in app.skill_manager.all()},
         )
 
     # ------------------------------------------------------------------ 存取

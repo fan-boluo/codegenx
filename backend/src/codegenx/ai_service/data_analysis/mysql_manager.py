@@ -192,7 +192,7 @@ def get_mysql_manager() -> MysqlManager:
     global _manager
     if _manager is None:
         from codegenx.ai_service.utils.config import config
-        c = config.tools.mysql
+        c = config.tool_registry.mysql
         _manager = MysqlManager(MysqlConfig(
             host=c.host,
             port=c.port,

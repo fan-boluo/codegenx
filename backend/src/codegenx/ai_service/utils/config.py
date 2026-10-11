@@ -25,10 +25,9 @@ class AgentMemoryPolicy(Base):
 
 class AgentConfig(Base):
     id: str = ""
-    token: str = ""
     name: str = ""
     defaults: bool = False
-    model: str = "dashscope-qwen/qwen3.7-plus"
+    model_name: str = "qwen3.7-plus"
     provider: str = (
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     )
@@ -47,14 +46,6 @@ class AgentConfig(Base):
     )
     temperature: float = 0.1
     max_tool_iterations: int = 20
-    session_worker_idle_seconds: int = Field(
-        default=1800,
-        validation_alias=AliasChoices("sessionWorkerIdleSeconds", "session_worker_idle_seconds"),
-    )
-    session_stop_grace_seconds: float = Field(
-        default=2.0,
-        validation_alias=AliasChoices("sessionStopGraceSeconds", "session_stop_grace_seconds"),
-    )
     # Deprecated compatibility field: accepted from old configs but ignored at runtime.
     memory_window: int | None = Field(default=None, exclude=True)
     max_same_tool_calls: ClassVar[int] = 3
@@ -68,8 +59,6 @@ class AgentConfig(Base):
     )  # 一次turn的最大llm推理步数
 
     # ── P4 多智能体（docs/SystemApp架构设计.md §10）：AgentConfig 扩展为 AgentSpec 超集，
-    #    旧配置无新字段时与现状完全等价 ──────────────────────────────────────────
-    persona: str = ""                      # system prompt 模板；空=默认 DEFAULT_PROMPT_TEMPLATE
     description: str = ""                  # 给规划智能体的派活描述（subagent 工具 description 来源）
     tools: List[str] | None = None         # 工具 allowlist；None=全部
     skills: List[str] | None = None        # skill allowlist；None=全部
@@ -82,10 +71,13 @@ class AgentConfig(Base):
 
     @property
     def resolved_model_name(self) -> str:
-        model_name = str(self.model or "").strip()
-        if "/" in model_name:
-            return model_name.split("/", 1)[1]
-        return model_name
+        model_name = str(self.model_name or "").strip()
+        return model_name.split(",")[0] if "," in model_name else model_name
+
+    @property
+    def resolved_model_name_chain(self) -> list[str]:
+        model_name = str(self.model_name or "").strip()
+        return model_name.split(",") if "," in model_name else [model_name]
 
 
 class ProviderConfig(Base):
@@ -411,6 +403,17 @@ class SessionConfig(Base):
     cleanup_interval_seconds: int = Field(default=300)  # 每隔 5 分钟进行一次闲置 session 清理
     swap_idle_seconds: int = Field(default=300)  # P3：闲置超过该秒数且无在途任务的会话卸载 chat_messages（须远小于 idle_timeout_seconds）
 
+
+class MultiAgentsConfig(Base):
+    """多Agent参数。"""
+    enabled: bool = Field(default=True)  # 是否启用多agent自动模式，默认是，单agent模式后续再定
+    replan_max: int = Field(default=2)  # Critic 驳回后局部重规划上限（第二期启用）
+    plan_confirm: bool = Field(default=False)  # 计划 human-in-the-loop 确认（第二期 interrupt）
+    checkpointer_enabled: bool = Field(default=True)  # MySQL checkpointer（复杂任务中断恢复）
+    artifact_ttl_hours: int = Field(default=24)  # 中间产物（结果集 DataFrame 等）Redis 缓存 TTL
+    df_spill_threshold_mb: int = Field(default=50)  # 产物序列化超过该阈值落盘 parquet，否则进 Redis
+
+
 class Config(BaseSettings):
     agents: List[AgentConfig] = Field(default_factory=list)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
@@ -425,6 +428,7 @@ class Config(BaseSettings):
     monitor:MonitorConfig = Field(default_factory=MonitorConfig)
     compact: CompactConfig = Field(default_factory=CompactConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
+    multi_agents: MultiAgentsConfig = Field(default_factory=MultiAgentsConfig)
 
     def get_default_agent(self) -> AgentConfig:
         if not self.agents:
