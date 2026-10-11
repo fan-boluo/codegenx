@@ -25,6 +25,7 @@ class AgentMemoryPolicy(Base):
 
 class AgentConfig(Base):
     id: str = ""
+    role:str = ""
     name: str = ""
     defaults: bool = False
     model_name: str = "qwen3.7-plus"

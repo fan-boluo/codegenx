@@ -22,7 +22,6 @@ from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import LLMRecovery
 from codegenx.ai_service.llm.resilience import get_breaker
 from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
-from codegenx.ai_service.bus import MessageBus, RuntimeTurnEvent
 from codegenx.ai_service.utils.config import AgentConfig, config
 from codegenx.ai_service.system_app import get_app
 from shared import log
@@ -146,12 +145,9 @@ class AgentRuntime(BaseComponent):
             await self.message_bus.publish_inbound(request)
             log.info("message_bus 输送请求：{}", request_id)
             while True:
-                item = await subscriber.get()
-                if not isinstance(item, RuntimeTurnEvent):
+                event = await subscriber.get()
+                if not isinstance(event, AgentEvent):
                     continue
-                event = AgentEvent(
-                    event_type=item.event_type, data=item.data, state=AgentState(item.state)
-                )
                 yield event
                 if event.event_type in {"RequestCompleted", "RequestStopped", "Error"}:
                     await self._wait_for_request_cleanup(

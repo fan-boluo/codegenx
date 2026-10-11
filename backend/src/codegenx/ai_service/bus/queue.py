@@ -2,15 +2,17 @@
 
 import asyncio
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from codegenx.ai_service.agent.agent_schema import AgentEventType, AgentEvent
-from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
-from codegenx.ai_service.bus import RuntimeTurnEvent
 from codegenx.ai_service.component import BaseComponent, ComponentType
-from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.agent.agent_schema import  AgentState
+from shared import log
 import json
+
+if TYPE_CHECKING:
+    from codegenx.ai_service.agent.agents.agent import AgentMessage
+
 
 class MessageBus(BaseComponent):
     """
@@ -26,6 +28,40 @@ class MessageBus(BaseComponent):
         self.inbound: asyncio.Queue[Any] = asyncio.Queue()
         # self.outbound: asyncio.Queue[Any] = asyncio.Queue()
         self._request_subscribers: dict[str, set[asyncio.Queue[Any]]] = defaultdict(set)
+        # agent 间通信通道：name -> 收件箱（与 request 事件流正交，控制面）
+        self._agent_channels: dict[str, asyncio.Queue[Any]] = {}
+
+    # ------------------------------------------------------------------ agent messaging
+
+    def register_agent(self, agent_name: str) -> asyncio.Queue[Any]:
+        """注册 agent 收件箱（幂等），以 name 作为 agent 间寻址标识。"""
+        queue = self._agent_channels.get(agent_name)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._agent_channels[agent_name] = queue
+        return queue
+
+    def unregister_agent(self, agent_name: str) -> None:
+        """注销 agent 收件箱，丢弃在途消息（agent 生命周期结束时调用）。"""
+        self._agent_channels.pop(agent_name, None)
+
+    async def send_to_agent(self, msg: "AgentMessage") -> bool:
+        """投递 agent 间消息：recipient 为接收方 name，"*" 广播。返回是否投递成功。"""
+        recipient = (getattr(msg, "recipient", "") or "").strip()
+        if not recipient:
+            return False
+        if recipient == "*":
+            if not self._agent_channels:
+                return False
+            for queue in self._agent_channels.values():
+                await queue.put(msg)
+            return True
+        queue = self._agent_channels.get(recipient)
+        if queue is None:
+            log.warning("agent 消息无接收方: {} -> {}", getattr(msg, "sender", "?"), recipient)
+            return False
+        await queue.put(msg)
+        return True
 
     async def publish_inbound(self, msg: Any) -> None:
         """Publish a message from a channel to the agent."""
