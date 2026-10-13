@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from codegenx.ai_service.agent.agent_schema import AgentState
 from codegenx.ai_service.context.session_context import SessionContext
 from codegenx.ai_service.monitor.telemetry_schema import SpanRecord
-from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
+from codegenx.ai_service.schema.ai_schema import UserAIRequest
 
 
 class TurnStoppedError(Exception):
@@ -47,6 +47,11 @@ class ActivateTurn:
         return self.active_span_refs.pop(key, None)
 
 
+def raise_if_stop_signal(session_state: RuntimeSessionState) -> None:
+    if session_state.stop_signal.is_set():
+        raise TurnStoppedError(session_state.stop_reason or "user-stop")
+
+
 @dataclass
 class RuntimeSessionState:
     """Persistent session state. Per-request fields are reset by _reset_request_state.
@@ -56,7 +61,7 @@ class RuntimeSessionState:
     （get_app().session_io / get_app().tasks），ids 一律作调用参数。
     """
     session_id: str
-    request: AiServiceGenerateRequest | None
+    request: UserAIRequest | None
     context_manager: SessionContext | None = None  # 整个会话的上下文管理（由 on_session_start hook 初始化）
     # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体，现行为不变）
     agent_name: str = ""
@@ -69,7 +74,7 @@ class RuntimeSessionState:
 
     # session 中的请求任务
     request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # 获取请求任务锁
-    pending_requests: list[AiServiceGenerateRequest] = field(default_factory=list)  # 等待的请求
+    pending_requests: list[UserAIRequest] = field(default_factory=list)  # 等待的请求
     active_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)  # 活跃的请求任务
     activate_turn:ActivateTurn = field(default_factory=ActivateTurn)  # 当前获取的turn
 
@@ -138,3 +143,4 @@ class RuntimeSessionState:
         if self.context_manager:
             return self.context_manager.get_safe_path()
         return None
+

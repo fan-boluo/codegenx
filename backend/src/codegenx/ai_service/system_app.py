@@ -154,10 +154,10 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.MEMORY_SCHEDULER, MemoryScheduler)
 
     @property
-    def runtime(self) -> "AgentRuntime":
-        from codegenx.ai_service.agent.runtime import AgentRuntime
+    def chat_service(self) -> "ChatService":
+        from codegenx.ai_service.services.chat_service import ChatService
 
-        return self.get_component(ComponentType.AGENT_RUNTIME, AgentRuntime)
+        return self.get_component(ComponentType.CHAT_SERVICE, ChatService)
 
 
 # ── 进程级单容器访问 ─────────────────────────────────────────────────────────
@@ -204,7 +204,7 @@ def initialize_components(app: SystemApp) -> None:
     from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
     from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
     from codegenx.ai_service.session.session_pool import initialize_session_pool
-    from codegenx.ai_service.agent.runtime import initialize_runtime
+    from codegenx.ai_service.services.chat_service import initialize_chat_service
 
     initialize_llm(app)
     initialize_tools(app)
@@ -222,7 +222,7 @@ def initialize_components(app: SystemApp) -> None:
     initialize_monitor_maintenance(app)
     initialize_memory_scheduler(app)
     initialize_session_pool(app)
-    initialize_runtime(app)
+    initialize_chat_service(app)
 
     # 智能体实例化与规格注册：所有组件已就绪（尤其 message_bus / tool_registry / skill_manager），
     # 各 Agent 在构造时读取自身 AgentConfig 并注册 AgentSpec 到 AgentRegistry。

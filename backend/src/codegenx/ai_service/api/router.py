@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegenx.ai_service.hook import hook_manager, HookEvent, HookContext, HookAction
-from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.chat_message import get_chat_message_store
 from codegenx.ai_service.monitor.monitor_query_service import get_monitor_query_service
@@ -29,7 +28,7 @@ from codegenx.user_service.user_enums import UserRole
 from shared.exceptions.business_exception import BusinessException
 from shared.exceptions.error_code import ErrorCode
 from codegenx.ai_service.schema.ai_schema import (
-    AiServiceGenerateRequest,
+    UserAIRequest,
     AiServiceStopRequest,
     AiServiceStopResponse,
 )
@@ -40,13 +39,7 @@ from codegenx.ai_service.monitor.schema.monitor import (
 )
 from shared.utils.result_utils import success
 
-agent_service = AgentAdapterService()
-
-
-def get_agent_service() -> AgentAdapterService:
-    """供单体应用 lifespan 启停 AgentRuntime。"""
-    return agent_service
-
+chat_service = get_app().chat_service
 
 # ── 对话 / 会话历史 ──────────────────────────────────────────
 
@@ -61,7 +54,7 @@ class SessionListItem(BaseModel):
 
 @chat_router.post("/chat/gen")
 async def generate_code_stream(
-    request: AiServiceGenerateRequest,
+    request: UserAIRequest,
     login_user: JWTUser = Depends(require_login),
 ):
     # 身份一律取 JWT 登录态，请求体 userId 不可信（防会话/工作区挂错用户）
@@ -81,7 +74,7 @@ async def generate_code_stream(
     )
     log.info("ai-service public stream request {} ", request.model_dump_json())
     try:
-        stream = agent_service.stream_message(request)
+        stream = chat_service.stream_message(request)
         async def event_stream():
             async for chunk in stream:
                 yield chunk
@@ -115,7 +108,7 @@ async def stop_code_stream(
         request.reason,
     )
     try:
-        result = await agent_service.stop_session(
+        result = await chat_service.stop_request(
             app_id=request.app_id,
             user_id=user_id,
             session_id=session_id,
@@ -184,10 +177,10 @@ async def check_session_alive(
     await require_participant_by_id(db, app_id, login_user)
     # 容器未启动（lifespan 未跑完）时与 stop_session 一致：视为不活跃而非系统错误
     try:
-        runtime = get_app().runtime
+        session_pool = get_app().session_pool
     except RuntimeError:
-        runtime = None
-    alive = bool(runtime is not None and await runtime.session_pool.exists(session_id))
+        session_pool = None
+    alive = bool(session_pool is not None and await session_pool.exists(session_id))
     return success({"alive": alive})
 
 
@@ -334,7 +327,7 @@ async def get_metrics():
 
 # ── 请求上下文校验 ──────────────────────────────────────────
 
-def _validate_call_context(request: AiServiceGenerateRequest) -> tuple[str, str, str]:
+def _validate_call_context(request: UserAIRequest) -> tuple[str, str, str]:
     trace_id = str(request.trace_id or "").strip()
     request_id = str(request.request_id or "").strip()
     session_id = str(request.session_id or "").strip()

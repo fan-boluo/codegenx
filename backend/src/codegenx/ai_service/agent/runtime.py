@@ -2,54 +2,36 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
-import ast
 import json
 import time
 import traceback
-from datetime import datetime
-from typing import Any, AsyncGenerator
-
-from codegenx.ai_service.agent.agent_schema import  AgentEvent,AgentState,AgentEventType
-from codegenx.ai_service.agent.agents.agent import AgentMessage
-from codegenx.ai_service.agent.agents.intention_agent import IntentionRecognitionAgent
+from typing import Any
+from codegenx.ai_service.agent.agent_schema import  AgentState,AgentEventType
 from codegenx.ai_service.agent.runtime_schema import (
     RuntimeSessionState,
     TurnStoppedError, ActivateTurn,
 )
-from codegenx.ai_service.component import BaseComponent, ComponentType
-from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import LLMRecovery
-from codegenx.ai_service.llm.resilience import get_breaker
 from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
 from codegenx.ai_service.utils.config import AgentConfig, config
 from codegenx.ai_service.system_app import get_app
 from shared import log
-from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
 from codegenx.ai_service.compact.thresholds import estimate_tokens as _thresholds_estimate
-from codegenx.ai_service.agent.agents.plan_agent import PlannerAgent
 
-class AgentRuntime(BaseComponent):
+
+class AgentRuntime:
     """全局对话引擎（进程级组件）：session pool + dispatcher + turn 编排。
-
-    子代理经 SubagentRunner 亦可直接构造轻量实例（引用均为全局资源）。
-    LLM 业务恢复为组合协作器（LLMRecovery，非继承）；模型链在初始化时
-    从 agents[].model 解析，启动钩子预热全部智能体模型的客户端与熔断器。
+    旧版迁移中，目前剩余的方法留作迁移对照使用，待全部验证通过后删除此类
     """
-
-    name = ComponentType.AGENT_RUNTIME
 
     def __init__(
         self,
-        system_app=None,
     ):
-        # 容器约定首参：register 以 component(system_app) 构造实例（BaseComponent 规范）
-        BaseComponent.__init__(self, system_app)
         self.config = config
         self.agent_config = self.config.get_default_agent() or AgentConfig()
         self.max_tool_iterations = max(1, int(self.agent_config.max_tool_iterations or 40))
         self.max_same_tool_calls = self.agent_config.max_same_tool_calls or 3
-        self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
+
         self.max_steps = self.agent_config.max_steps
 
         # 初始化即解析默认智能体模型链（组件自持 LLM 资源；会话级覆盖见 resolve_agent_chain）
@@ -58,408 +40,12 @@ class AgentRuntime(BaseComponent):
         self.model_chain: list[str] = [model]
         # LLM 业务恢复协作器（continuation/压缩重试），组合替代原 Mixin 继承
         self._llm_recovery = LLMRecovery()
-
         self.message_bus = get_app().message_bus
         self.tool_registry = get_app().tool_registry
         self.tool_executor = get_app().tools_executor
-        # 会话池为独立进程级组件（参数自读 config.session），此处仅取用
-        self.session_pool = get_app().session_pool
         log.info("共加载{}个工具", len(self.tool_registry.tool_registry))
 
-        # hook 监听器随组件模块 import 链完成 @on 收集，由 initialize_components() 末尾冻结（docs/Hook设计.md §6）
-        self._dispatcher_task: asyncio.Task | None = None
-        self._shutdown_event = asyncio.Event()
-
-    def init_app(self, system_app) -> None:
-        self.system_app = system_app
-
-
-    def _all_agent_models(self) -> list[str]:
-        """全部智能体模型（默认 + 各 agents[].model），去重保序（预热用）。"""
-        models: list[str] = list(self._default_chain)
-        for agent_cfg in self.config.agents or []:
-            model = (agent_cfg.resolved_model_name or "").strip()
-            if model and model not in models:
-                models.append(model)
-        return models
-
-    # ------------------------------------------------------------------ lifecycle
-
-    async def async_before_start(self) -> None:
-        """引擎启动（迁自旧 SystemApp.startup 第 1/6 步）：
-        先做最小启动校验（默认智能体模型与模型表必须可用，带病配置快速失败），
-        预热全部智能体模型的客户端与熔断器（构造即注册，不发起网络请求），
-        再启动 dispatcher（session pool 清理循环由容器广播、注册顺序先于本组件）。"""
-        default_agent = self.config.get_default_agent()
-        if not (default_agent.model or "").strip():
-            raise RuntimeError(
-                "config 校验失败：默认智能体 model 未配置（config.json agents[].model）"
-            )
-        if not self.config.models:
-            raise RuntimeError("config 校验失败：models 列表为空，无法路由任何模型")
-        for model in self._all_agent_models():
-            with suppress(Exception):
-                get_llm(model)
-                get_breaker(model)
-        log.info("[agent_runtime] 智能体模型客户端已预热: {}", self._all_agent_models())
-        await self.start()
-        log.info("启动runtime完毕")
-
-    async def async_before_stop(self) -> None:
-        """引擎停止：dispatcher（session pool 由容器逆序广播自行收尾，失败不阻断其余组件）。"""
-        with suppress(Exception):
-            await self.stop()
-
-    async def start(self) -> None:
-        if self._dispatcher_task is not None and not self._dispatcher_task.done():
-            return
-        self._shutdown_event.clear()
-
-        # Build tool catalog (async — must be awaited)
-        self.tools = await self.tool_registry.build_tool()
-        log.info("工具目录构建完成,共{}个工具", len(self.tools))
-
-        self._dispatcher_task = asyncio.create_task(
-            self._dispatch_loop(), name="agent-runtime-dispatcher"
-        )
-        log.info("启动完成 dispatch_loop,等待消息。。。")
-
-    async def stop(self) -> None:
-        self._shutdown_event.set()
-        if self._dispatcher_task is not None:
-            self._dispatcher_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._dispatcher_task
-            self._dispatcher_task = None
-
-    # ------------------------------------------------------------------ public API
-
-    async def submit_request(
-        self, request: AiServiceGenerateRequest
-    ) -> AsyncGenerator[AgentEvent, None]:
-        """ 一次请求的消息收发 """
-        await self.start()
-        request_id = self._request_id(request)
-        subscriber = self.message_bus.subscribe_request(request_id)
-        try:
-            await self.message_bus.publish_inbound(request)
-            log.info("message_bus 输送请求：{}", request_id)
-            while True:
-                event = await subscriber.get()
-                if not isinstance(event, AgentEvent):
-                    continue
-                yield event
-                if event.event_type in {"RequestCompleted", "RequestStopped", "Error"}:
-                    await self._wait_for_request_cleanup(
-                        str(request.session_id or ""), request_id
-                    )
-                    break
-        finally:
-            self.message_bus.unsubscribe_request(request_id, subscriber)
-
-    async def stop_request(
-        self,
-        *,
-        session_id: str,
-        request_id: str,
-        reason: str = "user-stop",
-    ) -> dict[str, Any]:
-        active_tasks: list[tuple[str, asyncio.Task[Any]]] = []
-        dropped_requests: list[AiServiceGenerateRequest] = []
-        remaining_requests: list[AiServiceGenerateRequest] = []
-        stop_reason = str(reason or "user-stop")
-        target_request_id = str(request_id or "").strip()
-
-        # Get session from pool
-        session_state = await self.session_pool.get(session_id)
-        if session_state is None or session_state.closed:
-            return {
-                "accepted": False,
-                "sessionId": session_id,
-                "stoppedRequestCount": 0,
-                "droppedRequestCount": 0,
-                "activeRequestIds": [],
-                "droppedRequestIds": [],
-                "activeTurnIds": [],
-            }
-
-        session_state.touch()
-        if target_request_id in session_state.active_tasks:
-            session_state.stop_signal.set()
-            session_state.stop_reason = stop_reason
-            active_tasks = [
-                (target_request_id, session_state.active_tasks[target_request_id])
-            ]
-
-        async with session_state.request_lock:
-            for queued_request in list(session_state.pending_requests):
-                if self._request_id(queued_request) == target_request_id:
-                    dropped_requests.append(queued_request)
-                else:
-                    remaining_requests.append(queued_request)
-            session_state.pending_requests = remaining_requests
-
-        # Publish stopped events for dropped requests
-        for queued_request in dropped_requests:
-            await self.message_bus.publish_runtime_event(
-                {
-                    "session_id":str(queued_request.session_id or ""),
-                    "request_id":queued_request.request_id,
-                    "step_counter":0
-                },
-                event_type=AgentEventType.REQUEST_STOPPED,
-                state=AgentState.STOPPED.value,
-                data={"reason": reason}
-            )
-
-        # Wait for active tasks with timeout
-        if active_tasks:
-            done, pending = await asyncio.wait(
-                [task for _, task in active_tasks], timeout=self.stop_grace_seconds
-            )
-            if pending:
-                for pending_task in pending:
-                    pending_task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-
-        # Clear stop signal
-        session_state = await self.session_pool.get(session_id)
-        if session_state is not None and not session_state.closed:
-            session_state.stop_signal.clear()
-            session_state.stop_reason = ""
-
-        # Get active turn IDs
-        active_step_ids: list[str] = []
-        session_state = await self.session_pool.get(session_id)
-        if session_state is not None and active_tasks:
-            active_step_ids = list(session_state.activate_turn.active_steps)
-
-        return {
-            "accepted": bool(active_tasks or dropped_requests),
-            "sessionId": session_id,
-            "stoppedRequestCount": len(active_tasks),
-            "droppedRequestCount": len(dropped_requests),
-            "activeRequestIds": [rid for rid, _ in active_tasks],
-            "droppedRequestIds": [str(r.request_id or "") for r in dropped_requests],
-            "activeTurnIds": active_step_ids,
-        }
-
-    # ------------------------------------------------------------------ dispatch loop
-
-    async def _dispatch_loop(self) -> None:
-        """消费 inbound requests 并传给 session workers."""
-        while not self._shutdown_event.is_set():
-            request = await self.message_bus.consume_inbound()
-            log.info(
-                "dispatcher loop 接收到请求：{} {}",
-                request.request_id,
-                str(getattr(request, "message", "") or "")[:10],
-            )
-            if not isinstance(request, AiServiceGenerateRequest):
-                continue
-            
-            # Get or create session using pool (no lock needed)
-            session_state, is_new = await self.session_pool.get_or_create(request)
-            if is_new:
-                self.session_pool.init_session_state(session_state)
-                await hook_manager.emit(
-                    HookEvent.SESSION_START,
-                    HookContext(event=HookEvent.SESSION_START, session=session_state),
-                )
-                log.debug(f"新建一个session_state:{request.session_id}")
-
-            # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
-            # （复用 on_session_start 已有的快照重载逻辑，docs/SystemApp架构设计.md §7）
-            await self._restore_swapped_session(session_state)
-
-
-            # 用户发送的消息入库
-            user_dict = {"role": "user", "content": request.message}
-            try:
-                from codegenx.ai_service.chat_message import get_chat_message_store
-                await get_chat_message_store().append_message(
-                    request.user_id, str(request.app_id), request.session_id, user_dict
-                )
-            except Exception as exc:
-                log.warning("user 消息入库失败（不影响对话）: {}", exc)
-
-            session_state.state = AgentState.RUNNING
-            session_state.started_at = datetime.utcnow()
-
-            # Add request to session pending queue and trigger processing
-            await self._enqueue_session_request(session_state, request)
-            log.debug("{} 已加入 session pending_requests", request.request_id)
-
-
-    async def _restore_swapped_session(self, session_state: RuntimeSessionState) -> None:
-        # 这一步是每轮都会执行的，目前，不管是新建session还是复用
-        if not getattr(session_state, "swapped_out", False):
-            return
-        session_state.swapped_out = False
-        cm = session_state.context_manager
-        if cm is not None and not cm.chat_messages:
-            from codegenx.ai_service.system_app import get_app
-
-            cm.chat_messages = await get_app().session_io.get_turn_chat_message_snapshot(
-                user_id=session_state.user_id,
-                app_id=session_state.app_id,
-                session_id=session_state.session_id,
-            ) or []
-            log.info("swapped-out session {} 已从快照恢复（{} 条消息）",
-                     session_state.session_id, len(cm.chat_messages))
-
-    async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
-        """Wait for request cleanup using event notification (avoids busy-wait polling)."""
-        session_state = await self.session_pool.get(session_id)
-        if session_state is None:
-            return
-        if request_id not in session_state.active_tasks:
-            return
-        while True:
-            try:
-                await asyncio.wait_for(session_state.close_signal.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                pass
-            # Re-read session_state in case pool replaced it
-            session_state = await self.session_pool.get(session_id)
-            if session_state is None or request_id not in session_state.active_tasks:
-                return
-            session_state.close_signal.clear()
-
-    async def _enqueue_session_request(
-        self, session_state: RuntimeSessionState, request: AiServiceGenerateRequest
-    ) -> None:
-        """Add request to session pending list and trigger processing."""
-        async with session_state.request_lock:
-            session_state.pending_requests.append(request)
-            session_state.touch()
-            if session_state.processing:
-                return
-            session_state.processing = True
-            session_state.worker_task = asyncio.create_task(
-                self._process_session_requests(session_state),
-                name=f"agent-session-{session_state.session_id}",
-            )
-    # ------------------------------------------------------------------ session worker
-
-    async def _process_session_requests(self, session_state: RuntimeSessionState) -> None:
-        """  携程"""
-        session_state.state = AgentState.RUNNING
-        # Ensure worker_task references the running task and mark processing
-        session_state.worker_task = asyncio.current_task()
-        session_state.processing = True
-        try:
-            while not self._shutdown_event.is_set() and not session_state.closed:
-                async with session_state.request_lock:
-                    # 没有等待的请求了，
-                    if not session_state.pending_requests:
-                        session_state.processing = False
-                        return
-                    request = session_state.pending_requests.pop(0)
-
-                log.debug("session 中的请求任务触发, 处理请求: {}", request.request_id)
-
-                session_state.request = request
-                session_state.activate_turn = ActivateTurn()
-
-                request_task = asyncio.create_task(
-                    self._execute_request(session_state),
-                    name=f"agent-request-{session_state.request_id}",
-                )
-                log.debug("请求任务开始执行:{}", session_state.request_id)
-                session_state.active_tasks[session_state.request_id] = request_task
-                try:
-                    await request_task
-                except asyncio.CancelledError:
-                    await self._close_session_state(session_state, end_reason="runtime-stop")
-                    raise
-                except Exception as exc:
-                    log.opt(exception=True).error("Unhandled error in request {}: {}", session_state.request_id, exc)
-                    await self.message_bus.publish_runtime_event(
-                        session_state.publish_context,event_type=AgentEventType.ERROR, data=str(exc), state=AgentState.FAILED,
-                    )
-                finally:
-                    session_state.active_tasks.pop(session_state.request_id, None)
-                    if not session_state.closed:
-                        session_state.stop_signal.clear()
-                        session_state.stop_reason = ""
-                        session_state.close_signal.set()  # 通知 _wait_for_request_cleanup
-                    session_state.touch()
-
-        finally:
-            async with session_state.request_lock:
-                # Only clear processing/worker_task if this is the task that set them.
-                current_task = asyncio.current_task()
-                if session_state.worker_task is current_task:
-                    session_state.processing = False
-                    session_state.worker_task = None
-                log.info("{},{}",session_state.session_id,"finished")
-
-    async def _close_session_state(
-        self, session_state: RuntimeSessionState, *, end_reason: str
-    ) -> None:
-        """Close session and cleanup resources (pool handles removal)."""
-        if session_state.closed:
-            return
-        
-        session_state.closed = True
-        if end_reason == "runtime-stop" and session_state.activate_turn.active_steps:
-            session_state.state = AgentState.STOPPED
-        elif session_state.state != AgentState.FAILED:
-            session_state.state = AgentState.COMPLETED
-        
-        if session_state.worker_task is not None and session_state.worker_task.cancelled():
-            session_state.worker_task = None
-        
-        await hook_manager.emit(
-            HookEvent.SESSION_END,
-            HookContext(
-                event=HookEvent.SESSION_END,
-                session=session_state,
-                data={"end_reason": end_reason},
-            ),
-        )
-        
-        # Pool will automatically remove closed sessions during cleanup
-        log.info("Session {} closed: end_reason={}", session_state.session_id, end_reason)
-
-
-
-    # ------------------------------------------------------------------ request execution
-
-    def _spec_limits(self, session_state: RuntimeSessionState):
-        """P4 §10.3：会话归属智能体的 AgentConfig（无归属/未配置/容器未启动 → None 走默认）。"""
-        try:
-            from codegenx.ai_service.system_app import get_app
-
-            app = get_app()
-            if app.agents is None:
-                return None
-            spec = app.agents.get(getattr(session_state, "agent_name", "") or "")
-            return spec.cls.agent_config if spec is not None and spec.cls is not None else None
-        except Exception:  # noqa: BLE001 — 限额解析失败回退默认值，不阻断对话
-            return None
-
-    async def _execute_request(self, session_state: RuntimeSessionState):
-        """
-        自动计划执行
-        Args:
-            session_state:
-
-        Returns:
-
-        """
-        res = IntentionRecognitionAgent().run(session_state)
-
-        if not res.next_agent:
-            return
-
-        planner = PlannerAgent()
-        res = planner.run(session_state)
-        pass
-
-
-    async def _execute_request_bak(self, session_state: RuntimeSessionState) -> None:
+    async def _execute_request(self, session_state: RuntimeSessionState) -> None:
         """Process all turns. Always publishes a terminal event; re-raises CancelledError."""
 
         request_id = session_state.request_id
@@ -486,13 +72,7 @@ class AgentRuntime(BaseComponent):
                 state=activate_turn.state)
             log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
             # 执行turn的任务
-            limits = self._spec_limits(session_state)
-            effective_max_steps = (
-                int(limits.max_steps)
-                if limits is not None and getattr(limits, "max_steps", None)
-                else self.max_steps
-            )
-            while activate_turn.step_counter < effective_max_steps:
+            while activate_turn.step_counter < self.max_steps:
                 self._raise_if_stop_requested(session_state)
                 # 聊天历史微压，清除工具执行结果
                 await context_manager.micro_compact()
@@ -785,19 +365,6 @@ class AgentRuntime(BaseComponent):
         log.debug("执行完一次step 迭代, step_id: {}, step_counter:{}", turn_state.active_step_id, turn_state.step_counter)
 
 
-
-    async def _fire(
-        self, event: str, ctx: HookContext, *, parallel: bool = False, **data: Any
-    ) -> HookContext:
-        """复用 turn 级 ctx 触发 hook 事件：重置 event/data/action。"""
-        ctx.event = event
-        ctx.data = data
-        ctx.action = HookAction.CONTINUE
-        ctx.message = ""
-        if parallel:
-            return await hook_manager.emit_parallel(event, ctx)
-        return await hook_manager.emit(event, ctx)
-
     @staticmethod
     def _last_assistant_content(session_state: RuntimeSessionState) -> str:
         """取最后一条 assistant 消息内容，作为 on_complete 的校验对象。"""
@@ -851,26 +418,3 @@ class AgentRuntime(BaseComponent):
             parts.append(json.dumps(tool_calls, ensure_ascii=False, default=str))
         return self._estimate_text_tokens("\n".join(p for p in parts if p))
 
-
-    @staticmethod
-    def _request_id(request: AiServiceGenerateRequest) -> str:
-        return str(getattr(request, "request_id", "") or "")
-
-    # ------------------------------------------------------------------ monitoring
-
-    async def get_runtime_stats(self) -> dict[str, Any]:
-        """Get runtime statistics for monitoring and debugging."""
-        pool_stats = self.session_pool.stats()
-        return {
-            "session_pool": pool_stats,
-            "dispatcher_active": self._dispatcher_task is not None
-            and not self._dispatcher_task.done(),
-        }
-
-
-
-
-def initialize_runtime(system_app) -> AgentRuntime:
-    """注册全局对话引擎组件（system_app.initialize_components 调用；
-    实际启动/停止在 async_before_start / async_before_stop 钩子中）。"""
-    return system_app.register(AgentRuntime)

@@ -54,7 +54,7 @@ class ComponentType(str, Enum):
     MONITOR_PIPELINE = "monitor_pipeline"
     MONITOR_MAINTENANCE = "monitor_maintenance"
     MEMORY_SCHEDULER = "memory_scheduler"
-    AGENT_RUNTIME = "agent_runtime"
+    CHAT_SERVICE = "chat_service"
     MESSAGE_BUS = "message_bus"
 
 

@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
+from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
 from codegenx.ai_service.compact.session_summary import SummaryState
 from codegenx.ai_service.context.context_service import TurnPrompts
 
@@ -40,15 +41,15 @@ class Agent(ABC):
         """Send a message to another agent (recipient 为对方 role，"*" 广播)."""
 
     @abstractmethod
-    async def act(self):
+    async def act(self,ai_message: Any,session_state:RuntimeSessionState, **kwargs):
         """Perform actions."""
 
     @abstractmethod
-    async def think(self):
+    async def think(self,messages: list[dict[str, Any]]):
         """Think and reason about the current task goal."""
 
     @abstractmethod
-    async def verify(self):
+    async def verify(self,final_text: str, messages: list[dict[str, Any]]):
         """Verify whether the current execution results meet the target expectations."""
 
     # ------------------------------------------------------------------ 类方法：配置解析与注册

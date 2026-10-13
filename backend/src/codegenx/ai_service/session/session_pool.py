@@ -169,6 +169,140 @@ class SessionPool(BaseComponent):
             await self._close_session_unsafe(session_id)
             self._sessions.pop(session_id, None)
 
+    async def stop_request(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        reason: str = "user-stop",
+        grace_seconds: float = 2.0,
+    ) -> dict[str, Any] | None:
+        """停止单个请求：活跃任务经 stop_signal 触发 TurnStoppedError，待处理请求从队列丢弃。
+
+        仅变更会话状态，不发布事件（事件由 ChatService 按返回的 dropped_requests 补发）。
+        会话保持开启，后续 pending 请求继续执行。
+
+        多 agent：同一请求内嵌套 agent 共享 session 级 stop_signal，随活跃请求一并停止；
+        当前会话 worker 顺序处理请求，故 session 级信号等价于 per-request 信号。
+
+        Returns:
+            {stopped_request_ids, dropped_requests, active_step_ids}；
+            session 不存在或已关闭返回 None。
+        """
+        target = str(request_id or "").strip()
+        stop_reason = str(reason or "user-stop")
+
+        # Phase 1：锁内完成状态变更并捕获任务引用（不持锁等待，避免阻塞池）
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or getattr(session, "closed", False):
+                return None
+            session.touch()
+
+            stopped_task: asyncio.Task | None = None
+            if target and target in session.active_tasks:
+                # 活跃请求：设置 session 级 stop_signal，runtime 执行路径将抛 TurnStoppedError
+                session.stop_signal.set()
+                session.stop_reason = stop_reason
+                stopped_task = session.active_tasks[target]
+
+            dropped_requests: list[Any] = []
+            async with session.request_lock:
+                if session.pending_requests:
+                    remaining: list[Any] = []
+                    for req in list(session.pending_requests):
+                        if str(getattr(req, "request_id", "")) == target:
+                            dropped_requests.append(req)
+                        else:
+                            remaining.append(req)
+                    session.pending_requests = remaining
+
+        # Phase 2：锁外 grace 等待活跃任务自行走到检查点停止。
+        # 只发信号不强制 cancel：强制 cancel 会走 worker 的 CancelledError→_close_session_state
+        # 分支把整个会话关掉（误伤后续排队请求）；硬杀是 stop_session 的职责。
+        # 超时（如 LLM 调用在飞）则留给下一个 raise_if_stop_signal 检查点处理，
+        # SSE 侧 _wait_for_request_cleanup 会一直等到任务真正出队。
+        if stopped_task is not None:
+            await asyncio.wait([stopped_task], timeout=grace_seconds)
+            if not stopped_task.done():
+                log.warning(
+                    "stop_request 任务 {} 在 {}s grace 内未停止，交给下一个检查点处理"
+                    "（如需立即终止请调用 stop_session）", target, grace_seconds,
+                )
+
+        # Phase 3：仅在任务确已结束时兜底清信号（worker finally 也会清），
+        # 任务尚在跑时必须保留 stop_signal 让检查点继续生效
+        active_step_ids: list[str] = []
+        session = await self.get(session_id)
+        if session is not None and not getattr(session, "closed", False):
+            if (
+                stopped_task is not None
+                and stopped_task.done()
+                and session.stop_signal.is_set()
+            ):
+                session.stop_signal.clear()
+                session.stop_reason = ""
+            if stopped_task is not None:
+                active_step_ids = list(getattr(session.activate_turn, "active_steps", []) or [])
+
+        return {
+            "stopped_request_ids": [target] if stopped_task is not None else [],
+            "dropped_requests": dropped_requests,
+            "active_step_ids": active_step_ids,
+        }
+
+    async def stop_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "user-stop",
+        grace_seconds: float = 2.0,
+    ) -> dict[str, Any] | None:
+        """停止会话所有任务并关闭会话：设置 stop_signal、grace 等待活跃任务、关闭并移除会话。
+
+        仅变更会话状态，不发布事件。活跃请求的停止事件由 runtime 自行发布，
+        待处理请求由 ChatService 按返回的 dropped_requests 补发。复用 remove() 完成关闭+移除。
+
+        多 agent：同请求内嵌套 agent 共享 stop_signal，随活跃请求一并停止；
+        跨请求并发的场景（当前为顺序执行）需扩展 per-request 信号，目前无需处理。
+
+        Returns:
+            {stopped_request_ids, dropped_requests, active_step_ids, closed}；
+            session 不存在或已关闭返回 None。
+        """
+        stop_reason = str(reason or "user-stop")
+
+        # Phase 1：锁内设置 stop_signal、清空 pending、收集活跃任务与 step
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or getattr(session, "closed", False):
+                return None
+            session.touch()
+            session.stop_signal.set()
+            session.stop_reason = stop_reason
+
+            active_items: list[tuple[str, asyncio.Task]] = list(session.active_tasks.items())
+            active_step_ids = list(getattr(session.activate_turn, "active_steps", []) or [])
+            dropped_requests: list[Any] = []
+            async with session.request_lock:
+                dropped_requests = list(session.pending_requests)
+                session.pending_requests = []
+            tasks_to_wait = [t for _, t in active_items]
+
+        # Phase 2：锁外 grace 等待活跃任务（stop_signal 已设，runtime 走 TurnStoppedError 自行发事件+落盘）
+        if tasks_to_wait:
+            await asyncio.wait(tasks_to_wait, timeout=grace_seconds)
+
+        # Phase 3：关闭并移除会话（复用 remove：取消 worker + 残留活跃任务 + 标记 closed + pop）
+        await self.remove(session_id)
+
+        return {
+            "stopped_request_ids": [rid for rid, _ in active_items],
+            "dropped_requests": dropped_requests,
+            "active_step_ids": active_step_ids,
+            "closed": True,
+        }
+
     async def active_count(self) -> int:
         """Get number of active non-closed sessions."""
         async with self._lock:

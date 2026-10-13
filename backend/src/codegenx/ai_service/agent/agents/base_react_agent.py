@@ -5,7 +5,7 @@ import json
 from contextlib import suppress
 from typing import Any, List
 
-from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
+from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, raise_if_stop_signal
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import LLMRecovery
 from codegenx.ai_service.llm.resilience import get_breaker
@@ -205,7 +205,7 @@ class BaseReActAgent(Agent):
             tool_calls.append({"id": tc.id, "name": tc.function.name, "arguments": arguments})
         return {"content": message.content or "", "tool_calls": tool_calls}
 
-    async def act(self, ai_message: Any = None, **kwargs) -> Any:
+    async def act(self, ai_message: Any,session_state:RuntimeSessionState, **kwargs) -> Any:
         """行动：遍历 self.actions 链式执行，上一个结果传给下一个，返回最后一个结果。
 
         ai_message 首个 Action 收到 think() 的返回 {"content","tool_calls"}；
@@ -213,6 +213,7 @@ class BaseReActAgent(Agent):
         """
         last_result = ai_message
         for action in self.actions:
+            raise_if_stop_signal(session_state)
             last_result = await action.act(ai_message=last_result, **kwargs)
             log.info("agent act: {} action={} 完成", self.agent_name, type(action).__name__)
         return last_result
@@ -251,6 +252,7 @@ class BaseReActAgent(Agent):
         step = 0
         final_text = ""
         while step < self.max_steps:
+            raise_if_stop_signal(session_state)
             step += 1
             log.info("agent run: {} step {}/{} think 开始", self.agent_name, step, self.max_steps)
             response = await self.think(messages)

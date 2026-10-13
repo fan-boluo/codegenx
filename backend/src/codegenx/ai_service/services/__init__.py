@@ -1,3 +1,3 @@
-from .agent_adapter_service import AgentAdapterService
+from .chat_service import ChatService
 
-__all__ = ["AgentAdapterService"]
+__all__ = ["ChatService"]

@@ -20,10 +20,8 @@ from codegenx.ai_service.api.router import (
     chat_router as ai_chat_router,
     metrics_router,
     monitor_router,
-    get_agent_service,
 )
 from codegenx.ai_service.api.memory_router import memory_admin_router
-from codegenx.ai_service.services.agent_adapter_service import AgentAdapterService
 from codegenx.app_service.router import router as app_router
 from codegenx.gateway.api.blacklist import router as blacklist_router
 from codegenx.gateway.api.chat import router as chat_router
@@ -57,14 +55,16 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动 SystemApp 全局容器（hook 冻结/基础设施/注册表/runtime/后台任务，docs/SystemApp架构设计.md §3.3）
-    agent_service: AgentAdapterService = get_agent_service()
-    await agent_service.startup()
+    from codegenx.ai_service.system_app import get_app, init_app, start_app, stop_app
+    # 两段式启动：init_app 注册组件+广播同步钩子；start_app 在事件循环内完成异步启动
+    app = init_app()
+    await start_app(app)
     log.info("codegenx monolith startup completed")
     try:
         yield
     finally:
-        # 关闭顺序由 SystemApp stop_app 统一保证：组件逆序 async_before_stop → redis/qdrant/mysql
-        await agent_service.shutdown()
+        # 关闭顺序由 SystemApp stop_app 统一保证：组件逆序关闭后，再统一释放基础设施（redis/qdrant/mysql）
+        await stop_app()
         log.info("codegenx monolith shutdown completed")
 
 

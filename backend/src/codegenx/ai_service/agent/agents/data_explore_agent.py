@@ -107,9 +107,9 @@ if __name__ == "__main__":
     import asyncio
     def _make_session_state() -> RuntimeSessionState:
         """构造一个最小可用的 RuntimeSessionState（只需 session_id + request）。"""
-        from codegenx.ai_service.schema.ai_schema import AiServiceGenerateRequest
+        from codegenx.ai_service.schema.ai_schema import UserAIRequest
 
-        request = AiServiceGenerateRequest(
+        request = UserAIRequest(
             appId="test-app",
             userId="test-user",
             message="测试消息",
