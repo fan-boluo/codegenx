@@ -189,9 +189,9 @@ def initialize_components(app: SystemApp) -> None:
 
     from codegenx.ai_service.llm.facade import initialize_llm
     from codegenx.ai_service.agent.tool_handler import initialize_tools
-    from codegenx.ai_service.agent.tool_executor import initialize_tools_executor
     from codegenx.ai_service.skill.skill_loader import initialize_skill
     from codegenx.ai_service.agent.agent_registry import initialize_agents
+    from codegenx.ai_service.agent.agent_instances import initialize_agent_instances
     from codegenx.ai_service.context.context_service import initialize_context
     from codegenx.ai_service.chat_message.persist import initialize_session_io
     from codegenx.ai_service.task.task_manager import initialize_tasks
@@ -208,7 +208,6 @@ def initialize_components(app: SystemApp) -> None:
 
     initialize_llm(app)
     initialize_tools(app)
-    initialize_tools_executor(app)
     initialize_skill(app)
     initialize_agents(app)
     initialize_context(app)
@@ -224,6 +223,10 @@ def initialize_components(app: SystemApp) -> None:
     initialize_memory_scheduler(app)
     initialize_session_pool(app)
     initialize_runtime(app)
+
+    # 智能体实例化与规格注册：所有组件已就绪（尤其 message_bus / tool_registry / skill_manager），
+    # 各 Agent 在构造时读取自身 AgentConfig 并注册 AgentSpec 到 AgentRegistry。
+    initialize_agent_instances(app)
 
     # hook 注册表冻结：@on 监听器随组件模块的 import 链（模块加载即注册）收集完毕，
     # 此处统一校验/拓扑排序/冻结（docs/Hook设计.md §6）。

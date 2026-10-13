@@ -9,7 +9,14 @@ from codegenx.ai_service.context.context_service import TurnPrompts
 
 
 class Agent(ABC):
-    """Agent Interface."""
+    """Agent Interface.
+
+    类属性 id/role/name/desc 由子类定义，resolve_agent_config() 类方法
+    在系统初始化时读取配置并填充 agent_config 类属性；register() 类方法
+    将自身规格注册到 AgentRegistry。
+    """
+    name: str = ""
+    agent_config: Any = None  # 由 resolve_agent_config() 类方法填充
 
     @abstractmethod
     async def run(self, session_state) -> "AgentMessage":
@@ -37,22 +44,29 @@ class Agent(ABC):
         """Perform actions."""
 
     @abstractmethod
-    async def thinking(self):
+    async def think(self):
         """Think and reason about the current task goal."""
 
     @abstractmethod
     async def verify(self):
         """Verify whether the current execution results meet the target expectations."""
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Return the name of the agent."""
+    # ------------------------------------------------------------------ 类方法：配置解析与注册
 
-    @property
-    @abstractmethod
-    def desc(self) -> Optional[str]:
-        """Return the description of the agent."""
+    @classmethod
+    def resolve_agent_config(cls) -> None:
+        """按 cls.name 从 config.agents 匹配配置，存为类属性（系统初始化时调用）。
+
+        子类（如 BaseReActAgent）可覆盖以读取更丰富的配置字段。
+        """
+
+    @classmethod
+    def register(cls) -> None:
+        """将自身规格注册到 AgentRegistry（系统初始化时调用）。
+
+        从类属性 id/role/name/desc + cls 本身构建 AgentSpec 并注册。
+        """
+        
 
 
 @dataclass

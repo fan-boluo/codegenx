@@ -59,7 +59,6 @@ class SessionContext:
         service = app.context
         if service is None:
             raise RuntimeError("SystemApp.context 未装配：请在启动入口 init_app() 后使用")
-        spec = app.agents.get(self.agent_name) if app.agents is not None else None
 
         self.prompts.workspace_metadata = await service.build_workspace_metadata(
             self.user_id, self.app_id, db_name=self.db_name
@@ -67,11 +66,8 @@ class SessionContext:
 
         self.prompts.memory_prompt = await app.memory.load(
             query, user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
-            read_types=spec.memory.read_types if spec is not None else None,
         )
-        self.prompts.skill_prompt = app.skill_manager.build_prompt(
-            allowlist=spec.skills if spec is not None else None,
-        )
+        self.prompts.skill_prompt = app.skill_manager.build_prompt()
         self.prompts.task_prompt = app.tasks.get_board(
             user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
         )
@@ -80,7 +76,7 @@ class SessionContext:
             user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
         )
         self.system_prompt = service.render_turn_context(
-            self.prompts, persona=spec.persona if spec is not None else ""
+            self.prompts, persona=""
         )
         log.debug("system prompt init success")
         return self.system_prompt

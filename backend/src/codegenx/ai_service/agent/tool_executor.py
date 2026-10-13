@@ -1,10 +1,12 @@
 import inspect
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Type
 
-from codegenx.ai_service.agent.runtime_schema import ActivateTurn, RuntimeSessionState
-from codegenx.ai_service.agent.tool_handler import ToolRegistry
-from codegenx.ai_service.component import BaseComponent, ComponentType
+from pydantic import BaseModel, Field
+
+from codegenx.ai_service.agent.action import Action, T
+from codegenx.ai_service.tools.base import ToolResult
+from codegenx.ai_service.agent.runtime_schema import  RuntimeSessionState
 from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
 from codegenx.ai_service.system_app import get_app
 from shared import log
@@ -104,19 +106,69 @@ async def safe_path_guard(ctx: "HookContext") -> "HookDecision | None":
 
     return None
 
+class ToolCall(BaseModel):
+    id: str = ""
+    name: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
-class ToolExecutor(BaseComponent):
-    name = ComponentType.Tool_EXECUTOR
 
-    def __init__(self, system_app=None,tools_registry: ToolRegistry=None):
-        BaseComponent.__init__(self, system_app)
-        self.tools_registry = tools_registry
+class ToolExecutor(Action):
 
-    def init_app(self, system_app) -> None:
-        self.system_app = system_app
+    # def init_app(self, system_app) -> None:
+    #     self.system_app = system_app
 
-    async def execute(self, tool_call: Dict[str, Any], turn_state: ActivateTurn,
-                      session_state: RuntimeSessionState | None = None) -> Any:
+    async def act(self, ai_message: Any, **kwargs) -> list[dict[str, Any]]:
+        """解析 LLM 返回的 tool_calls，逐一执行工具，返回 tool 结果消息列表。"""
+        session_state = kwargs.get("session_state")
+        tool_calls: list[ToolCall] = self.parse_ai_message(ai_message, ToolCall)
+        results: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            log.info("ToolExecutor act: 执行工具 {} | args={}", tc.name, tc.arguments)
+            try:
+                result = await self.execute(
+                    {"name": tc.name, "arguments": tc.arguments, "id": tc.id},
+                    session_state,
+                )
+            except Exception as exc:
+                log.error("ToolExecutor act: 工具 {} 执行异常: {}", tc.name, exc)
+                result = ToolResult(success=False, message=str(exc))
+            content = result.data if result.success else (result.message or result.data)
+            results.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "content": content,
+            })
+        return results
+
+    async def parallel_execute(self,):
+        """ 并行执行 """
+        pass
+    async def sequence_execute(self,):
+        """ 顺序执行 """
+        pass
+
+    # def parse_ai_message(self, ai_message: Any, cls: Type[T]) -> list[ToolCall]:
+    #     """从 ai_message 中解析 tool_calls 为 ToolCall 列表。"""
+    #     if not ai_message:
+    #         return []
+    #     tool_calls_raw: list = []
+    #     if isinstance(ai_message, dict):
+    #         tool_calls_raw = ai_message.get("tool_calls") or []
+    #     elif isinstance(ai_message, list):
+    #         tool_calls_raw = ai_message
+    #     result: list[ToolCall] = []
+    #     for tc in tool_calls_raw:
+    #         if isinstance(tc, dict):
+    #             result.append(ToolCall(
+    #                 id=tc.get("id", ""),
+    #                 name=tc.get("name", ""),
+    #                 arguments=tc.get("arguments", {}),
+    #             ))
+    #     return result
+
+    async def execute(self, tool_call: Dict[str, Any],
+                      session_state: RuntimeSessionState | None = None) -> ToolResult:
         """
         统一执行工具的逻辑。
 
@@ -158,10 +210,10 @@ class ToolExecutor(BaseComponent):
             tool_input.setdefault("app_id", app_id)
 
         # 1. 查找工具
-        tool = next((t for t in self.tools_registry.tools if t.name == tool_name), None)
+        tool = next((t for t in get_app().tool_registry.tools if t.name == tool_name), None)
         if not tool:
             log.error(f"Unknown tool called: {tool_name}")
-            return {"error": f"未知工具：{tool_name}"}
+            return ToolResult(success=False, message=f"未知工具：{tool_name}")
 
         # 2. 工具执行 在工具执行内部已经做了异常处理了
         func = tool.executor
@@ -175,14 +227,3 @@ class ToolExecutor(BaseComponent):
 
         return result
 
-
-def get_tool_executor() -> ToolExecutor:
-    """取全局工具执行器"""
-    from codegenx.ai_service.system_app import get_app
-
-    return ToolExecutor.get_instance(get_app())
-
-
-def initialize_tools_executor(system_app) -> ToolExecutor:
-    """注册工具执行器组件（system_app.initialize_components 调用；在工具注册之后）。"""
-    return system_app.register(ToolExecutor, tools_registry=get_app().tool_registry)

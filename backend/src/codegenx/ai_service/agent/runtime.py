@@ -428,7 +428,7 @@ class AgentRuntime(BaseComponent):
     # ------------------------------------------------------------------ request execution
 
     def _spec_limits(self, session_state: RuntimeSessionState):
-        """P4 §10.3：会话归属智能体的 spec.limits（无归属/未配置/容器未启动 → None 走默认）。"""
+        """P4 §10.3：会话归属智能体的 AgentConfig（无归属/未配置/容器未启动 → None 走默认）。"""
         try:
             from codegenx.ai_service.system_app import get_app
 
@@ -436,7 +436,7 @@ class AgentRuntime(BaseComponent):
             if app.agents is None:
                 return None
             spec = app.agents.get(getattr(session_state, "agent_name", "") or "")
-            return spec.limits if spec is not None else None
+            return spec.cls.agent_config if spec is not None and spec.cls is not None else None
         except Exception:  # noqa: BLE001 — 限额解析失败回退默认值，不阻断对话
             return None
 
@@ -486,7 +486,6 @@ class AgentRuntime(BaseComponent):
                 state=activate_turn.state)
             log.debug("{},{},{}",request_id,activate_turn.step_counter," 发送事件 OnTurnStart")
             # 执行turn的任务
-            # 偏差③修复：spec.limits 主路径落地消费（原 max_steps 全库零生效）
             limits = self._spec_limits(session_state)
             effective_max_steps = (
                 int(limits.max_steps)
@@ -677,7 +676,6 @@ class AgentRuntime(BaseComponent):
         for tool_call in tool_calls:
             self._raise_if_stop_requested(session_state)
             turn_state.tool_iterations += 1
-            # 偏差③修复：spec.limits.max_tool_iterations 主路径消费
             limits = self._spec_limits(session_state)
             effective_max_tool_iterations = (
                 int(limits.max_tool_iterations)
