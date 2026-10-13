@@ -45,10 +45,9 @@ def get_openai_client(provider_name: str, provider_config: ProviderConfig) -> As
         api_key=provider_config.api_key.strip(),
         base_url=(provider_config.api_base or "").strip() or None,
         default_headers=provider_config.extra_headers or None,
-        # connect 收紧到 10s（F-2：5s 时实测两次 "Request timed out" 5.00s/5.06s 即
-        # connect 超时——checklist 归因 llm_stream_timeout_seconds 有误，该值实为 300s；
-        # 放宽可少一次重试往返）；read 放宽到 300s，兼容长思考模型在两个 chunk 之间的长间隔
-        timeout=httpx.Timeout(600.0, read=300.0, write=30.0, connect=10.0, pool=10.0),
+        # connect 放宽到 20s（实测冷启动 DNS 解析 ~11s，10s 会在 DNS 阶段直接超时）；
+        # read 放宽到 300s，兼容长思考模型在两个 chunk 之间的长间隔
+        timeout=httpx.Timeout(600.0, read=300.0, write=30.0, connect=20.0, pool=10.0),
         max_retries=0,
     )
     _clients[key] = client

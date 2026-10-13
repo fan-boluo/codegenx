@@ -2,10 +2,14 @@ import asyncio
 import contextlib
 import json
 from functools import lru_cache
+
+from openai.types.chat import ChatCompletionMessage
+
 from shared import log
 from typing import AsyncGenerator, Dict, Any, List, Optional
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.llm.client_registry import get_openai_client
+from codegenx.ai_service.llm.errors import classify_llm_error, LLMErrorClass
 
 
 def _safe_build_tool_calls(tool_calls_buffer: dict) -> list[dict[str, Any]]:
@@ -121,7 +125,7 @@ class AsyncLLMClient:
         tools: Optional[List[Dict]] = None,
         max_tokens: int = 2048,
         temperature: float = 0.0,
-    ) -> str:
+    ) -> dict[Any, Any]:
         kwargs = {
             "model": self.model_name,
             "messages": messages,
@@ -138,10 +142,10 @@ class AsyncLLMClient:
             if not completion.choices:
                 # 空 choices：与"模型返回空串"无法区分会掩盖内容过滤/上游异常，至少留痕
                 log.warning("[llm] model={} 返回空 choices", self.model_name)
-                return ""
+                return {}
 
             message = completion.choices[0].message
-            return message.content or ""
+            return message.to_dict() or {}
         except Exception as e:
             log.error(f"LLM Invoke Error: {e}")
             raise e

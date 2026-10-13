@@ -1,9 +1,36 @@
+from enum import Enum
+
+from pydantic import BaseModel
+
+from codegenx.ai_service.agent.action import Action, ActOutput
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
-from codegenx.ai_service.system_app import get_app
-from typing import Optional
-
 from shared import log
+
+
+class IntentionType(str, Enum):
+    """意图类型：四选一。"""
+    GREETING = "greeting"                 # 打招呼 / 问候
+    NEED_CONFIRM = "need_confirm"         # 信息有歧义，需向用户确认
+    CALL_PLANNER = "call_planner"         # 正常业务问题，交给 Planner 规划
+    UNABLE_ANSWER = "unable_answer"       # 无关 / 违规内容，直接拦截
+
+
+class IntentionOutput(BaseModel):
+    """意图识别输出（LLM 返回内容的解析结果）。"""
+    intent: IntentionType
+    ask_user: str = ""                    # 仅 need_confirm 时填写确认提问内容
+
+
+class IntentionAction(Action[IntentionOutput]):
+    """意图识别动作：解析 LLM 返回的 JSON 为 IntentionOutput，失败则中断动作链。"""
+
+    async def act(self, ai_message: ActOutput, session_state=None, **kwargs) -> ActOutput:
+        parsed = self.parse_ai_message(ai_message, IntentionOutput)
+        if parsed is None:
+            return ActOutput(success=False, message="意图识别结果解析失败（非合法 JSON）")
+        # mode="json" 将枚举值序列化为字符串，便于上游按字符串分情况处理
+        return ActOutput(success=True, output=parsed.model_dump(mode="json"))
 
 
 class IntentionRecognitionAgent(BaseReActAgent):
@@ -37,16 +64,12 @@ class IntentionRecognitionAgent(BaseReActAgent):
     确保输出仅有JSON，无多余文字，可被python json.loads加载。"""
     )
 
+    def __init__(self):
+        super().__init__()
+        # 注意：这里是实例而非类，act 是实例方法
+        self.actions = [IntentionAction()]
+
     async def _prepare_agent(self, session_state):
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
-        super()._prepare_agent(session_state)
+        await super()._prepare_agent(session_state)
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
-        # tools = self.agent_config.tools or []
-        # self.tools = await get_app().tool_registry.build_tools_with_name(tools)
-        #
-        # self.skill = None
-        # self.memory = None
-        # # 组合
-        # self.prompt = None
-
-

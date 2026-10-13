@@ -185,8 +185,7 @@ def config_memory_trigger():
 # ── Hook 监听器：记忆信号接入事件总线（docs/Hook设计.md §4.2） ───────────────
 
 
-@on(HookEvent.TURN_END, name="memory_turn_signal", priority=20,
-    depends_on=["persist_chat_snapshot"])
+@on(HookEvent.TURN_END, name="memory_turn_signal", priority=20)
 async def memory_turn_signal(ctx: HookContext) -> None:
     """本轮消息送入记忆提炼漏斗（P1-2，迁自 handlers._funnel_turn_signal）。
 

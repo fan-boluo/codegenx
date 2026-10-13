@@ -167,7 +167,7 @@ async def _call_llm_for_summary(messages: list[dict], chain: list[str]) -> str:
             msg["content"] = str(content)
 
     raw = await resilient_invoke(compact_messages, chain=chain, label="compact")
-    return format_compact_summary(raw)
+    return format_compact_summary(raw.get("content",""))
 
 
 async def _llm_compact(messages: list[dict], chain: list[str]) -> CompactResult | None:

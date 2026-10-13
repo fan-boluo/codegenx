@@ -1,41 +1,25 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 import asyncio
+from functools import lru_cache
 
 from codegenx.ai_service.agent.auto_plan_manager import AutoPlanManager
-from codegenx.ai_service.component import BaseComponent
-from codegenx.ai_service.schema.ai_schema import UserAIRequest
-from codegenx.ai_service.system_app import get_app
-from shared import log
 from contextlib import suppress
-import ast
-import json
-import time
-import traceback
 from datetime import datetime
 from typing import Any, AsyncGenerator
 from codegenx.ai_service.agent.agent_schema import  AgentEvent,AgentState,AgentEventType
-from codegenx.ai_service.agent.agents.agent import AgentMessage
-from codegenx.ai_service.agent.agents.intention_agent import IntentionRecognitionAgent
 from codegenx.ai_service.agent.runtime_schema import (
-    RuntimeSessionState,
-    TurnStoppedError, ActivateTurn,
+    RuntimeSessionState, ActivateTurn,
 )
 from codegenx.ai_service.component import BaseComponent, ComponentType
-from codegenx.ai_service.llm.async_client import get_llm
-from codegenx.ai_service.llm.llm_recovery import LLMRecovery
-from codegenx.ai_service.llm.resilience import get_breaker
-from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
-from codegenx.ai_service.utils.config import AgentConfig, config
+from codegenx.ai_service.hook import HookContext, HookEvent, hook_manager
 from codegenx.ai_service.system_app import get_app
 from shared import log
 from codegenx.ai_service.schema.ai_schema import UserAIRequest
-from codegenx.ai_service.compact.thresholds import estimate_tokens as _thresholds_estimate
-
 
 
 class ChatService(BaseComponent):
+    name = ComponentType.CHAT_SERVICE
     """薄壳：生命周期与引擎访问全部委托 SystemApp 全局容器（docs/SystemApp架构设计.md §3.3）。"""
     def __init__(
         self,
@@ -43,8 +27,6 @@ class ChatService(BaseComponent):
     ):
         # 容器约定首参：register 以 component(system_app) 构造实例（BaseComponent 规范）
         BaseComponent.__init__(self, system_app)
-
-        self.stop_grace_seconds = max(0.0, float(self.agent_config.session_stop_grace_seconds or 2.0))
 
         # 会话池为独立进程级组件（参数自读 config.session），此处仅取用
         self.session_pool = get_app().session_pool
@@ -126,7 +108,7 @@ class ChatService(BaseComponent):
         由 runtime 捕获 TurnStoppedError/CancelledError 时自行发布（runtime.py）。
         """
         result = await self.session_pool.stop_request(
-            session_id, request_id, reason=reason, grace_seconds=self.stop_grace_seconds
+            session_id, request_id, reason=reason
         )
         if result is None:
             log.info("stop_request 未命中活跃会话 sessionId={} requestId={}", session_id, request_id)
@@ -182,7 +164,7 @@ class ChatService(BaseComponent):
         随活跃请求一并停止；活跃请求的停止事件由 runtime 自行发布，待处理请求由此处补发。
         """
         result = await self.session_pool.stop_session(
-            session_id, reason=reason, grace_seconds=self.stop_grace_seconds
+            session_id, reason=reason
         )
         if result is None:
             log.info("stop_session 未命中活跃会话 sessionId={}", session_id)
@@ -248,8 +230,11 @@ class ChatService(BaseComponent):
 
             # Get or create session using pool (no lock needed)
             session_state, is_new = await self.session_pool.get_or_create(request)
+            # 会话起点须在 SESSION_START 钩子前就绪：监控监听器以 started_at 构建 SpanRecord（必填 datetime）
+            session_state.state = AgentState.RUNNING
+            session_state.started_at = datetime.utcnow()
             if is_new:
-                self.session_pool.init_session_state(session_state)
+                # self.session_pool.init_session_state(session_state)
                 await hook_manager.emit(
                     HookEvent.SESSION_START,
                     HookContext(event=HookEvent.SESSION_START, session=session_state),
@@ -269,9 +254,6 @@ class ChatService(BaseComponent):
                 )
             except Exception as exc:
                 log.warning("user 消息入库失败（不影响对话）: {}", exc)
-
-            session_state.state = AgentState.RUNNING
-            session_state.started_at = datetime.utcnow()
 
             # Add request to session pending queue and trigger processing
             await self._enqueue_session_request(session_state, request)
@@ -421,7 +403,6 @@ class ChatService(BaseComponent):
             "dispatcher_active": self._dispatcher_task is not None
             and not self._dispatcher_task.done(),
         }
-
 
 def initialize_chat_service(system_app) -> ChatService:
     """注册全局对话引擎组件（system_app.initialize_components 调用；

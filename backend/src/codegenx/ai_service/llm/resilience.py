@@ -230,7 +230,7 @@ async def resilient_invoke(
     tools: Optional[List[Dict]] = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
-) -> str:
+) -> dict[Any, Any]:
     """非流式调用：同模型退避重试 → 逐级 fallback（每级独立熔断）。
 
     chain：组件初始化时从自身配置解析出的模型链 [主模型, fallback...]；
@@ -255,11 +255,11 @@ async def resilient_invoke(
         for attempt in range(max_attempts + 1):
             try:
                 t0 = time.monotonic()
-                content = await get_llm(model).invoke(messages, **kwargs)
+                llm_response = await get_llm(model).invoke(messages, **kwargs)
                 await breaker.record_success()
                 _record_outcome(label, model, None)
                 _log_call(label, model, attempt, time.monotonic() - t0, "ok", fallback_used)
-                return content
+                return llm_response
             except asyncio.CancelledError:
                 raise  # 停止请求/任务取消：绝不重试
             except Exception as exc:

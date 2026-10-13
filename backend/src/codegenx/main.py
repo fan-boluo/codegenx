@@ -16,11 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from codegenx.ai_service.api.router import (
-    chat_router as ai_chat_router,
-    metrics_router,
-    monitor_router,
-)
+
 from codegenx.ai_service.api.memory_router import memory_admin_router
 from codegenx.app_service.router import router as app_router
 from codegenx.gateway.api.blacklist import router as blacklist_router
@@ -55,7 +51,7 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动 SystemApp 全局容器（hook 冻结/基础设施/注册表/runtime/后台任务，docs/SystemApp架构设计.md §3.3）
-    from codegenx.ai_service.system_app import get_app, init_app, start_app, stop_app
+    from codegenx.ai_service.system_app import  init_app, start_app, stop_app
     # 两段式启动：init_app 注册组件+广播同步钩子；start_app 在事件循环内完成异步启动
     app = init_app()
     await start_app(app)
@@ -141,6 +137,11 @@ def create_app() -> FastAPI:
             content=error(ErrorCode.SYSTEM_ERROR.get_code(), "系统错误").model_dump(by_alias=True),
         )
 
+    from codegenx.ai_service.api.router import (
+        chat_router as ai_chat_router,
+        metrics_router,
+        monitor_router,
+    )
     app.include_router(health_router, prefix=settings.app_base_path)
     app.include_router(user_router, prefix=settings.app_base_path)
     app.include_router(app_router, prefix=settings.app_base_path)

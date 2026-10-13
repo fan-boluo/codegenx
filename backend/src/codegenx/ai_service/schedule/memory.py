@@ -619,13 +619,14 @@ class MemoryScheduler(BaseComponent):
             if self._online_busy is not None and self._online_busy():
                 # 在线对话优先：短暂让位后再调用（只延迟一次，不无限等待）
                 await asyncio.sleep(1.0)
-            return await resilient_invoke(
+            llm_response = await resilient_invoke(
                 messages,
                 chain=self._model_chain,
                 label="memory",
                 max_tokens=max_tokens,
                 temperature=0.0,
             )
+            return llm_response.get("content","")
 
 
 # === 全局单例 ===

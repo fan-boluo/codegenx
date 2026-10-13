@@ -39,7 +39,7 @@ from codegenx.ai_service.monitor.schema.monitor import (
 )
 from shared.utils.result_utils import success
 
-chat_service = get_app().chat_service
+
 
 # ── 对话 / 会话历史 ──────────────────────────────────────────
 
@@ -61,7 +61,7 @@ async def generate_code_stream(
     request.user_id = str(login_user.user_id)
     trace_id, request_id, session_id = _validate_call_context(request)
     ctx = HookContext(event=HookEvent.ON_USER_INPUT,data={"user_input":request.message})
-    res = hook_manager.emit(HookEvent.ON_USER_INPUT,ctx)
+    res = await hook_manager.emit(HookEvent.ON_USER_INPUT,ctx)
     if res.action == HookAction.BLOCKED:
         raise BusinessException(ErrorCode.FORBIDDEN_ERROR, str(res.message))
     log.info(
@@ -74,7 +74,7 @@ async def generate_code_stream(
     )
     log.info("ai-service public stream request {} ", request.model_dump_json())
     try:
-        stream = chat_service.stream_message(request)
+        stream = get_app().chat_service.stream_message(request)
         async def event_stream():
             async for chunk in stream:
                 yield chunk
@@ -108,7 +108,7 @@ async def stop_code_stream(
         request.reason,
     )
     try:
-        result = await chat_service.stop_request(
+        result = await get_app().chat_service.stop_request(
             app_id=request.app_id,
             user_id=user_id,
             session_id=session_id,

@@ -62,7 +62,7 @@ class ToolRegistry(BaseComponent):
             except Exception as e:
                 log.error(f"导入失败 {file_path}: {e}")
         # 注册时即排除不启用的工具（config.tools.excluded），build_tool 直接构建无需再过滤
-        excluded_names = {str(n).strip() for n in (self.config.tool_registry.excluded or [])}
+        excluded_names = {str(n).strip() for n in (self.config.tools.excluded or [])}
         for tool_cls in classes:
             try :
                 tool_instance = tool_cls()

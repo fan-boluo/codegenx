@@ -1,25 +1,29 @@
+import asyncio
+
 from pydantic import BaseModel
-from sqlalchemy.connectors import asyncio
 
-from codegenx import __main__
-from codegenx.ai_service.agent.action import Action
+from codegenx.ai_service.agent.action import Action, ActOutput
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
-from codegenx.ai_service.agent.tool_executor import ToolExecutor
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
-from codegenx.ai_service.system_app import get_app
-from typing import Optional, Any
+from shared import log
 
-from shared.utils.log_util import log
 
-class SqlExe(BaseModel):
+class SqlActionInput(BaseModel):
+    """SQL 分析动作的输入（LLM 返回内容的解析结果）。"""
     database: str = ""
     sql: str = ""
 
 
-class SQLAction(Action):
+class SQLAction(Action[SqlActionInput]):
+    """SQL 分析动作：解析 LLM 返回的 JSON 为 SqlActionInput，失败则中断动作链。"""
 
-    def act(self, ai_message: Any, **kwargs) -> Any:
-        self.parse_ai_message(ai_message, SqlExe)
+    async def act(self, ai_message: ActOutput, session_state=None, **kwargs) -> ActOutput:
+        parsed = self.parse_ai_message(ai_message, SqlActionInput)
+        if parsed is None:
+            return ActOutput(success=False, message="SQL 解析失败（非合法 JSON）")
+        if not parsed.sql.strip():
+            return ActOutput(success=False, message="SQL 为空，无法分析")
+        return ActOutput(success=True, output=parsed.model_dump(mode="json"))
 
 
 class DateExploreAgent(BaseReActAgent):
@@ -45,16 +49,22 @@ class DateExploreAgent(BaseReActAgent):
         resource_prompt="你可以查询的database及数据表schema如下:{{database_info}}",
         expand_prompt="",
         examples="",
-        out_schema="",
+        out_schema="""请严格按如下JSON格式输出：
+{
+    "database": "要查询的database名称",
+    "sql": "一条完整、可执行的SQL语句"
+}
+确保输出仅有JSON，无多余文字，可被python json.loads加载。""",
     )
 
     def __init__(self):
         super().__init__()
-        self.actions = [SQLAction]
+        # 注意：这里是实例而非类，act 是实例方法
+        self.actions = [SQLAction()]
 
     def _prepare_prompt_params(self) -> dict:
         return {
-            "type":"mysql",
+            "type": "mysql",
             "database_info":
             """
             database:prj_ec (电商)
@@ -85,26 +95,15 @@ CREATE TABLE orders (
             """
         }
 
-
-
     async def _prepare_agent(self, session_state):
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
         await super()._prepare_agent(session_state)
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
-        # tools = self.agent_config.tools or []
-        # self.tools = await get_app().tool_registry.build_tools_with_name(tools)
-        #
-        # self.skill = None
-        # self.memory = None
-
-
-
-
 
 
 if __name__ == "__main__":
     from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
-    import asyncio
+
     def _make_session_state() -> RuntimeSessionState:
         """构造一个最小可用的 RuntimeSessionState（只需 session_id + request）。"""
         from codegenx.ai_service.schema.ai_schema import UserAIRequest
@@ -120,10 +119,8 @@ if __name__ == "__main__":
         return RuntimeSessionState(session_id="test-session", request=request)
 
     async def test():
-
         agent = DateExploreAgent()
         agent.resolve_agent_config()
-
         await agent._prepare_agent(session_state=_make_session_state())
 
     asyncio.run(test())

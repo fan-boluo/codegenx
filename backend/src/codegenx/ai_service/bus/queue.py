@@ -23,14 +23,16 @@ class MessageBus(BaseComponent):
     """
     name = ComponentType.MESSAGE_BUS
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, system_app=None) -> None:
+        BaseComponent.__init__(self, system_app)
         self.inbound: asyncio.Queue[Any] = asyncio.Queue()
         # self.outbound: asyncio.Queue[Any] = asyncio.Queue()
         self._request_subscribers: dict[str, set[asyncio.Queue[Any]]] = defaultdict(set)
         # agent 间通信通道：name -> 收件箱（与 request 事件流正交，控制面）
         self._agent_channels: dict[str, asyncio.Queue[Any]] = {}
 
+    def init_app(self, system_app) -> None:
+        self.system_app = system_app
     # ------------------------------------------------------------------ agent messaging
 
     def register_agent(self, agent_name: str) -> asyncio.Queue[Any]:

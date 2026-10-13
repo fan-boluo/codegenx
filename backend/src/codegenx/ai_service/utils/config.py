@@ -403,7 +403,7 @@ class SessionConfig(Base):
     idle_timeout_seconds: int = Field(default=1800)  # session 空闲 30 分钟即清除
     cleanup_interval_seconds: int = Field(default=300)  # 每隔 5 分钟进行一次闲置 session 清理
     swap_idle_seconds: int = Field(default=300)  # P3：闲置超过该秒数且无在途任务的会话卸载 chat_messages（须远小于 idle_timeout_seconds）
-
+    grace_stop_seconds: int = Field(default=2.0)  # session中任务优雅停止时间
 
 class MultiAgentsConfig(Base):
     """多Agent参数。"""

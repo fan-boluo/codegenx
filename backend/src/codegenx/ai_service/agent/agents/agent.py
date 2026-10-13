@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
 from codegenx.ai_service.compact.session_summary import SummaryState
 from codegenx.ai_service.context.context_service import TurnPrompts
+from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 
 
 class Agent(ABC):
@@ -18,6 +19,7 @@ class Agent(ABC):
     """
     name: str = ""
     agent_config: Any = None  # 由 resolve_agent_config() 类方法填充
+    profile: PromptConfig = None
 
     @abstractmethod
     async def run(self, session_state) -> "AgentMessage":
@@ -41,7 +43,7 @@ class Agent(ABC):
         """Send a message to another agent (recipient 为对方 role，"*" 广播)."""
 
     @abstractmethod
-    async def act(self,ai_message: Any,session_state:RuntimeSessionState, **kwargs):
+    async def act(self,ai_message: dict[str, Any],session_state:RuntimeSessionState, **kwargs):
         """Perform actions."""
 
     @abstractmethod

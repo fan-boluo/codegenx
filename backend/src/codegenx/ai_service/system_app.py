@@ -188,40 +188,56 @@ def initialize_components(app: SystemApp) -> None:
         return
 
     from codegenx.ai_service.llm.facade import initialize_llm
-    from codegenx.ai_service.agent.tool_handler import initialize_tools
-    from codegenx.ai_service.skill.skill_loader import initialize_skill
-    from codegenx.ai_service.agent.agent_registry import initialize_agents
-    from codegenx.ai_service.agent.agent_instances import initialize_agent_instances
-    from codegenx.ai_service.context.context_service import initialize_context
-    from codegenx.ai_service.chat_message.persist import initialize_session_io
-    from codegenx.ai_service.task.task_manager import initialize_tasks
-    from codegenx.ai_service.memory.memory_manager import initialize_memory
-    from codegenx.ai_service.compact.session_summary import initialize_summary
-    from codegenx.ai_service.compact.compact import initialize_compaction
-    from codegenx.ai_service.chat_message.store import initialize_chat_messages
-    from codegenx.ai_service.bus.queue import initialize_message_bus
-    from codegenx.ai_service.monitor.monitor_pipeline import initialize_monitor
-    from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
-    from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
-    from codegenx.ai_service.session.session_pool import initialize_session_pool
-    from codegenx.ai_service.services.chat_service import initialize_chat_service
-
     initialize_llm(app)
+
+    from codegenx.ai_service.agent.tool_handler import initialize_tools
     initialize_tools(app)
+
+    from codegenx.ai_service.skill.skill_loader import initialize_skill
     initialize_skill(app)
+
+    from codegenx.ai_service.agent.agent_registry import initialize_agents
     initialize_agents(app)
+
+    from codegenx.ai_service.agent.agent_instances import initialize_agent_instances
+
+    from codegenx.ai_service.context.context_service import initialize_context
     initialize_context(app)
+
+    from codegenx.ai_service.chat_message.persist import initialize_session_io
     initialize_session_io(app)
+
+    from codegenx.ai_service.task.task_manager import initialize_tasks
     initialize_tasks(app)
+
+    from codegenx.ai_service.memory.memory_manager import initialize_memory
     initialize_memory(app)
+
+    from codegenx.ai_service.compact.session_summary import initialize_summary
     initialize_summary(app)
+
+    from codegenx.ai_service.compact.compact import initialize_compaction
     initialize_compaction(app)
+
+    from codegenx.ai_service.chat_message.store import initialize_chat_messages
     initialize_chat_messages(app)
+
+    from codegenx.ai_service.bus.queue import initialize_message_bus
     initialize_message_bus(app)
+
+    from codegenx.ai_service.monitor.monitor_pipeline import initialize_monitor
     initialize_monitor(app)
+
+    from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
     initialize_monitor_maintenance(app)
+
+    from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
     initialize_memory_scheduler(app)
+
+    from codegenx.ai_service.session.session_pool import initialize_session_pool
     initialize_session_pool(app)
+
+    from codegenx.ai_service.services.chat_service import initialize_chat_service
     initialize_chat_service(app)
 
     # 智能体实例化与规格注册：所有组件已就绪（尤其 message_bus / tool_registry / skill_manager），

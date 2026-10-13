@@ -8,13 +8,13 @@ from typing import Any, List
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, raise_if_stop_signal
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import LLMRecovery
-from codegenx.ai_service.llm.resilience import get_breaker
+from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.utils.config import AgentConfig, config
 from codegenx.ai_service.system_app import get_app
 from shared import log
 from codegenx.ai_service.agent.agents.agent import Agent, AgentContext, AgentMessage
 
-from codegenx.ai_service.agent.action import Action
+from codegenx.ai_service.agent.action import Action, ActOutput
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 
 
@@ -52,6 +52,9 @@ class BaseReActAgent(Agent):
         # 保留子类定义的 profile；仅未设置时兜底为空 PromptConfig
         if not getattr(self, "profile", None):
             self.profile: PromptConfig = PromptConfig()
+        # 气注收件箱：agent 实例一旦构造即拥有 inbox，外部（manager/上游 agent）
+        # 可先 send 再 run；不再依赖 receive 时才注册（会导致先 send 后 receive 丢失消息）
+        self._ensure_inbox()
         log.info(f"初始化agent: {self.agent_name} 完成")
 
 
@@ -84,9 +87,9 @@ class BaseReActAgent(Agent):
         registry = get_app().agents
         spec = AgentSpec(
             id=cls.agent_config.id or cls.agent_config.name,
-            role=cls.agent_config.role,
-            name=cls.agent_config.name,
-            desc=cls.agent_config.desc,
+            role=cls.profile.role,
+            name=cls.profile.name,
+            desc=cls.profile.desc,
             cls=cls,
         )
         registry.register_spec(spec)
@@ -165,63 +168,66 @@ class BaseReActAgent(Agent):
     # ------------------------------------------------------------------ ReAct lifecycle
 
     @staticmethod
-    def _extract_task_text(message: AgentMessage | None, session_state: RuntimeSessionState) -> str:
-        """从接收消息或用户请求中提取任务文本。"""
-        if message is not None:
-            text = (message.message or "").strip()
-            if not text:
-                payload = message.payload or {}
-                text = str(payload.get("task") or payload.get("goal") or "").strip()
-            if text:
-                return text
-        request = session_state.request
-        return str(getattr(request, "message", "") or "").strip() if request else ""
+    def _extract_task_text(message: AgentMessage | None) -> str:
+        """从接收消息提取任务文本。唯一来源为 receive()，无 session_state.request 兜底——
+        agent 不再"双源"取数，未收到消息即为空任务（verify 阶段判失败）。
+        """
+        if message is None:
+            return ""
+        text = (message.message or "").strip()
+        if not text:
+            payload = message.payload or {}
+            text = str(payload.get("task") or payload.get("goal") or "").strip()
+        return text
 
 
 
-    async def think(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    async def think(self, messages: list[dict[str, Any]]) -> dict[Any, Any]:
         """思考：调用 LLM 推理，返回 {content, tool_calls}（子类可覆盖定制提示词/工具策略）。"""
-        llm = get_llm(self.model_name)
-        completion = await llm.client.chat.completions.create(
-            model=llm.model_name,
+        llm_response = await resilient_invoke(
             messages=messages,
+            chain = [self.model_name],
+            label="agent",
             tools=self.tools or None,
             temperature=self.agent_config.temperature,
             max_tokens=self.agent_config.max_tokens,
         )
-        if not completion.choices:
-            log.warning("agent think: {} LLM 返回空 choices", self.agent_name)
-            return {"content": "", "tool_calls": []}
-        message = completion.choices[0].message
-        tool_calls: list[dict[str, Any]] = []
-        for tc in (message.tool_calls or []):
-            try:
-                arguments = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                if not isinstance(arguments, dict):
-                    arguments = {"_raw": arguments}
-            except (json.JSONDecodeError, TypeError):
-                log.warning("agent think: {} 工具参数解析失败: {}", self.agent_name, tc.function.arguments)
-                arguments = {"_raw": tc.function.arguments}
-            tool_calls.append({"id": tc.id, "name": tc.function.name, "arguments": arguments})
-        return {"content": message.content or "", "tool_calls": tool_calls}
 
-    async def act(self, ai_message: Any,session_state:RuntimeSessionState, **kwargs) -> Any:
-        """行动：遍历 self.actions 链式执行，上一个结果传给下一个，返回最后一个结果。
 
-        ai_message 首个 Action 收到 think() 的返回 {"content","tool_calls"}；
-        后续 Action 收到上一个 Action 的返回值。
+        return llm_response
+
+    async def act(self, llm_response: dict[str, Any], session_state: RuntimeSessionState, **kwargs) -> ActOutput:
+        """行动：遍历 self.actions 链式执行，上一环的 ActOutput 作为下一环的输入。
+
+        - 链路首环输入由 think() 原始返回封装（ActOutput(success=True, output=llm_response)），
+          之后各环输入即上一环的返回，类型全程统一为 ActOutput。
+        - 任一 Action 返回 success=False 时立即中断，后续 Action 不再执行，
+          并整体返回该失败的 ActOutput（由 run 交给调用方判断）。
         """
-        last_result = ai_message
+        if not self.actions:
+            log.warning(f"Agent {self.agent_name} 未设置action，返回原始llm response")
+            return ActOutput(success=True, output=llm_response,message=f"Agent {self.agent_name} 未设置action，返回原始llm response")
+
+        last_result = ActOutput(success=True, output=llm_response)
         for action in self.actions:
             raise_if_stop_signal(session_state)
-            last_result = await action.act(ai_message=last_result, **kwargs)
-            log.info("agent act: {} action={} 完成", self.agent_name, type(action).__name__)
+            last_result = await action.act(
+                ai_message=last_result, session_state=session_state, **kwargs
+            )
+            log.info("agent act: {} action={} success={}", self.agent_name, type(action).__name__, last_result.success)
+            if not last_result.success:
+                log.warning("agent act: {} action={} 执行失败，中断动作链: {}",
+                            self.agent_name, type(action).__name__, last_result.message)
+                
+                break
         return last_result
 
-    async def verify(self, final_text: str, messages: list[dict[str, Any]]) -> tuple[bool, str]:
+    async def verify(self, final_text: str, messages: list[dict[str, Any]],act_output:ActOutput) -> tuple[bool, str]:
         """验证：检查最终结果是否可用（子类可覆盖定制校验规则）。返回 (ok, reason)。"""
         if not (final_text or "").strip():
             return False, "最终结果为空"
+        if act_output is not None and not act_output.success:
+            return False, act_output.message or "action 执行失败"
         return True, ""
 
     async def run(self, session_state: RuntimeSessionState) -> AgentMessage:
@@ -233,14 +239,15 @@ class BaseReActAgent(Agent):
         参数:
             session_state: 运行时会话状态，携带 request/session/user 等标识。
         """
-        # 1. 准备 agent 上下文与收件箱
+        # 1. 准备 agent 上下文（inbox 已在 __init__ 气注，此处仅组装 prompt/工具）
         await self._prepare_agent(session_state)
 
-        # 2. 获取接收的消息（用户消息经 runtime 投递，或上游 agent 发送）
+        # 2. 唯一输入源：receive。manager/上游 agent 必须先 send 再调 run，
+        #    否则 task_text 为空，verify 阶段判失败。timeout=0 非阻塞，避免卡死 stop。
         message = await self.receive(timeout=0)
         request_id = (message.request_id if message else "") or session_state.request_id
-        task_text = self._extract_task_text(message, session_state)
-        log.info("agent run 开始: {} | request_id={} | task={}", self.agent_name, request_id, task_text)
+        task_text = self._extract_task_text(message)
+        log.info("agent run 开始: {} | request_id={} | task_len={}", self.agent_name, request_id, len(task_text))
 
         # 3. 组装本地对话消息（仅内存，不落库）
         messages: list[dict[str, Any]] = [
@@ -251,11 +258,15 @@ class BaseReActAgent(Agent):
         # 4. ReAct 循环：think → act，直到无工具调用或达到 max_steps
         step = 0
         final_text = ""
+        act_output: ActOutput | None = None
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
             step += 1
             log.info("agent run: {} step {}/{} think 开始", self.agent_name, step, self.max_steps)
             response = await self.think(messages)
+            if not response:
+                messages.append({"role": "assistant", "content": self.profile.retry_goal})
+                continue
             final_text = str(response.get("content") or "")
             tool_calls = response.get("tool_calls") or []
             log.info("agent run: {} step {}/{} think 结束 | content_len={} tool_calls={}",
@@ -275,17 +286,19 @@ class BaseReActAgent(Agent):
                     for tc in tool_calls
                 ]
             messages.append(assistant_message)
+
+            # act：链式执行 actions，失败（success=False）则中断本轮并结束运行
+            act_output = await self.act(response, session_state=session_state)
+            if not act_output.success:
+                log.warning("agent run: {} action 链执行失败: {}", self.agent_name, act_output.message)
+                break
             if not tool_calls:
                 break
-            # act：遍历 actions 链式执行，结果回写本地对话
-            act_result = await self.act(response, session_state=session_state)
-            if isinstance(act_result, list):
-                messages.extend(act_result)
         else:
             log.warning("agent run: {} 达到 max_steps={}，强制结束", self.agent_name, self.max_steps)
 
-        # 5. verify：校验最终结果
-        ok, reason = await self.verify(final_text, messages)
+        # 5. verify：校验最终结果；action 失败也计入失败
+        ok, reason = await self.verify(final_text, messages,act_output)
         log.info("agent run 结束: {} | request_id={} | steps={} | ok={} | reason={}",
                  self.agent_name, request_id, step, ok, reason)
 
@@ -294,7 +307,11 @@ class BaseReActAgent(Agent):
             sender=self.agent_name,
             recipient="",
             message_type="result_return",
-            payload={"result": final_text},
+            payload={
+                "result": final_text,
+                # 结构化的 action 解析结果（dict），供上游 / manager 分情况处理
+                "output": act_output.output if act_output is not None else None,
+            },
             request_id=request_id,
             session_id=session_state.session_id,
             success=ok,

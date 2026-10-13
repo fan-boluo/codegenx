@@ -40,6 +40,7 @@ class SessionPool(BaseComponent):
         self.idle_timeout_seconds = int(session_cfg.idle_timeout_seconds or 1800)
         self.cleanup_interval_seconds = int(session_cfg.cleanup_interval_seconds or 300)
         self.swap_idle_seconds = int(session_cfg.swap_idle_seconds or 300)
+        self.grace_stop_seconds = int(session_cfg.grace_stop_seconds or 2.0)
 
         # OrderedDict maintains insertion order for LRU tracking
         self._sessions: OrderedDict[str, Any] = OrderedDict()
@@ -137,6 +138,8 @@ class SessionPool(BaseComponent):
                 agent_name=session.agent_name,
             )
 
+            # 上次聊天消息到chat_message??
+
             # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体）
             session.agent_name = str((getattr(request, "metadata", None) or {}).get("agent_name", "") or "")
 
@@ -175,7 +178,6 @@ class SessionPool(BaseComponent):
         request_id: str,
         *,
         reason: str = "user-stop",
-        grace_seconds: float = 2.0,
     ) -> dict[str, Any] | None:
         """停止单个请求：活跃任务经 stop_signal 触发 TurnStoppedError，待处理请求从队列丢弃。
 
@@ -223,11 +225,11 @@ class SessionPool(BaseComponent):
         # 超时（如 LLM 调用在飞）则留给下一个 raise_if_stop_signal 检查点处理，
         # SSE 侧 _wait_for_request_cleanup 会一直等到任务真正出队。
         if stopped_task is not None:
-            await asyncio.wait([stopped_task], timeout=grace_seconds)
+            await asyncio.wait([stopped_task], timeout=self.grace_stop_seconds)
             if not stopped_task.done():
                 log.warning(
                     "stop_request 任务 {} 在 {}s grace 内未停止，交给下一个检查点处理"
-                    "（如需立即终止请调用 stop_session）", target, grace_seconds,
+                    "（如需立即终止请调用 stop_session）", target, self.grace_stop_seconds,
                 )
 
         # Phase 3：仅在任务确已结束时兜底清信号（worker finally 也会清），

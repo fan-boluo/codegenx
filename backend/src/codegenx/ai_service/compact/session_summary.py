@@ -273,7 +273,7 @@ class SessionSummaryService(BaseComponent):
             max_tokens=4096,
         )
 
-        if not updated_notes or not updated_notes.strip():
+        if not updated_notes or not updated_notes.get("content","").strip():
             # 校验闸（句法层）：空输出 = 无效结果 → 兜底保留旧笔记（异步可重算，等下次阈值触发）
             log.warning("[summary] 摘要输出为空，保留旧笔记兜底")
             return current_notes if current_notes else ""
