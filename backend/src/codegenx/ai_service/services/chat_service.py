@@ -355,6 +355,7 @@ class ChatService(BaseComponent):
                         session_state.stop_reason = ""
                         session_state.close_signal.set()  # 通知 _wait_for_request_cleanup
                     session_state.touch()
+                    log.info("{} finished",request.request_id)
         finally:
             async with session_state.request_lock:
                 # Only clear processing/worker_task if this is the task that set them.

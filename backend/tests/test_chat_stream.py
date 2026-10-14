@@ -153,5 +153,6 @@ def main() -> None:
 if __name__ == "__main__":
     account = "boluo"
     password = "boluo123"
-    user_message = "hello"
+    # user_message = "hello"
+    user_message = "2022年卖出了多少件产品"
     main()

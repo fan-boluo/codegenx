@@ -9,7 +9,6 @@ from shared import log
 from typing import AsyncGenerator, Dict, Any, List, Optional
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.llm.client_registry import get_openai_client
-from codegenx.ai_service.llm.errors import classify_llm_error, LLMErrorClass
 
 
 def _safe_build_tool_calls(tool_calls_buffer: dict) -> list[dict[str, Any]]:

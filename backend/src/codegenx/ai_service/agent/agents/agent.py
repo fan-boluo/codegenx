@@ -98,8 +98,7 @@ class AgentMessage(BaseModel):
     recipient: str = ""            # 接收方 name，"*" 表示广播
     message_type: str = ""         # task_assign / result_return / intent_result / plan_ready ...
     payload: dict[str, Any] = {}   # 业务数据
+    message: str = ""  # 文本摘要
     request_id: str = ""           # 任务关联 ID（复用请求 ID）
     session_id: str = ""
     success: bool = True
-    message: str = ""              # 文本摘要
-    next_agent: str | None = None  # 路由建议（如 intent 识别后指定下一 agent name）

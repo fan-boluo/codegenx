@@ -83,7 +83,7 @@ class PlannerAgent(BaseReActAgent):
 
     def _prepare_prompt_params(self) -> dict:
         selected = []
-        for spec in get_app().agents._all_specs():
+        for spec in get_app().agents.all_specs():
             if spec.role in ["planner", "intent_recognition"]:
                 continue
             else:

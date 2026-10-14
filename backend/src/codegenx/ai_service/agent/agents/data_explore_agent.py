@@ -34,7 +34,7 @@ class DateExploreAgent(BaseReActAgent):
         role="Data Analyst",
         name="data_explore",  # 和config里面的对应
         goal="根据提供的database信息，使用正确的{{type}} SQL，分析用户输入",
-        desc="数据数据库资源进行sql数据分析",
+        desc="根据数据库资源进行sql数据分析",
         is_retry_chat=False,
         retry_goal="",
         retry_constraints=[],
