@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -22,11 +24,11 @@ class Agent(ABC):
     profile: PromptConfig = None
 
     @abstractmethod
-    async def run(self, msg:AgentMessage,session_state: RuntimeSessionState) -> "AgentMessage":
+    async def run(self, msg: AgentMessage, session_state: RuntimeSessionState) -> AgentMessage:
         """Generate a reply based on the received messages."""
 
     @abstractmethod
-    async def receive(self, msg:AgentMessage,session_state: RuntimeSessionState) -> "AgentMessage | None":
+    async def receive(self, msg: AgentMessage, session_state: RuntimeSessionState) -> AgentMessage | None:
         """Receive a message from another agent or the user.
 
         timeout=None 阻塞等待；timeout=0 非阻塞，无消息返回 None。
@@ -42,20 +44,20 @@ class Agent(ABC):
         """Send a message to another agent (recipient 为对方 role，"*" 广播)."""
 
     @abstractmethod
-    async def act(self,llm_response: dict[str, Any], session_state: RuntimeSessionState,
+    async def act(self, llm_response: dict[str, Any], session_state: RuntimeSessionState,
                   **kwargs) -> ActOutput:
         """Perform actions."""
 
     @abstractmethod
-    async def think(self,messages: list[dict[str, Any]]) -> dict[Any, Any]:
+    async def think(self, messages: list[dict[str, Any]]) -> dict[Any, Any]:
         """Think and reason about the current task goal."""
 
     @abstractmethod
-    async def verify(self,observation:AgentMessage)-> tuple[bool, str]:
+    async def verify(self, observation: AgentMessage) -> tuple[bool, str]:
         """Verify whether the current execution results meet the target expectations."""
 
     @abstractmethod
-    async def observation(self,msg: AgentMessage, act_output: ActOutput,llm_response:dict[Any, Any]) -> AgentMessage:
+    async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:
         """  action之后的操作，根据action的结果决定下一步操作"""
     # ------------------------------------------------------------------ 类方法：配置解析与注册
 
@@ -96,8 +98,8 @@ class MessagePayload(BaseModel):
 
 class NextMessageModel(BaseModel):
     next_agent:str = ""
-    message: str = ""
-    metadata: dict[str, Any] = {}
+    message: str = ""  # 给下一个agent看的任务
+    metadata: dict[str, Any] = {}  # 执行结果和附带的其它信息
 
 class AgentMessage(BaseModel):
     """Agent 间消息（控制面）：任务分配、结果返回、意图路由等。

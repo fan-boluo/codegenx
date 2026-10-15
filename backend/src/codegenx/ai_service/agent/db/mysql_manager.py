@@ -78,19 +78,6 @@ def _check_sql_safety(sql: str) -> None:
         raise ValueError("SQL 包含禁止的写操作/DDL 关键字")
 
 
-def resolve_sample_ratio(estimated_rows: int) -> tuple[float, str | None]:
-    """根据估算行数返回采样率。返回 (ratio, note)。"""
-    if estimated_rows <= 0:
-        return 1.0, None
-    if estimated_rows > HUGE_TABLE_ROWS:
-        return 0.01, f"采样率 1%，全量约 {estimated_rows // 10000} 万行"
-    if estimated_rows > VERY_LARGE_TABLE_ROWS:
-        return 0.10, f"采样率 10%，全量约 {estimated_rows // 10000} 万行"
-    if estimated_rows > LARGE_TABLE_ROWS:
-        return 0.30, f"采样率 30%，全量约 {estimated_rows // 10000} 万行"
-    return 1.0, None
-
-
 class MysqlManager:
     """MySQL 只读连接管理。"""
 
@@ -191,15 +178,11 @@ _manager: MysqlManager | None = None
 def get_mysql_manager() -> MysqlManager:
     global _manager
     if _manager is None:
-        from codegenx.ai_service.utils.config import config
-        c = config.tool_registry.mysql
+        from shared import settings
         _manager = MysqlManager(MysqlConfig(
-            host=c.host,
-            port=c.port,
-            user=c.user,
-            password=c.password,
-            databases=list(c.databases) if c.databases else None,
-            pool_size=c.pool_size,
-            connect_timeout=c.connect_timeout,
+            host=settings.userdb_mysql_host,
+            port=settings.userdb_mysql_port,
+            user=settings.userdb_mysql_user,
+            password=settings.userdb_mysql_password
         ))
     return _manager

@@ -92,6 +92,12 @@ class RuntimeSessionState:
     stop_reason: str = ""
     worker_task: asyncio.Task | None = None  # 一个携程任务
 
+    # ── Supervisor 编排上下文（每次请求独立，存在 session_state 上避免跨请求泄漏） ──
+    # plan: Planner 产出的计划 dict {goal, steps:[{step_id, agent, task, ...}]}
+    # history: 子 agent 执行历史 [{agent, task, success, result}]
+    # current_step: 当前正在执行的 step_id
+    supervisor_ctx: dict[str, Any] = field(default_factory=dict)
+
 
     def touch(self) -> None:
         self.last_activity_at = time.time()

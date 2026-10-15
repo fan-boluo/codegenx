@@ -1,10 +1,12 @@
-from pydantic import BaseModel
+import json as _json
 
+from pydantic import BaseModel
+from typing import Any
 from codegenx.ai_service.agent.action import Action, ActOutput
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from codegenx.ai_service.system_app import get_app
-
+from codegenx.ai_service.agent.agents.agent import AgentMessage, NextMessageModel
 from shared import log
 
 
@@ -32,6 +34,8 @@ class PlanAction(Action[PlanOutput]):
             return ActOutput(success=False, message="任务规划结果解析失败（非合法 JSON）")
         if not parsed.steps:
             return ActOutput(success=False, message="任务规划结果为空（steps 为空列表）")
+        # 验证agent是否存在
+        log.debug("【PlanAction】 结果：{}", parsed.model_dump())
         return ActOutput(success=True, output=parsed.model_dump(mode="json"))
 
 
@@ -44,6 +48,7 @@ class PlannerAgent(BaseReActAgent):
         name="planner",
         goal="理解下面每一个智能体及其能力，依托提供的资源，通过协调各个智能体来解决用户问题。"
              "请利用大模型自身的知识与理解能力，领会用户问题的意图与目标，生成一份**无需用户协助、可依靠多个智能体协作完成**的任务方案。",
+        desc="复杂任务制定计划，需要多次调用agent的任务编排",
         is_retry_chat=False,
         retry_goal="",
         retry_constraints=[],
@@ -103,3 +108,46 @@ class PlannerAgent(BaseReActAgent):
         self.memory = None
         # 组合
         self.prompt = None
+
+    async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:
+        """观察 PlanAction 结果，决定重试还是返回给调用方。
+
+        Planner 是纯规划器：think → PlanAction 产出 plan → 序列化 JSON 返回调用方。
+        ReAct 流程（通常 1 步）：
+          step 1  think → LLM 生成 PlanOutput JSON
+                 act   → PlanAction 解析 + 校验
+                 ── 成功 → next_agent=msg.sender（supervisor），message.task=plan JSON
+                 ── 失败 → messages 追加错误提示，继续 try（最多 max_steps 次）
+        """
+        caller = msg.sender or "user"
+        msg.output = act_output.model_dump(mode="json")
+
+        if not act_output.success:
+            # ── 规划失败：让 LLM 重试（最多 max_steps 次） ──
+            log.warning("Planner observation: 规划失败，让 LLM 重试：{}", act_output.message)
+            self._messages.append({
+                "role": "user",
+                "content": (
+                    f"上一次生成的任务规划无效，请重新输出正确的 JSON。\n"
+                    f"失败原因：{act_output.message}\n"
+                    f"请确保 goal 和 steps 完整，steps 不能为空列表。"
+                ),
+            })
+            msg.success = False
+            return msg
+
+        # ── 规划成功：序列化 JSON 返回给调用方 ──
+        plan_dict = act_output.output  # dict: {goal, steps}
+        try:
+            plan_json = _json.dumps(plan_dict, ensure_ascii=False)
+        except Exception:
+            plan_json = str(plan_dict)
+
+        log.info("Planner observation: 规划成功，返回给 {} | goal={} | steps={}",
+                 caller, plan_dict.get("goal", ""), len(plan_dict.get("steps", [])))
+        msg.next = NextMessageModel(
+            next_agent=caller,
+            message=plan_json,  # Supervisor._consume_planner_plan 从 msg.message["task"] 解析
+        )
+        msg.success = True
+        return msg

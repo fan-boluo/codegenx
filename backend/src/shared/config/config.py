@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # ignore：忽略多余环境变量，不报错
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
+    env:str = "dev"
     app_name: str = "ai-gateway"
     app_env: str = Field(default="local")
     app_host: str = "localhost"
@@ -36,6 +37,17 @@ class Settings(BaseSettings):
     mysql_password: str = ""
     mysql_db: str = "codegenx"
     mysql_charset: str = "utf8mb4"
+
+    # 用户项目数据库连接
+    userdb_mysql_host: str = "127.0.0.1"
+    userdb_mysql_port: int = 3306
+    userdb_mysql_user: str = "root"
+    userdb_mysql_password: str = ""
+
+    # Docker 执行容器（非 dev 环境使用）
+    # 容器内预装 mysql 客户端与 python 环境，供 SQL / Python 代码执行使用
+    sql_exec_docker_container: str = "codegenx-sql-exec"
+
 
     redis_host: str = "127.0.0.1"
     redis_port: int = 6379

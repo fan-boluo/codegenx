@@ -407,6 +407,7 @@ class SessionConfig(Base):
 
 class MultiAgentsConfig(Base):
     """多Agent参数。"""
+    turn_max: int = Field(default=20)  # 单请求（turn）允许的最大跨 agent 路由轮次（防止死循环）
     enabled: bool = Field(default=True)  # 是否启用多agent自动模式，默认是，单agent模式后续再定
     replan_max: int = Field(default=2)  # Critic 驳回后局部重规划上限（第二期启用）
     plan_confirm: bool = Field(default=False)  # 计划 human-in-the-loop 确认（第二期 interrupt）

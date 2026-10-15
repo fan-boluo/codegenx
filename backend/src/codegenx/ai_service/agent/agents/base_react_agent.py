@@ -114,17 +114,17 @@ class BaseReActAgent(Agent):
     # ------------------------------------------------------------------ message I/O
 
     async def receive(self, msg:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage | None:
-        """从 agent 收件箱接收消息（timeout=None 阻塞，0 非阻塞）。"""
+        """接收来自其他 agent 或外部的消息，执行 run() 并转发下一跳。
 
-
+        注意：全局消息路由已收归 AutoPlanManager，此处仅为独立测试或手动调用保留。
+        """
         log.info(
             "agent 消息接收: {} <- {} | request_id={}",
-            self.agent_name, msg.sender,  msg.request_id,
+            self.agent_name, msg.sender, msg.request_id,
         )
-        reply = await self.run(msg,session_state)
+        reply = await self.run(msg, session_state)
         if reply:
             if reply.recipient == "user":
-                # 发布消息
                 get_app().message_bus.publish_runtime_event(
                     session_state.publish_context,
                     event_type=AgentEventType.REQUEST_COMPLETED,
@@ -132,7 +132,7 @@ class BaseReActAgent(Agent):
                     state=AgentState.COMPLETED,
                 )
             else:
-                get_app().agents.get(reply.recipient).send(reply)
+                await self.send(reply, session_state)
         return msg
 
     async def send(
@@ -141,12 +141,20 @@ class BaseReActAgent(Agent):
             session_state:RuntimeSessionState,
         **kwargs,
     ) -> bool:
-        """向指定 name 的 agent 发送消息，"*" 表示广播。"""
+        """向指定 name 的 agent 发送消息并触发其 receive → run 链路。
+
+        从 AgentRegistry 取 AgentSpec.cls() 实例化目标 agent，再调 receive。
+        """
         receiver = msg.recipient
         if not receiver:
-            raise f"未设置接收方：{msg}"
+            raise ValueError(f"未设置接收方：{msg}")
 
-        await get_app().agents.get(receiver).receive(msg,session_state, **kwargs)
+        spec = get_app().agents.get(receiver)
+        if spec is None or spec.cls is None:
+            raise ValueError(f"目标 agent 未注册或无 cls: {receiver}")
+
+        target_agent = spec.cls()
+        await target_agent.receive(msg, session_state, **kwargs)
         log.info(
             "agent 消息发送: {} -> {} | request_id={}",
             msg.sender, msg.recipient, msg.request_id,
@@ -231,14 +239,15 @@ class BaseReActAgent(Agent):
         """
         # 1. 准备 agent 上下文（inbox 已在 __init__ 气注，此处仅组装 prompt/工具）
         await self._prepare_agent(session_state)
-
+        log.debug("──────────【{}】 STATR───────────── ",self.agent_name)
+        log.debug("接收到消息:{}", agent_message.model_dump())
         # 2.
         request_id = (agent_message.request_id if agent_message else "") or session_state.request_id
         task_text = self._extract_task_text(agent_message)
         log.info("agent run 开始: {} | request_id={} | task_len={}", self.agent_name, request_id, len(task_text))
 
-        # 3. 组装本地对话消息（仅内存，不落库）
-        messages: list[dict[str, Any]] = [
+        # 3. 组装本地对话消息（仅内存，不落库；提升为实例属性，便于 observation 追加 act 结果）
+        self._messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": task_text},
         ]
@@ -252,9 +261,9 @@ class BaseReActAgent(Agent):
             raise_if_stop_signal(session_state)
             step += 1
             log.info("agent run: {} step {}/{} think 开始", self.agent_name, step, self.max_steps)
-            response = await self.think(messages)
+            response = await self.think(self._messages)
             if not response:
-                messages.append({"role": "assistant", "content": self.profile.retry_goal})
+                self._messages.append({"role": "assistant", "content": self.profile.retry_goal})
                 continue
             final_text = str(response.get("content") or "")
             tool_calls = response.get("tool_calls") or []
@@ -274,7 +283,7 @@ class BaseReActAgent(Agent):
                     }
                     for tc in tool_calls
                 ]
-            messages.append(assistant_message)
+            self._messages.append(assistant_message)
 
             raise_if_stop_signal(session_state)
             # act：链式执行 actions，失败（success=False）则中断本轮并结束运行
@@ -282,11 +291,14 @@ class BaseReActAgent(Agent):
 
             observation:AgentMessage = await self.observation(agent_message, act_output,response)
 
-            if not observation.success:
-                log.warning("agent run: {} action 链执行失败: {}", self.agent_name, act_output.message)
-            else:
+            if observation.success:
+                # observation 判定可结束：退出 ReAct 循环
+                log.info("agent run: {} observation 判定完成，退出循环", self.agent_name)
                 break
-            # 工具判断，工具将作为action动作，不再重复判断了
+            # observation.success=False 表示需要继续 think：
+            #   - act 成功但还要进一步推理（如 SQL 执行完要总结给用户）
+            #   - act 失败需要修正重试（如 SQL 语法错、字段不存在）
+            log.info("agent run: {} observation 要求继续 think", self.agent_name)
 
         else:
             log.warning("agent run: {} 达到 max_steps={}，强制结束", self.agent_name, self.max_steps)
@@ -303,10 +315,11 @@ class BaseReActAgent(Agent):
         else:
             next_agent = observation.next.next_agent
             next_message = observation.next.message
+        log.debug("──────────【{}】 END ───────────── ", self.agent_name)
         return AgentMessage(
             sender=self.agent_name,
             recipient=next_agent,
-            is_user_message = False,
+            is_user_message=False,
             message={
                 "task": next_message,
                 "metadata": observation.next.metadata if observation.next else {}
@@ -314,7 +327,5 @@ class BaseReActAgent(Agent):
             request_id=request_id,
             session_id=session_state.session_id,
             summary=next_message[:200],
-            output=None,
-            success=None,
-            next=None
         )
+

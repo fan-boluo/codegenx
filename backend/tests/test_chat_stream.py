@@ -60,6 +60,9 @@ def stream_chat(
         "sessionId": session_id,
         "traceId": trace_id,
         "requestId": request_id,
+        "user_id":user_id,
+        "db_name":db_name,
+
     }
     print(f"\n>>> [POST] {base_url}/api/ai/chat/gen")
     print(f"    traceId={trace_id} requestId={request_id} sessionId={session_id}")
@@ -153,6 +156,14 @@ def main() -> None:
 if __name__ == "__main__":
     account = "boluo"
     password = "boluo123"
+    app_id = "app_0001"
+    # 身份一律由路由层从 JWT 登录态覆写（历史默认值 "userx" 已删，防止会话/工作区挂错用户）
+    user_id="user_0003"
+    db_name="prj_ec"
     # user_message = "hello"
-    user_message = "2022年卖出了多少件产品"
+    # user_message = "2022年卖出了多少件产品"
+    # user_message2 = "2022年订单金额Top3的用户是哪几位？金额分别多少"
+    # user_message = "一共多少用户？一共多少产品"
+    # user_message = "2023年订单位于 order_2023.csv，2022年定义位于数据库，对比2022和2023订单数量"
+    user_message = "2023年订单位于 order_2023.csv,计算订单数量"
     main()
