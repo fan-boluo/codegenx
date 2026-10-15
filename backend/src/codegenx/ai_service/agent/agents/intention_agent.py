@@ -1,8 +1,10 @@
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel
 
 from codegenx.ai_service.agent.action import Action, ActOutput
+from codegenx.ai_service.agent.agents.agent import AgentMessage, NextMessageModel
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from shared import log
@@ -32,7 +34,8 @@ class IntentionAction(Action[IntentionOutput]):
         # mode="json" 将枚举值序列化为字符串，便于上游按字符串分情况处理
         return ActOutput(success=True, output=parsed.model_dump(mode="json"))
 
-
+RETRY_GOAL =""
+RETRY_CONSTRAINS = []
 class IntentionRecognitionAgent(BaseReActAgent):
     """ 意图识别"""
     name = "intent_recognition"
@@ -73,3 +76,44 @@ class IntentionRecognitionAgent(BaseReActAgent):
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
         await super()._prepare_agent(session_state)
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
+
+    async def observation(self,msg:AgentMessage,act_output:ActOutput,llm_response:dict[Any, Any]) -> AgentMessage:
+        """ 观察是否可以回复用户/调其它agent/执行失败需要补充提示信息后再给llm think
+            返回： AgentMessage.success: True 表示可退出了 False表示需要继续think
+        """
+        output = act_output.output
+        intent = output.intent
+        message = ""
+        next_agent = "user"
+        # 按意图分情况执行
+        if intent == IntentionType.GREETING:
+            # 打招呼：返回固定的自我介绍
+            message = "你好，我是数据分析智能体，可以帮你做数据查询、分析与任务规划，请问有什么可以帮你的？"
+        if intent == IntentionType.NEED_CONFIRM:
+            # 信息有歧义：把向用户确认的提问返回
+            message = output.ask_user or "你的请求信息不够明确，请补充更多信息。"
+        if intent == IntentionType.UNABLE_ANSWER:
+            # 无关 / 违规内容：直接拦截
+            message = "抱歉，我无法处理这个问题。"
+        if intent != IntentionType.CALL_PLANNER:
+            # 未知意图：兜底结束
+            message = "未能识别你的意图，请重新描述你的问题。"
+        if intent == IntentionType.CALL_PLANNER:
+            message = "调用planner智能体进行任务规划"
+            next_agent = "planner"
+
+        msg.next = NextMessageModel(
+            next_agent=next_agent,
+            message=message
+        )
+        msg.output = act_output.model_dump(mode="json")
+        msg.success = act_output.success
+
+        # 未成功则需要继续，补充给think的提示
+        if not act_output.success:
+            failed_tip = act_output.message
+            self.profile.retry_goal = RETRY_GOAL
+            self.profile.retry_constraints = RETRY_CONSTRAINS
+
+
+        return msg

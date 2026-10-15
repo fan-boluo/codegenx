@@ -191,16 +191,13 @@ class ChatService(BaseComponent):
                 data={"reason": reason},
             )
 
-        # 会话已关闭：按 session 作用域兜底清空所有 agent 收件箱残留
-        # （活跃请求的 manager 停止分支已按 request 清过一次，此处覆盖其余排队请求）
-        purged = self.message_bus.purge_agent_messages(session_id=session_id)
-
+        # 会话已关闭：agent 间队列设施已移除，无需再清理 agent 收件箱残留
         stopped_ids = result["stopped_request_ids"]
         log.info(
-            "stop_session 完成 sessionId={} stopped={} dropped={} purged={} closed={}",
+            "stop_session 完成 sessionId={} stopped={} dropped={} closed={}",
             session_id, stopped_ids,
             [str(getattr(r, "request_id", "") or "") for r in result["dropped_requests"]],
-            purged, result["closed"],
+            result["closed"],
         )
         return {
             "accepted": bool(stopped_ids or result["dropped_requests"]),

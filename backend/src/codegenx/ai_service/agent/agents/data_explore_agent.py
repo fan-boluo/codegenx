@@ -23,6 +23,8 @@ class SQLAction(Action[SqlActionInput]):
             return ActOutput(success=False, message="SQL 解析失败（非合法 JSON）")
         if not parsed.sql.strip():
             return ActOutput(success=False, message="SQL 为空，无法分析")
+        # 执行sql语句，docker内（可控制是否使用，开发环境没有docker，测试环境有）
+
         return ActOutput(success=True, output=parsed.model_dump(mode="json"))
 
 
@@ -99,6 +101,11 @@ CREATE TABLE orders (
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
         await super()._prepare_agent(session_state)
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
+
+    def get_prj_available_db_info(self):
+        """ 根据app_id，查询绑定的db及table简要信息，用于初始提示词 """
+        pass
+
 
 
 if __name__ == "__main__":

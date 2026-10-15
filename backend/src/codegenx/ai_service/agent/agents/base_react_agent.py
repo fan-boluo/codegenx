@@ -4,7 +4,7 @@ import asyncio
 import json
 from contextlib import suppress
 from typing import Any, List
-
+from codegenx.ai_service.agent.agent_schema import AgentState,AgentEventType
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, raise_if_stop_signal
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import LLMRecovery
@@ -52,9 +52,6 @@ class BaseReActAgent(Agent):
         # 保留子类定义的 profile；仅未设置时兜底为空 PromptConfig
         if not getattr(self, "profile", None):
             self.profile: PromptConfig = PromptConfig()
-        # 气注收件箱：agent 实例一旦构造即拥有 inbox，外部（manager/上游 agent）
-        # 可先 send 再 run；不再依赖 receive 时才注册（会导致先 send 后 receive 丢失消息）
-        self._ensure_inbox()
         log.info(f"初始化agent: {self.agent_name} 完成")
 
 
@@ -94,10 +91,6 @@ class BaseReActAgent(Agent):
         )
         registry.register_spec(spec)
 
-    def _ensure_inbox(self) -> None:
-        """注册 agent 收件箱（幂等）。"""
-        if self._inbox is None:
-            self._inbox = get_app().message_bus.register_agent(self.agent_name)
 
     async def _prepare_agent(
         self,
@@ -120,64 +113,56 @@ class BaseReActAgent(Agent):
         return {}
     # ------------------------------------------------------------------ message I/O
 
-    async def receive(self, timeout: float | None = None) -> AgentMessage | None:
+    async def receive(self, msg:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage | None:
         """从 agent 收件箱接收消息（timeout=None 阻塞，0 非阻塞）。"""
-        self._ensure_inbox()
-        if timeout == 0:
-            if self._inbox.empty():
-                return None
-            msg = await self._inbox.get()
-        else:
-            try:
-                msg = await asyncio.wait_for(self._inbox.get(), timeout=timeout)
-            except asyncio.TimeoutError:
-                return None
+
+
         log.info(
-            "agent 消息接收: {} <- {} | type={} request_id={}",
-            self.agent_name, msg.sender, msg.message_type, msg.request_id,
+            "agent 消息接收: {} <- {} | request_id={}",
+            self.agent_name, msg.sender,  msg.request_id,
         )
+        reply = await self.run(msg,session_state)
+        if reply:
+            if reply.recipient == "user":
+                # 发布消息
+                get_app().message_bus.publish_runtime_event(
+                    session_state.publish_context,
+                    event_type=AgentEventType.REQUEST_COMPLETED,
+                    data={"content": reply.message},
+                    state=AgentState.COMPLETED,
+                )
+            else:
+                get_app().agents.get(reply.recipient).send(reply)
         return msg
 
     async def send(
         self,
-        recipient: str,
-        message_type: str,
-        payload: dict[str, Any] | None = None,
+        msg:AgentMessage,
+            session_state:RuntimeSessionState,
         **kwargs,
     ) -> bool:
         """向指定 name 的 agent 发送消息，"*" 表示广播。"""
-        self._ensure_inbox()
-        msg = AgentMessage(
-            sender=self.agent_name,
-            recipient=recipient,
-            message_type=message_type,
-            payload=payload or {},
-            request_id=kwargs.get("request_id", "") or self.agent_context.session_id,
-            session_id=self.agent_context.session_id,
-            success=kwargs.get("success", True),
-            message=kwargs.get("message", ""),
-            next_agent=kwargs.get("next_agent"),
-        )
-        delivered = await get_app().message_bus.send_to_agent(msg)
+        receiver = msg.recipient
+        if not receiver:
+            raise f"未设置接收方：{msg}"
+
+        await get_app().agents.get(receiver).receive(msg,session_state, **kwargs)
         log.info(
-            "agent 消息发送: {} -> {} | type={} request_id={} delivered={}",
-            msg.sender, msg.recipient, msg.message_type, msg.request_id, delivered,
+            "agent 消息发送: {} -> {} | request_id={}",
+            msg.sender, msg.recipient, msg.request_id,
         )
-        return delivered
+        return True
 
     # ------------------------------------------------------------------ ReAct lifecycle
 
     @staticmethod
-    def _extract_task_text(message: AgentMessage | None) -> str:
+    def _extract_task_text(msg: AgentMessage | None) -> str:
         """从接收消息提取任务文本。唯一来源为 receive()，无 session_state.request 兜底——
         agent 不再"双源"取数，未收到消息即为空任务（verify 阶段判失败）。
         """
-        if message is None:
+        if msg is None:
             return ""
-        text = (message.message or "").strip()
-        if not text:
-            payload = message.payload or {}
-            text = str(payload.get("task") or payload.get("goal") or "").strip()
+        text = msg.message.get("task","") or ""
         return text
 
 
@@ -196,7 +181,8 @@ class BaseReActAgent(Agent):
 
         return llm_response
 
-    async def act(self, llm_response: dict[str, Any], session_state: RuntimeSessionState, **kwargs) -> ActOutput:
+    async def act(self, llm_response: dict[str, Any], session_state: RuntimeSessionState,
+                  **kwargs) -> ActOutput:
         """行动：遍历 self.actions 链式执行，上一环的 ActOutput 作为下一环的输入。
 
         - 链路首环输入由 think() 原始返回封装（ActOutput(success=True, output=llm_response)），
@@ -222,15 +208,19 @@ class BaseReActAgent(Agent):
                 break
         return last_result
 
-    async def verify(self, final_text: str, messages: list[dict[str, Any]],act_output:ActOutput) -> tuple[bool, str]:
+    async def observation(self, msg: AgentMessage, act_output: ActOutput,llm_response:dict[Any, Any]) -> AgentMessage:
+        pass
+
+
+    async def verify(self, observation:AgentMessage) -> tuple[bool, str]:
         """验证：检查最终结果是否可用（子类可覆盖定制校验规则）。返回 (ok, reason)。"""
-        if not (final_text or "").strip():
-            return False, "最终结果为空"
-        if act_output is not None and not act_output.success:
-            return False, act_output.message or "action 执行失败"
+        if (observation.next is None
+                or observation.next.next_agent is None
+                or observation.next.metadata is None):
+            return False ,f"{self.agent_name} 执行失败没有定义next/next_agent/next_message"
         return True, ""
 
-    async def run(self, session_state: RuntimeSessionState) -> AgentMessage:
+    async def run(self, agent_message:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage:
         """ReAct 方式执行：think → act 循环 → verify。
 
         核心流程仅保留消息收发、LLM 推理与工具执行，全部过程记录到日志；
@@ -242,11 +232,9 @@ class BaseReActAgent(Agent):
         # 1. 准备 agent 上下文（inbox 已在 __init__ 气注，此处仅组装 prompt/工具）
         await self._prepare_agent(session_state)
 
-        # 2. 唯一输入源：receive。manager/上游 agent 必须先 send 再调 run，
-        #    否则 task_text 为空，verify 阶段判失败。timeout=0 非阻塞，避免卡死 stop。
-        message = await self.receive(timeout=0)
-        request_id = (message.request_id if message else "") or session_state.request_id
-        task_text = self._extract_task_text(message)
+        # 2.
+        request_id = (agent_message.request_id if agent_message else "") or session_state.request_id
+        task_text = self._extract_task_text(agent_message)
         log.info("agent run 开始: {} | request_id={} | task_len={}", self.agent_name, request_id, len(task_text))
 
         # 3. 组装本地对话消息（仅内存，不落库）
@@ -259,6 +247,7 @@ class BaseReActAgent(Agent):
         step = 0
         final_text = ""
         act_output: ActOutput | None = None
+        observation: AgentMessage = AgentMessage()
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
             step += 1
@@ -287,33 +276,45 @@ class BaseReActAgent(Agent):
                 ]
             messages.append(assistant_message)
 
+            raise_if_stop_signal(session_state)
             # act：链式执行 actions，失败（success=False）则中断本轮并结束运行
             act_output = await self.act(response, session_state=session_state)
-            if not act_output.success:
+
+            observation:AgentMessage = await self.observation(agent_message, act_output,response)
+
+            if not observation.success:
                 log.warning("agent run: {} action 链执行失败: {}", self.agent_name, act_output.message)
+            else:
                 break
-            if not tool_calls:
-                break
+            # 工具判断，工具将作为action动作，不再重复判断了
+
         else:
             log.warning("agent run: {} 达到 max_steps={}，强制结束", self.agent_name, self.max_steps)
 
-        # 5. verify：校验最终结果；action 失败也计入失败
-        ok, reason = await self.verify(final_text, messages,act_output)
+        # 5. verify：observation的结果
+        ok, reason = await self.verify(observation)
         log.info("agent run 结束: {} | request_id={} | steps={} | ok={} | reason={}",
                  self.agent_name, request_id, step, ok, reason)
 
-        # 6. 返回结果（返回值直接交回调用方 runtime / 上游 agent）
+        # 6. 返回结果 ,下一个AgentMessage
+        if not ok:
+            next_agent = "user"
+            next_message = "执行失败，请稍后重试"
+        else:
+            next_agent = observation.next.next_agent
+            next_message = observation.next.message
         return AgentMessage(
             sender=self.agent_name,
-            recipient="",
-            message_type="result_return",
-            payload={
-                "result": final_text,
-                # 结构化的 action 解析结果（dict），供上游 / manager 分情况处理
-                "output": act_output.output if act_output is not None else None,
+            recipient=next_agent,
+            is_user_message = False,
+            message={
+                "task": next_message,
+                "metadata": observation.next.metadata if observation.next else {}
             },
             request_id=request_id,
             session_id=session_state.session_id,
-            success=ok,
-            message=reason or final_text[:200],
+            summary=next_message[:200],
+            output=None,
+            success=None,
+            next=None
         )

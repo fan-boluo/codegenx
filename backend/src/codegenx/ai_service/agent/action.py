@@ -19,7 +19,7 @@ class ActOutput(BaseModel):
 
     success: bool = True
     output: Any = None   # 结构化结果：dict / BaseModel / list[BaseModel]
-    message: str = ""    # 失败原因或文本摘要
+    message: str = ""    # 失败原因或给user|agent的文本
 
 
 class Action(ABC, Generic[T]):

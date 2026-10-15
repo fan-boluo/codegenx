@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
-
+from codegenx.ai_service.agent.agent_schema import AgentState
 from pydantic import BaseModel
 
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
@@ -22,11 +22,11 @@ class Agent(ABC):
     profile: PromptConfig = None
 
     @abstractmethod
-    async def run(self, session_state) -> "AgentMessage":
+    async def run(self, msg:AgentMessage,session_state: RuntimeSessionState) -> "AgentMessage":
         """Generate a reply based on the received messages."""
 
     @abstractmethod
-    async def receive(self, timeout: float | None = None) -> "AgentMessage | None":
+    async def receive(self, msg:AgentMessage,session_state: RuntimeSessionState) -> "AgentMessage | None":
         """Receive a message from another agent or the user.
 
         timeout=None 阻塞等待；timeout=0 非阻塞，无消息返回 None。
@@ -35,25 +35,28 @@ class Agent(ABC):
     @abstractmethod
     async def send(
         self,
-        recipient: str,
-        message_type: str,
-        payload: dict[str, Any] | None = None,
+        msg: AgentMessage,
+        session_state: RuntimeSessionState,
         **kwargs,
     ) -> bool:
         """Send a message to another agent (recipient 为对方 role，"*" 广播)."""
 
     @abstractmethod
-    async def act(self,ai_message: dict[str, Any],session_state:RuntimeSessionState, **kwargs):
+    async def act(self,llm_response: dict[str, Any], session_state: RuntimeSessionState,
+                  **kwargs) -> ActOutput:
         """Perform actions."""
 
     @abstractmethod
-    async def think(self,messages: list[dict[str, Any]]):
+    async def think(self,messages: list[dict[str, Any]]) -> dict[Any, Any]:
         """Think and reason about the current task goal."""
 
     @abstractmethod
-    async def verify(self,final_text: str, messages: list[dict[str, Any]]):
+    async def verify(self,observation:AgentMessage)-> tuple[bool, str]:
         """Verify whether the current execution results meet the target expectations."""
 
+    @abstractmethod
+    async def observation(self,msg: AgentMessage, act_output: ActOutput,llm_response:dict[Any, Any]) -> AgentMessage:
+        """  action之后的操作，根据action的结果决定下一步操作"""
     # ------------------------------------------------------------------ 类方法：配置解析与注册
 
     @classmethod
@@ -87,6 +90,14 @@ class AgentContext:
     # 会话摘要阈值状态
     summary_state: SummaryState = field(default_factory=SummaryState)
 
+class MessagePayload(BaseModel):
+    task:str = ""               # 发送的消息文本
+    metadata : dict[str, Any] = {}
+
+class NextMessageModel(BaseModel):
+    next_agent:str = ""
+    message: str = ""
+    metadata: dict[str, Any] = {}
 
 class AgentMessage(BaseModel):
     """Agent 间消息（控制面）：任务分配、结果返回、意图路由等。
@@ -96,9 +107,12 @@ class AgentMessage(BaseModel):
 
     sender: str = ""               # 发送方 name
     recipient: str = ""            # 接收方 name，"*" 表示广播
-    message_type: str = ""         # task_assign / result_return / intent_result / plan_ready ...
-    payload: dict[str, Any] = {}   # 业务数据
-    message: str = ""  # 文本摘要
+    is_user_message : bool|None = None  # 是否是用户发送的消息
+    message: dict[str, Any] = {}  # 发送的消息  {"task":"","metadata":""}
+    summary: str = ""              # 消息文本摘要
     request_id: str = ""           # 任务关联 ID（复用请求 ID）
     session_id: str = ""
-    success: bool = True
+    # agent执行完后需要补充的信息
+    output: dict[str, Any] = field(default_factory=dict) # agent执行输出，暂定ActOutput的结构
+    success: bool | None = None  # agent执行结果
+    next: NextMessageModel|None = None  # 接收方完成后下一步：next_agent,message:给下一个的消息

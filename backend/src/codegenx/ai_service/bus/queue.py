@@ -2,16 +2,12 @@
 
 import asyncio
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from codegenx.ai_service.agent.agent_schema import AgentEventType, AgentEvent
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.agent.agent_schema import  AgentState
-from shared import log
 import json
-
-if TYPE_CHECKING:
-    from codegenx.ai_service.agent.agents.agent import AgentMessage
 
 
 class MessageBus(BaseComponent):
@@ -26,74 +22,10 @@ class MessageBus(BaseComponent):
     def __init__(self, system_app=None) -> None:
         BaseComponent.__init__(self, system_app)
         self.inbound: asyncio.Queue[Any] = asyncio.Queue()
-        # self.outbound: asyncio.Queue[Any] = asyncio.Queue()
         self._request_subscribers: dict[str, set[asyncio.Queue[Any]]] = defaultdict(set)
-        # agent 间通信通道：name -> 收件箱（与 request 事件流正交，控制面）
-        self._agent_channels: dict[str, asyncio.Queue[Any]] = {}
 
     def init_app(self, system_app) -> None:
         self.system_app = system_app
-    # ------------------------------------------------------------------ agent messaging
-
-    def register_agent(self, agent_name: str) -> asyncio.Queue[Any]:
-        """注册 agent 收件箱（幂等），以 name 作为 agent 间寻址标识。"""
-        queue = self._agent_channels.get(agent_name)
-        if queue is None:
-            queue = asyncio.Queue()
-            self._agent_channels[agent_name] = queue
-        return queue
-
-    def unregister_agent(self, agent_name: str) -> None:
-        """注销 agent 收件箱，丢弃在途消息（agent 生命周期结束时调用）。"""
-        self._agent_channels.pop(agent_name, None)
-
-    def purge_agent_messages(self, *, request_id: str = "", session_id: str = "") -> int:
-        """按 request/session 作用域清理 agent 收件箱中的残留消息（任务停止点调用）。
-
-        收件箱按 agent_name 全局复用（unregister_agent 当前无调用方），一次任务中未被
-        消费的 agent 间消息（广播 "*" 会进入所有 agent 队列）会滞留到下次同名 agent 实例
-        run() 时被误当成新任务取走。AgentMessage 自带 request_id/session_id，按作用域
-        丢弃即可，不影响其他会话的在途消息。返回清理条数。
-        """
-        rid = str(request_id or "")
-        sid = str(session_id or "")
-        if not rid and not sid:
-            return 0
-        removed = 0
-        for queue in list(self._agent_channels.values()):
-            kept: list[Any] = []
-            # asyncio.Queue.empty/get_nowait/put_nowait 为同步方法，无需 await
-            while not queue.empty():
-                item = queue.get_nowait()
-                item_rid = str(getattr(item, "request_id", "") or "")
-                item_sid = str(getattr(item, "session_id", "") or "")
-                if (rid and item_rid == rid) or (sid and item_sid == sid):
-                    removed += 1
-                    continue
-                kept.append(item)
-            for item in kept:
-                queue.put_nowait(item)
-        if removed:
-            log.info("purge agent 残留消息 request={} session={} removed={}", rid, sid, removed)
-        return removed
-
-    async def send_to_agent(self, msg: "AgentMessage") -> bool:
-        """投递 agent 间消息：recipient 为接收方 name，"*" 广播。返回是否投递成功。"""
-        recipient = (getattr(msg, "recipient", "") or "").strip()
-        if not recipient:
-            return False
-        if recipient == "*":
-            if not self._agent_channels:
-                return False
-            for queue in self._agent_channels.values():
-                await queue.put(msg)
-            return True
-        queue = self._agent_channels.get(recipient)
-        if queue is None:
-            log.warning("agent 消息无接收方: {} -> {}", getattr(msg, "sender", "?"), recipient)
-            return False
-        await queue.put(msg)
-        return True
 
     async def publish_inbound(self, msg: Any) -> None:
         """Publish a message from a channel to the agent."""
