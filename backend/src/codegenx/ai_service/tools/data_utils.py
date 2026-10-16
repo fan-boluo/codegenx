@@ -20,7 +20,7 @@ from shared import log
 
 def _get_mysql_manager():
     """延迟导入，避免循环依赖；F-4 起共享 mysql_manager 进程级单例（配置来自 config.json）。"""
-    from codegenx.ai_service.data_analysis.mysql_manager import get_mysql_manager
+    from codegenx.ai_service.agent.db.mysql_manager import get_mysql_manager
     return get_mysql_manager()
 
 

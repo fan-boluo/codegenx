@@ -28,7 +28,7 @@ class AgentEventType(str, Enum):
 class AgentEvent(BaseModel):
     session_id:str
     request_id:str
-    step_counter:int
+    round_counter:int
     event_type: AgentEventType
     data: Any = None
     state: AgentState

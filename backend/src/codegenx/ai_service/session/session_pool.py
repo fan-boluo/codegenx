@@ -234,6 +234,7 @@ class SessionPool(BaseComponent):
 
         # Phase 3：仅在任务确已结束时兜底清信号（worker finally 也会清），
         # 任务尚在跑时必须保留 stop_signal 让检查点继续生效
+        # 单 agent 链路退役：active_steps 已删除，active_step_ids 恒为空
         active_step_ids: list[str] = []
         session = await self.get(session_id)
         if session is not None and not getattr(session, "closed", False):
@@ -244,8 +245,6 @@ class SessionPool(BaseComponent):
             ):
                 session.stop_signal.clear()
                 session.stop_reason = ""
-            if stopped_task is not None:
-                active_step_ids = list(getattr(session.activate_turn, "active_steps", []) or [])
 
         return {
             "stopped_request_ids": [target] if stopped_task is not None else [],
@@ -284,7 +283,8 @@ class SessionPool(BaseComponent):
             session.stop_reason = stop_reason
 
             active_items: list[tuple[str, asyncio.Task]] = list(session.active_tasks.items())
-            active_step_ids = list(getattr(session.activate_turn, "active_steps", []) or [])
+            # 单 agent 链路退役：active_steps 已删除，active_step_ids 恒为空
+            active_step_ids: list[str] = []
             dropped_requests: list[Any] = []
             async with session.request_lock:
                 dropped_requests = list(session.pending_requests)
@@ -342,8 +342,16 @@ class SessionPool(BaseComponent):
                 last_activity = getattr(session, "last_activity_at", 0.0)
                 idle_duration = now - last_activity
                 if idle_duration > self.idle_timeout_seconds:
-                    sessions_to_remove.append(session_id)
-                    continue
+                    # 执行中的会话不回收：last_activity 只记录请求到达时间，
+                    # 长任务执行期间（LLM 多轮编排可远超 idle 阈值）不能误杀，
+                    # 留待任务结束后的下一轮 cleanup 再回收
+                    if self._is_quiescent(session):
+                        sessions_to_remove.append(session_id)
+                        continue
+                    log.info(
+                        "SessionPool cleanup: session {} idle {:.0f}s 但仍有在途任务，跳过回收",
+                        session_id, idle_duration,
+                    )
 
                 # P3 swap-out（docs/SystemApp架构设计.md §7）：闲置超过 swap 阈值且
                 # 无在途任务 → 卸载 chat_messages（快照已在 turn_end 落盘），会话对象

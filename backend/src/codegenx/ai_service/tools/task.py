@@ -2,7 +2,7 @@
 
 Four tools that give the LLM full CRUD access to the persistent task board:
   task_create  — create a new task, optionally with dependencies
-  task_update  — change status / owner / subject / description
+  task_update  — change status / executor_agent / subject / description
   task_get     — fetch a single task record
   task_list    — list all (or filtered) tasks on the board
 
@@ -88,8 +88,8 @@ class TaskCreateTool(BaseTool):
             )
             return ToolResult(
                 success=True,
-                data=str(task),
-                render=json.dumps({"action": "create", "task": task}, ensure_ascii=False),
+                data=task.model_dump_json(),
+                render=json.dumps({"action": "create", "task": task.model_dump(mode="json")}, ensure_ascii=False),
             )
         except Exception as exc:
             log.error("[task_create] {}", exc)
@@ -108,7 +108,7 @@ class TaskUpdateTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Update a task's status, owner, subject, or description. "
+            "Update a task's status, executor_agent, subject, or description. "
             "Setting status to 'completed' automatically unblocks dependent tasks. "
             "Valid statuses: pending, in_progress, completed, deleted."
         )
@@ -124,7 +124,7 @@ class TaskUpdateTool(BaseTool):
                     "enum": ["pending", "in_progress", "completed", "deleted"],
                     "description": "New status for the task.",
                 },
-                "owner": {"type": "string", "description": "Who is working on this task."},
+                "executor_agent": {"type": "string", "description": "agent_name of the executor agent working on this task."},
                 "subject": {"type": "string", "description": "Updated one-line subject."},
                 "description": {"type": "string", "description": "Updated description."},
             },
@@ -142,15 +142,15 @@ class TaskUpdateTool(BaseTool):
             task = tasks.update(
                 int(task_id),
                 status=params.get("status"),
-                owner=params.get("owner"),
+                executor_agent=params.get("executor_agent"),
                 subject=params.get("subject"),
                 description=params.get("description"),
                 **_ids(params),
             )
             return ToolResult(
                 success=True,
-                data=str(task),
-                render=json.dumps({"action": "update", "task": task}, ensure_ascii=False),
+                data=task.model_dump_json(),
+                render=json.dumps({"action": "update", "task": task.model_dump(mode="json")}, ensure_ascii=False),
             )
         except Exception as exc:
             log.error("[task_update] {}", exc)
@@ -168,7 +168,7 @@ class TaskGetTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Fetch a single task record by ID. Returns the full TaskRecord including blockedBy and blocks lists."
+        return "Fetch a single task record by ID. Returns the full TaskRecord including blocked_by and blocks lists."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -191,7 +191,7 @@ class TaskGetTool(BaseTool):
             task = tasks.get(int(task_id), **_ids(params))
             if task is None:
                 return ToolResult(success=False, data=f"Task {task_id} not found.", render=f"任务 #{task_id} 不存在")
-            return ToolResult(success=True, data=str(task), render=f"获取任务: {task.get('subject', '')}")
+            return ToolResult(success=True, data=task.model_dump_json(), render=f"获取任务: {task.subject}")
         except Exception as exc:
             log.error("[task_get] {}", exc)
             return ToolResult(success=False, message=f"Error: {exc}",render=f"{self.name} 任务获取失败")
@@ -236,7 +236,7 @@ class TaskListTool(BaseTool):
             board = tasks.get_board(**_ids(params))
             return ToolResult(
                 success=True,
-                data=str({"tasks": board_tasks, "board": board}),
+                data=str({"tasks": [t.model_dump(mode="json") for t in board_tasks], "board": board}),
                 render=f"任务列表: {len(board_tasks)} 个任务"
             )
         except Exception as exc:

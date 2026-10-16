@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Docker 执行容器（非 dev 环境使用）
     # 容器内预装 mysql 客户端与 python 环境，供 SQL / Python 代码执行使用
     sql_exec_docker_container: str = "codegenx-sql-exec"
+    # 宿主机 .data/ 目录在容器内的挂载点（非 dev 环境下 Python/SQL 子进程看到的用户数据根）
+    docker_data_root: str = "/data"
+    # 容器内 python 可执行文件（默认 PATH 中的 python）
+    docker_python_bin: str = "python"
 
 
     redis_host: str = "127.0.0.1"

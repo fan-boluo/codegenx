@@ -126,7 +126,7 @@ class MessageBus(BaseComponent):
             AgentEvent(
                 session_id=publish_context["session_id"],
                 request_id=publish_context['request_id'],
-                step_counter=publish_context['step_counter'],
+                round_counter=publish_context['round_counter'],
                 event_type=event_type,
                 state=state,
                 data=data,

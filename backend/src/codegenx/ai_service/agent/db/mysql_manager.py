@@ -78,6 +78,17 @@ def _check_sql_safety(sql: str) -> None:
         raise ValueError("SQL 包含禁止的写操作/DDL 关键字")
 
 
+def resolve_sample_ratio(est_rows: int) -> tuple[float, str]:
+    """按估算行数解析统计采样比例：大表自动降采样，返回 (比例 0-1, 说明文本)。"""
+    if est_rows <= 100_000:
+        return 1.0, "全量统计"
+    if est_rows <= 1_000_000:
+        return 0.1, "10% 采样（大表）"
+    if est_rows <= 10_000_000:
+        return 0.01, "1% 采样（超大表）"
+    return 0.001, "0.1% 采样（巨型表）"
+
+
 class MysqlManager:
     """MySQL 只读连接管理。"""
 

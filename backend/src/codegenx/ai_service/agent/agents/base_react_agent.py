@@ -7,7 +7,6 @@ from typing import Any, List
 from codegenx.ai_service.agent.agent_schema import AgentState,AgentEventType
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, raise_if_stop_signal
 from codegenx.ai_service.llm.async_client import get_llm
-from codegenx.ai_service.llm.llm_recovery import LLMRecovery
 from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.utils.config import AgentConfig, config
 from codegenx.ai_service.system_app import get_app
@@ -44,7 +43,6 @@ class BaseReActAgent(Agent):
         with suppress(Exception):
             get_llm(self.model_name)
             get_breaker(self.model_name)
-        self._llm_recovery = LLMRecovery()
         # agent 间寻址标识与收件箱（agent_name 全局唯一）
         self.agent_name = self.agent_config.name
         self._inbox: asyncio.Queue | None = None
@@ -185,7 +183,7 @@ class BaseReActAgent(Agent):
             temperature=self.agent_config.temperature,
             max_tokens=self.agent_config.max_tokens,
         )
-
+        log.debug("{},llm_response:{}",self.agent_name,llm_response)
 
         return llm_response
 
@@ -208,11 +206,11 @@ class BaseReActAgent(Agent):
             last_result = await action.act(
                 ai_message=last_result, session_state=session_state, **kwargs
             )
-            log.info("agent act: {} action={} success={}", self.agent_name, type(action).__name__, last_result.success)
+            log.info("【{} ACT】:   action={} output={}", self.agent_name, type(action).__name__, last_result.model_dump())
             if not last_result.success:
-                log.warning("agent act: {} action={} 执行失败，中断动作链: {}",
+                log.warning("【{} ACT】: action={} 执行失败，中断动作链: {}",
                             self.agent_name, type(action).__name__, last_result.message)
-                
+
                 break
         return last_result
 
@@ -227,6 +225,15 @@ class BaseReActAgent(Agent):
                 or observation.next.metadata is None):
             return False ,f"{self.agent_name} 执行失败没有定义next/next_agent/next_message"
         return True, ""
+
+    def _build_history_messages(self, session_state: RuntimeSessionState) -> list[dict[str, Any]]:
+        """注入会话历史消息（默认为空，子类按需覆盖）。
+
+        执行型 agent（data_explore/csv_explore）任务自包含，无需历史；
+        编排型 agent（Supervisor）覆盖此方法注入 context_manager.chat_messages
+        真相源，获得跨轮对话与子 agent 执行历史，用于意图理解与结果审查。
+        """
+        return []
 
     async def run(self, agent_message:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage:
         """ReAct 方式执行：think → act 循环 → verify。
@@ -247,8 +254,10 @@ class BaseReActAgent(Agent):
         log.info("agent run 开始: {} | request_id={} | task_len={}", self.agent_name, request_id, len(task_text))
 
         # 3. 组装本地对话消息（仅内存，不落库；提升为实例属性，便于 observation 追加 act 结果）
+        # 历史消息由 _build_history_messages 钩子注入（默认空；Supervisor 注入会话历史）
         self._messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
+            *self._build_history_messages(session_state),
             {"role": "user", "content": task_text},
         ]
 
@@ -260,14 +269,14 @@ class BaseReActAgent(Agent):
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
             step += 1
-            log.info("agent run: {} step {}/{} think 开始", self.agent_name, step, self.max_steps)
+            log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
             response = await self.think(self._messages)
             if not response:
                 self._messages.append({"role": "assistant", "content": self.profile.retry_goal})
                 continue
             final_text = str(response.get("content") or "")
             tool_calls = response.get("tool_calls") or []
-            log.info("agent run: {} step {}/{} think 结束 | content_len={} tool_calls={}",
+            log.info("【{} Think】:  step {}/{} END | content_len={} tool_calls={}",
                      self.agent_name, step, self.max_steps, len(final_text), len(tool_calls))
             # assistant 消息回写本地对话
             assistant_message: dict[str, Any] = {"role": "assistant", "content": final_text}
@@ -293,21 +302,18 @@ class BaseReActAgent(Agent):
 
             if observation.success:
                 # observation 判定可结束：退出 ReAct 循环
-                log.info("agent run: {} observation 判定完成，退出循环", self.agent_name)
+                log.info("【{} OBSERVATION】: 判定完成，退出循环", self.agent_name)
                 break
             # observation.success=False 表示需要继续 think：
             #   - act 成功但还要进一步推理（如 SQL 执行完要总结给用户）
             #   - act 失败需要修正重试（如 SQL 语法错、字段不存在）
-            log.info("agent run: {} observation 要求继续 think", self.agent_name)
+            log.info("【{} OBSERVATION】：action执行异常，继续 think", self.agent_name)
 
         else:
-            log.warning("agent run: {} 达到 max_steps={}，强制结束", self.agent_name, self.max_steps)
+            log.warning("【{} 】: 达到 max_steps={}，强制结束", self.agent_name, self.max_steps)
 
         # 5. verify：observation的结果
         ok, reason = await self.verify(observation)
-        log.info("agent run 结束: {} | request_id={} | steps={} | ok={} | reason={}",
-                 self.agent_name, request_id, step, ok, reason)
-
         # 6. 返回结果 ,下一个AgentMessage
         if not ok:
             next_agent = "user"
@@ -315,7 +321,9 @@ class BaseReActAgent(Agent):
         else:
             next_agent = observation.next.next_agent
             next_message = observation.next.message
+        log.info("【{} 】结束: {} | steps={} | ok={} | reason={}", self.agent_name, request_id, step, ok, reason)
         log.debug("──────────【{}】 END ───────────── ", self.agent_name)
+
         return AgentMessage(
             sender=self.agent_name,
             recipient=next_agent,

@@ -95,11 +95,6 @@ class LLMRecovery:
                     if continuation_attempts < agent_config.max_continuation_attempts:
                         continuation_attempts += 1
                         accumulated_content += round_response["content"]
-                        self._record_recovery(
-                            turn_state,
-                            "continue",
-                            continuation_attempts + compact_attempts,
-                        )
                         log.warning(
                             "[Recovery] Output truncated, injecting continuation "
                             "(attempt {}/{})",
@@ -134,11 +129,6 @@ class LLMRecovery:
                 if err_class is LLMErrorClass.CONTEXT_OVERFLOW:
                     if compact_attempts < agent_config.max_compact_attempts:
                         compact_attempts += 1
-                        self._record_recovery(
-                            turn_state,
-                            "compact",
-                            continuation_attempts + compact_attempts,
-                        )
                         log.warning(
                             "[Recovery] Context too long, compacting history "
                             "(attempt {}/{})",
@@ -156,10 +146,6 @@ class LLMRecovery:
                 raise
 
     # ------------------------------------------------------------------ helpers
-
-    @staticmethod
-    def _record_recovery(
-        turn_state: ActivateTurn, kind: str, total_count: int
-    ) -> None:
-        turn_state.llm_recovery_count = total_count
-        turn_state.last_recovery_kind = kind
+    # 说明：原 _record_recovery 会写 turn_state.llm_recovery_count / last_recovery_kind，
+    # 随单 agent 链路退役（ActivateTurn 字段删除）已移除；恢复次数由监控层
+    # （TelemetryRecord 同名字段）自行统计，本类不再回写 turn 状态。

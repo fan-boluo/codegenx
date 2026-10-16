@@ -254,6 +254,9 @@ class ContextService(BaseComponent):
             }
             if role == "assistant" and isinstance(message.get("tool_calls"), list):
                 payload["tool_calls"] = message.get("tool_calls")
+            if role == "assistant" and message.get("agent"):
+                # 透传子 agent 回传标记（多 agent 链路附带字段，供历史视图过滤）
+                payload["agent"] = str(message["agent"])
             if role == "tool":
                 payload["tool_call_id"] = str(message.get("tool_call_id", "") or "")
                 payload["name"] = str(message.get("name", "") or "")

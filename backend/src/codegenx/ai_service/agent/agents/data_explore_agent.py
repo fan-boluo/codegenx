@@ -172,7 +172,7 @@ class DateExploreAgent(BaseReActAgent):
         if not db_name:
             return "（当前应用未绑定数据库，无法执行 SQL 分析）"
 
-        from codegenx.ai_service.data_analysis.mysql_manager import get_mysql_manager
+        from codegenx.ai_service.agent.db.mysql_manager import get_mysql_manager
         mgr = get_mysql_manager()
         tables, columns, fks = await asyncio.gather(
             mgr.query(db_name, _TABLES_META_SQL, (db_name,)),
@@ -257,9 +257,19 @@ class DateExploreAgent(BaseReActAgent):
 
         log.info("DataExploreAgent SQL 执行成功 | 返回给 {} | rows={}{}",
                  caller, row_count, " (截断前20行)" if row_count > 20 else "")
+        # message 必须携带真实执行结果（rows），供调用方（Supervisor 审查 / 历史
+        # 记录 auto_plan_manager.add_agent_result）直接看到数据，metadata 保留结构化原文；
+        # default=str 兜底 MySQL 返回的 Decimal/datetime 等非 JSON 原生类型
+        rows_text = _json.dumps(truncated, ensure_ascii=False, default=str)
+        truncation_hint = f"，数据较大仅返回前 {len(truncated)} 行" if row_count > 20 else ""
         msg.next = NextMessageModel(
             next_agent=caller,
-            message=f"task: {msg.message.get("task")} , {self.agent_name} agent执行sql完毕，请核查",  # 给下一个agent看的任务
+            message=(
+                f"任务：{msg.message.get("task")}"
+                f"{self.agent_name} agent执行sql完毕，请核查。\n"
+                f"SQL: {sql}\n"
+                f"查询结果（共 {row_count} 行{truncation_hint}）：\n{rows_text}"
+            ),
             metadata=payload
         )
         msg.success = True

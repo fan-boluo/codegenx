@@ -174,7 +174,7 @@ class MonitorPipeline(BaseComponent):
             return
 
         turn_telemetry = TurnTelemetry.new_tel(session_telemetry)
-        turn_telemetry.turn_number = turn.step_counter
+        turn_telemetry.turn_number = turn.round_counter
         turn_telemetry.turn_id = session.request_id
 
         turn_span_id = _new_span_id()
@@ -195,11 +195,11 @@ class MonitorPipeline(BaseComponent):
                 app_id=session.app_id,
                 user_id=session.user_id,
                 request_id=session.request_id,
-                step_counter=turn.step_counter,
+                step_counter=turn.round_counter,
                 operation_type=OperationType.TURN.value,
                 start_time=turn_started_utc,
                 status="running",
-                attributes={"turn.id": session.request_id, "turn.number": turn.step_counter},
+                attributes={"turn.id": session.request_id, "turn.number": turn.round_counter},
             ))
 
     async def on_turn_end(self, session: RuntimeSessionState, turn: ActivateTurn) -> None:
@@ -212,8 +212,8 @@ class MonitorPipeline(BaseComponent):
         started_at_ts = float(turn.started_at or finished_at)
         telemetry.duration_ms = max(0, int((finished_at - started_at_ts) * 1000))
         telemetry.status = _session_status(turn.state)
-        telemetry.llm_recovery_count = getattr(turn, "llm_recovery_count", 0) or 0
-        telemetry.last_recovery_kind = getattr(turn, "last_recovery_kind", "") or ""
+        # 单 agent 链路退役：ActivateTurn 已无 llm_recovery_count / last_recovery_kind，
+        # 遥测字段保持默认值（0 / ""），由监控层自行统计
 
         collector = self._span_collectors.get(session.session_id)
         if turn_span_id and collector:
@@ -267,10 +267,7 @@ class MonitorPipeline(BaseComponent):
         projected_total_tokens = int(kwargs.get("projected_total_tokens", 0) or 0)
         telemetry.token_count = prompt_tokens
         telemetry.token_usage = projected_total_tokens / AUTOCOMPACT_THRESHOLD if AUTOCOMPACT_THRESHOLD > 0 else 0.0
-        # 从 turn 读取上一步的压缩标记
-        telemetry.context_is_compress = getattr(turn, "last_step_compacted", False)
-        # 重置标记，避免跨 step 污染
-        turn.last_step_compacted = False
+        # 单 agent 链路退役：turn.last_step_compacted 已删除，压缩标记保持默认 False
 
         metric_collector = self._metric_collectors.get(session.session_id)
         if metric_collector and turn_span_id:
@@ -290,7 +287,7 @@ class MonitorPipeline(BaseComponent):
                 app_id=session.app_id,
                 user_id=session.user_id,
                 request_id=session.request_id,
-                step_counter=turn.step_counter,
+                step_counter=turn.round_counter,
                 operation_type=OperationType.LLM.value,
                 start_time=started_utc,
                 status="running",
@@ -376,7 +373,7 @@ class MonitorPipeline(BaseComponent):
                 app_id=session.app_id,
                 user_id=session.user_id,
                 request_id=session.request_id,
-                step_counter=turn.step_counter,
+                step_counter=turn.round_counter,
                 operation_type=f"{OperationType.TOOL.value}.{tool_name}",
                 start_time=started_utc,
                 status="running",

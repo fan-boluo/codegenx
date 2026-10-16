@@ -11,7 +11,7 @@ import asyncio
 from typing import Any
 
 from codegenx.ai_service.tools.base import BaseTool, ToolResult
-from codegenx.ai_service.data_analysis.mysql_manager import (
+from codegenx.ai_service.agent.db.mysql_manager import (
     get_mysql_manager, resolve_sample_ratio, _check_sql_safety,
 )
 from codegenx.ai_service.data_analysis.stats_engine import (

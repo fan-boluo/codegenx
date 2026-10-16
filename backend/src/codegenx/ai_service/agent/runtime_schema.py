@@ -20,23 +20,19 @@ class TurnStoppedError(Exception):
 
 @dataclass
 class ActivateTurn:
-    step_counter: int = 0  # 一次请求（turn）的迭代次数
-    # active_steps: dict[str, RuntimeTurnState] = field(default_factory=dict)  # 活跃的step_id
-    active_step_id: str = ""
-    active_steps: list[str] = field(default_factory=list)  # 活跃的step_id
+    """turn 级请求执行状态机（基础设施层，单/多 agent 链路共用）。
+
+    单 agent 链路（AgentRuntime）已退役：其专属字段（requires_followup /
+    active_step_id / active_steps / last_step_compacted / tool_iterations /
+    last_tool_signature / consecutive_same_tool_calls / llm_recovery_count /
+    last_recovery_kind）已删除，runtime.py 保留作历史参照不再执行。
+    """
+    round_counter: int = 0  # 跨 agent 路由轮次（多 agent 链路的循环边界）
     state: AgentState = AgentState.IDLE  # 一次turn的状态
-    requires_followup:bool = False  # 是否需要继续，如果没有工具调用则停止
     started_at: float = 0.0
     finished_at: float = 0.0
     active_span_refs:dict = field(default_factory=dict)
-    llm_recovery_count: int = 0
-    last_recovery_kind: str = ""
     error_text: str = ""
-    last_step_compacted: bool = False  # 上一步是否执行了压缩，供告警评估使用
-    # tool
-    tool_iterations: int = 0
-    last_tool_signature: str | None = None
-    consecutive_same_tool_calls: int = 0
 
     def add_turn_span_id(self, key: str, span_id: str) -> None:
         """Register an active span id for the current turn (e.g. 'turn_span_id', 'llm_span_id')."""
@@ -92,11 +88,9 @@ class RuntimeSessionState:
     stop_reason: str = ""
     worker_task: asyncio.Task | None = None  # 一个携程任务
 
-    # ── Supervisor 编排上下文（每次请求独立，存在 session_state 上避免跨请求泄漏） ──
-    # plan: Planner 产出的计划 dict {goal, steps:[{step_id, agent, task, ...}]}
-    # history: 子 agent 执行历史 [{agent, task, success, result}]
-    # current_step: 当前正在执行的 step_id
-    supervisor_ctx: dict[str, Any] = field(default_factory=dict)
+    # 说明：Supervisor 编排上下文已迁至 SessionContext.orchestration
+    # （turn 级，请求开始重置，方案《上下文工程设计方案2》§5），
+    # RuntimeSessionState 回归纯运行时调度职责。
 
 
     def touch(self) -> None:
@@ -141,7 +135,7 @@ class RuntimeSessionState:
         return {
             "session_id": self.session_id,
             "request_id": self.request.request_id,
-            "step_counter": self.activate_turn.step_counter
+            "round_counter": self.activate_turn.round_counter
         }
 
     @property

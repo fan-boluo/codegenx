@@ -128,7 +128,7 @@ class ChatService(BaseComponent):
                 {
                     "session_id": str(getattr(req, "session_id", "") or "") or session_id,
                     "request_id": str(getattr(req, "request_id", "") or ""),
-                    "step_counter": 0,
+                    "round_counter": 0,
                 },
                 event_type=AgentEventType.REQUEST_STOPPED,
                 state=AgentState.STOPPED.value,
@@ -184,7 +184,7 @@ class ChatService(BaseComponent):
                 {
                     "session_id": str(getattr(req, "session_id", "") or "") or session_id,
                     "request_id": str(getattr(req, "request_id", "") or ""),
-                    "step_counter": 0,
+                    "round_counter": 0,
                 },
                 event_type=AgentEventType.REQUEST_STOPPED,
                 state=AgentState.STOPPED.value,
@@ -370,7 +370,8 @@ class ChatService(BaseComponent):
             return
 
         session_state.closed = True
-        if end_reason == "runtime-stop" and session_state.activate_turn.active_steps:
+        # 单 agent 链路退役：active_steps 已删除，runtime-stop 直接判定为 STOPPED
+        if end_reason == "runtime-stop":
             session_state.state = AgentState.STOPPED
         elif session_state.state != AgentState.FAILED:
             session_state.state = AgentState.COMPLETED

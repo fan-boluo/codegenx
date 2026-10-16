@@ -3,9 +3,7 @@ import time
 import asyncio
 from codegenx.ai_service.agent.agent_schema import AgentState, AgentEventType
 from codegenx.ai_service.agent.agents.agent import AgentMessage
-from codegenx.ai_service.agent.agents.intention_agent import SupervisorAgent
-from codegenx.ai_service.agent.agents.plan_agent import PlannerAgent
-
+import traceback
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, TurnStoppedError, raise_if_stop_signal
 from codegenx.ai_service.hook import HookEvent, hook_manager, HookContext, HookAction
 from codegenx.ai_service.system_app import get_app
@@ -27,7 +25,7 @@ class AutoPlanManager:
     1. 把用户消息包装成 AgentMessage(sender="user") 投给 Supervisor
     2. 循环路由：每次取出 AgentMessage → 实例化 recipient agent → run() → 拿到新 AgentMessage
     3. 终止条件：recipient == "user" 或 max_turn_rounds 达到上限（强制终止）
-    4. 每次跨 agent 路由 step_counter++，用于日志、监控与停止判断
+    4. 每次跨 agent 路由 round_counter++，用于日志、监控与停止判断
 
     Agent 自身只负责 run() 内部的 ReAct 循环，不再互相 send/receive ——
     所有跨 agent 路由都收归此处，便于集中管控步数、日志与异常。
@@ -51,6 +49,9 @@ class AutoPlanManager:
 
             # ── 启动首 agent：Supervisor，消息 sender="user" ──
             user_text = str(getattr(session_state.request, "message", "") or "")
+            # 用户消息写入会话历史真相源（修复：原多 agent 链路 chat_messages 恒空、快照为空列表）
+            if session_state.context_manager is not None:
+                session_state.context_manager.add_user_message(user_text)
             current_msg = AgentMessage(
                 sender="user",
                 recipient="supervisor",
@@ -64,16 +65,16 @@ class AutoPlanManager:
             )
 
             # ── 循环路由：跨 agent 消息接力，直到 recipient=="user" ──
-            while activate_turn.step_counter < max_rounds:
+            while activate_turn.round_counter < max_rounds:
                 raise_if_stop_signal(session_state)
-                activate_turn.step_counter += 1
+                activate_turn.round_counter += 1
 
                 # 1) 检查是否完成：recipient=="user" 表示已有 agent 生成了面向用户的最终答复
                 target = current_msg.recipient or "user"
                 if target == "user":
                     final_text = self._extract_final_text(current_msg)
-                    log.info("═══════════════ TURN COMPLETE ═══════════════ | request={} | steps={} | final_len={}",
-                             request_id, activate_turn.step_counter, len(final_text))
+                    log.info("═══════════════ TURN COMPLETE ═══════════════ | request={} | rounds={} | final_len={}",
+                             request_id, activate_turn.round_counter, len(final_text))
                     await self._reply_and_finish(session_state, final_text)
                     return
 
@@ -100,11 +101,26 @@ class AutoPlanManager:
                 task_summary = (current_msg.message.get("task") if current_msg.message else "") or ""
                 task_summary = str(task_summary).replace("\n", " ")[:80]
                 log.info("─────────────── [TURN {}/{}] {} ──► {} ─────────────── | request={}",
-                         activate_turn.step_counter, max_rounds, current_msg.sender, target, request_id)
+                         activate_turn.round_counter, max_rounds, current_msg.sender, target, request_id)
                 log.info("  task: {}", task_summary)
 
                 # 5) run：agent 内部执行 ReAct 循环，返回下一跳 AgentMessage
                 next_msg = await agent.run(current_msg, session_state)
+
+                # 5.5) 子 agent 回传 supervisor → 写入会话历史（带 agent 附带字段，
+                #      供 Supervisor 历史视图过滤；planner 回传同样经此入史）
+                if (
+                    session_state.context_manager is not None
+                    and next_msg is not None
+                    and next_msg.recipient == "supervisor"
+                    and next_msg.sender not in ("supervisor", "user")
+                ):
+                    dispatched_task = str((current_msg.message or {}).get("task", "") or "")
+                    result_text = str((next_msg.message or {}).get("task", "") or "")
+                    session_state.context_manager.add_agent_result(
+                        next_msg.sender, dispatched_task, result_text,
+                        success=bool(next_msg.success),
+                    )
 
                 # 6) 兜底：run() 返回空消息或 recipient 丢失
                 if next_msg is None or not getattr(next_msg, "recipient", None):
@@ -116,7 +132,7 @@ class AutoPlanManager:
 
                 current_msg = next_msg
 
-            # ── while 正常退出 = step_counter >= max_rounds，强制终止 ──
+            # ── while 正常退出 = round_counter >= max_rounds，强制终止 ──
             log.warning("═══════════════ TURN FORCE STOP (max_rounds={}) ═══════════════ | request={}",
                         max_rounds, request_id)
             final_text = self._extract_final_text(current_msg)
@@ -126,15 +142,18 @@ class AutoPlanManager:
             )
 
         except TurnStoppedError as exc:
+
+            traceback.print_exc()
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.STOPPED
             await _message_bus().publish_runtime_event(
                 session_state.publish_context, event_type=AgentEventType.REQUEST_STOPPED,
                 data={"reason": str(exc)}, state=AgentState.STOPPED,
             )
-            log.info("┌─ TurnStoppedError ─┐ request={} step={} reason={}", request_id, activate_turn.step_counter, exc)
-            log.debug("{},{},{}", request_id, activate_turn.step_counter, " TurnStoppedError：", exc)
+            log.info("┌─ TurnStoppedError ─┐ request={} round={} reason={}", request_id, activate_turn.round_counter, exc)
+            log.debug("{},{},{},{}", request_id, activate_turn.round_counter, " TurnStoppedError：", exc)
         except asyncio.CancelledError:
+            traceback.print_exc()
             reason = str(session_state.stop_reason or "user-stop")
             activate_turn.error_text = reason
             activate_turn.state = AgentState.STOPPED
@@ -145,9 +164,10 @@ class AutoPlanManager:
                 state=AgentState.STOPPED,
             )
             log.info("┌─ CancelledError ─┐ request={} reason={}", request_id, reason)
-            log.debug("{},{},{}", request_id, activate_turn.step_counter, " CancelledError")
+            log.debug("{},{},{}", request_id, activate_turn.round_counter, " CancelledError")
             raise
         except Exception as exc:
+            traceback.print_exc()
             log.opt(exception=True).error("_execute_request failed: {}", exc)
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.FAILED
@@ -156,8 +176,8 @@ class AutoPlanManager:
             await _message_bus().publish_runtime_event(
                 session_state.publish_context, event_type="Error", data=str(exc), state=AgentState.FAILED,
             )
-            log.info("┌─ Exception ─┐ request={} step={} exc={}", request_id, activate_turn.step_counter, exc)
-            log.debug("{},{}, Exception:{}", request_id, activate_turn.step_counter, exc)
+            log.info("┌─ Exception ─┐ request={} round={} exc={}", request_id, activate_turn.round_counter, exc)
+            log.debug("{},{}, Exception:{}", request_id, activate_turn.round_counter, exc)
         finally:
             activate_turn.finished_at = time.time()
             # 注：agent 间消息由本类直接方法接力（内存变量），无收件箱/队列，
@@ -169,9 +189,9 @@ class AutoPlanManager:
                 session_id=session_state.session_id,
             )
             await hook_manager.emit(HookEvent.TURN_END, hook_ctx)
-            log.info("═══════════════ TURN END ═══════════════ | request={} final_state={} total_steps={}",
-                     request_id, activate_turn.state.value, activate_turn.step_counter)
-            log.debug("OnTurnEnd {},{}", request_id, activate_turn.step_counter)
+            log.info("═══════════════ TURN END ═══════════════ | request={} final_state={} total_rounds={}",
+                     request_id, activate_turn.state.value, activate_turn.round_counter)
+            log.debug("OnTurnEnd {},{}", request_id, activate_turn.round_counter)
 
     @staticmethod
     def _extract_final_text(msg: AgentMessage) -> str:
@@ -193,6 +213,9 @@ class AutoPlanManager:
     async def _reply_and_finish(session_state: RuntimeSessionState, content: str) -> None:
         """短路分支收尾：把面向用户的回复经 REQUEST_COMPLETED 事件下发。"""
         session_state.activate_turn.state = AgentState.COMPLETED
+        # 最终答复写入会话历史真相源（用户可见的最终轮）
+        if session_state.context_manager is not None:
+            session_state.context_manager.add_assistant_message(content)
         await _message_bus().publish_runtime_event(
             session_state.publish_context,
             event_type=AgentEventType.REQUEST_COMPLETED,

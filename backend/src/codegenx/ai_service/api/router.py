@@ -100,7 +100,7 @@ async def stop_code_stream(
     # 同 chat/gen：停止请求身份也以 JWT 登录态为准
     user_id = str(login_user.user_id)
     log.info(
-        "ai-service public stop request traceId={} requestId={} appId={} sessionId={} reason={} graceSeconds={}",
+        "ai-service public stop request traceId={} requestId={} appId={} sessionId={} reason={}",
         trace_id,
         request_id,
         request.app_id,

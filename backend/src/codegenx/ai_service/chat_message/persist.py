@@ -147,7 +147,8 @@ async def persist_tool_log(ctx: "HookContext") -> None:
         snapshot: dict[str, Any] = {
             "request_id": session.request.request_id,
             "ts": datetime.now(UTC).isoformat(),
-            "turn_id": ctx.turn.active_step_id if ctx.turn is not None else "",
+            # 单 agent 链路退役：原 ctx.turn.active_step_id 恒为空串，改用 round_counter 口径
+            "turn_id": session.activate_turn.round_counter,
             "tool": tool_name,
             "input": loggable_input,
             "result": result,

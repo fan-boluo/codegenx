@@ -10,6 +10,7 @@ docker_exec —— 容器内命令执行
 """
 
 import asyncio
+import base64
 from dataclasses import dataclass
 from typing import Any
 
@@ -144,3 +145,26 @@ async def execute_sql_in_docker(
             f"容器内 SQL 执行失败 (exit={result.exit_code}): {result.stderr or result.stdout}"
         )
     return _parse_mysql_table_output(result.stdout)
+
+
+async def execute_python_in_docker(
+    container: str,
+    code: str,
+    *,
+    python_bin: str = "python",
+    timeout: int = DEFAULT_DOCKER_TIMEOUT,
+) -> ExecResult:
+    """在容器内执行一段 Python 代码，返回统一 ExecResult。
+
+    为避免代码中引号/换行在 docker exec 命令行被 shell 吃掉，采用 base64 传参：
+    - 容器内运行固定命令 `python -c "import base64,sys;exec(base64.b64decode(sys.argv[1]).decode('utf-8'))" <base64>`
+    - 调用方需保证 `code` 中访问的文件路径已经是容器内路径（由上层做路径映射）
+    """
+    encoded = base64.b64encode(code.encode("utf-8")).decode("ascii")
+    args = [
+        python_bin,
+        "-c",
+        "import base64,sys;exec(base64.b64decode(sys.argv[1]).decode('utf-8'))",
+        encoded,
+    ]
+    return await docker_exec(container, *args, timeout=timeout)
