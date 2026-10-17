@@ -1,16 +1,19 @@
 import inspect
+import json
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, List, Type
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
-
-from codegenx.ai_service.agent.action import Action, T
+from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.tools.base import ToolResult
 from codegenx.ai_service.agent.runtime_schema import  RuntimeSessionState
 from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
 from codegenx.ai_service.system_app import get_app
 from shared import log
 from shared.constants import get_code_dir
+
+if TYPE_CHECKING:
+    from codegenx.ai_service.system_app import SystemApp
 
 DATA_ANALYSIS_TOOL_NAMES = {
     "list_tables",
@@ -22,6 +25,7 @@ DATA_ANALYSIS_TOOL_NAMES = {
     "describe_csv_stats",
     "guess_analysis_task",
     "get_table_relationships",
+    "execute_sql",
 }
 
 
@@ -33,7 +37,7 @@ TASK_TOOL_NAMES = {"task_create", "task_update", "task_get", "task_list"}
 # 监听器必须是无 self 的模块级函数，否则每次分发都 TypeError。
 
 
-def _resolve_safe_paths(session_state: Any | None) -> List[Path]:
+def _resolve_safe_paths(session_state: Any | None) -> list[Path]:
     """从会话状态解析 safe_paths（RuntimeSessionState.safe_paths 经 context_manager 推导）。"""
     candidate = getattr(session_state, "safe_paths", None) if session_state is not None else None
     if not candidate:
@@ -41,7 +45,7 @@ def _resolve_safe_paths(session_state: Any | None) -> List[Path]:
     return [Path(path).resolve() for path in candidate if str(path).strip()]
 
 
-def _is_safe_path(target: Path, safe_paths: List[Path]) -> bool:
+def _is_safe_path(target: Path, safe_paths: list[Path]) -> bool:
     for sp in safe_paths:
         try:
             # 能够计算 relatively 说明 target 在 sp 之内
@@ -106,38 +110,65 @@ async def safe_path_guard(ctx: "HookContext") -> "HookDecision | None":
 
     return None
 
-class ToolCall(BaseModel):
-    id: str = ""
-    name: str = ""
-    arguments: dict[str, Any] = Field(default_factory=dict)
+class ToolExecutor(BaseComponent):
+    """工具执行器：统一执行 LLM 返回的 tool_calls，转换为可回填对话的 tool 消息。
 
+    - dispatch_tool_calls：BaseReActAgent 工具化循环的调度入口，逐个执行并转换
+    - execute：单工具执行入口，完成上下文注入（db_name/app_id/user_id 等）与注册表查找
+    说明：路径安全等守卫为 BEFORE_TOOL_CALL 监听器，原由 runtime 在执行前分发；
+    多 agent 链路暂不接 hook，工具内部已有边界保护（路径服务端解析、SQL 只读守卫）。
+    """
 
-class ToolExecutor(Action):
+    # 组件名：system_app.tools_executor 属性按此名取实例
+    name = ComponentType.Tool_EXECUTOR
 
-    # def init_app(self, system_app) -> None:
-    #     self.system_app = system_app
+    def __init__(self, system_app: "SystemApp | None" = None):
+        super().__init__(system_app)
 
-    async def act(self, ai_message: Any, **kwargs) -> list[dict[str, Any]]:
-        """解析 LLM 返回的 tool_calls，逐一执行工具，返回 tool 结果消息列表。"""
-        session_state = kwargs.get("session_state")
-        tool_calls: list[ToolCall] = self.parse_ai_message(ai_message, ToolCall)
+    def init_app(self, system_app: "SystemApp") -> None:
+        # 无状态服务类，仅持有容器引用（工具查找时经 get_app() 取注册表）
+        self.system_app = system_app
+
+    # 单个工具结果回填对话的最大字符数（防止撑爆上下文）
+    MAX_TOOL_RESULT_CHARS = 8000
+
+    async def dispatch_tool_calls(
+        self, tool_calls: list[dict[str, Any]] | None,
+        session_state: RuntimeSessionState | None = None,
+    ) -> list[dict[str, Any]]:
+        """执行 tool_calls 列表，返回 [{"role": "tool", ...}] 消息列表（与 tool_calls 顺序对应）。"""
         results: list[dict[str, Any]] = []
-        for tc in tool_calls:
-            log.info("ToolExecutor act: 执行工具 {} | args={}", tc.name, tc.arguments)
+        for tc in tool_calls or []:
+            name = str(tc.get("name") or "")
+            arguments = tc.get("arguments") or {}
+            # 部分模型把 arguments 输出成 JSON 字符串，兜底解析
+            if isinstance(arguments, str):
+                with suppress(Exception):
+                    arguments = json.loads(arguments)
+            if not isinstance(arguments, dict):
+                arguments = {}
             try:
                 result = await self.execute(
-                    {"name": tc.name, "arguments": tc.arguments, "id": tc.id},
+                    {"name": name, "arguments": arguments, "id": str(tc.get("id") or "")},
                     session_state,
                 )
             except Exception as exc:
-                log.error("ToolExecutor act: 工具 {} 执行异常: {}", tc.name, exc)
+                log.error("工具 {} 执行异常: {}", name, exc)
                 result = ToolResult(success=False, message=str(exc))
-            content = result.data if result.success else (result.message or result.data)
+            # 约定：仅按 success 字段判定执行状态；成功回传 data，失败优先回传原因
+            content = result.data if result.success else (result.message or result.data or "工具执行失败")
+            if len(content) > self.MAX_TOOL_RESULT_CHARS:
+                content = content[: self.MAX_TOOL_RESULT_CHARS] + (
+                    f"\n...(已截断，原长 {len(content)} 字符)"
+                )
+            log.info("工具执行完成: {} | success={} | content_len={}", name, result.success, len(content))
             results.append({
                 "role": "tool",
-                "tool_call_id": tc.id,
-                "name": tc.name,
+                "tool_call_id": str(tc.get("id") or ""),
+                "name": name,
                 "content": content,
+                # 内部记账字段：供调用方统计直答降级判据（回填对话前剔除，不进 LLM API）
+                "_success": result.success,
             })
         return results
 
@@ -148,26 +179,9 @@ class ToolExecutor(Action):
         """ 顺序执行 """
         pass
 
-    # def parse_ai_message(self, ai_message: Any, cls: Type[T]) -> list[ToolCall]:
-    #     """从 ai_message 中解析 tool_calls 为 ToolCall 列表。"""
-    #     if not ai_message:
-    #         return []
-    #     tool_calls_raw: list = []
-    #     if isinstance(ai_message, dict):
-    #         tool_calls_raw = ai_message.get("tool_calls") or []
-    #     elif isinstance(ai_message, list):
-    #         tool_calls_raw = ai_message
-    #     result: list[ToolCall] = []
-    #     for tc in tool_calls_raw:
-    #         if isinstance(tc, dict):
-    #             result.append(ToolCall(
-    #                 id=tc.get("id", ""),
-    #                 name=tc.get("name", ""),
-    #                 arguments=tc.get("arguments", {}),
-    #             ))
-    #     return result
+    
 
-    async def execute(self, tool_call: Dict[str, Any],
+    async def execute(self, tool_call: dict[str, Any],
                       session_state: RuntimeSessionState | None = None) -> ToolResult:
         """
         统一执行工具的逻辑。
@@ -185,7 +199,10 @@ class ToolExecutor(Action):
         trace_id = getattr(session_state, "trace_id", "")
         stop_signal = getattr(session_state, "stop_signal", None) if session_state is not None else None
 
-        if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory", "code_check", "find", "grep"}:
+        # 项目级工具：需要 user_id/app_id 定位用户项目目录
+        if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "list_directory",
+                         "code_check", "find", "grep", "run_python", "list_csv_files",
+                         "describe_csv", "sample_csv_rows", "describe_csv_stats"}:
             tool_input.setdefault("app_id", app_id)
             tool_input.setdefault("user_id", user_id)
 
@@ -198,10 +215,11 @@ class ToolExecutor(Action):
             tool_input.setdefault("parent_turn_id", turn_id)
 
         if tool_name in TASK_TOOL_NAMES:
-            # P2 服务化：不再注入 TaskManager 实例，改为注入 ids（工具内部走 app.tasks）
+            # 任务看板工具：注入 ids（含 request_id，任务按 request 单文件隔离）
             tool_input.setdefault("user_id", user_id)
             tool_input.setdefault("app_id", app_id)
             tool_input.setdefault("session_id", session_id)
+            tool_input.setdefault("request_id", turn_id)
 
         if tool_name in DATA_ANALYSIS_TOOL_NAMES:
             db_name = getattr(session_state, "db_name", None) if session_state is not None else None
@@ -226,4 +244,9 @@ class ToolExecutor(Action):
             result = func(**call_kwargs)
 
         return result
+
+
+def initialize_tool_executor(system_app) -> ToolExecutor:
+    """启动装配入口：注册工具执行器组件（DB-GPT 风格 initialize_xxx 约定）。"""
+    return system_app.register(ToolExecutor)
 

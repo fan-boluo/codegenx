@@ -581,3 +581,86 @@ def mask_nan_matrix(matrix: np.ndarray) -> np.ndarray:
     """去除含 NaN 的行，返回无 NaN 的矩阵。"""
     valid = ~np.any(np.isnan(matrix), axis=0)
     return matrix[:, valid]
+
+
+# ═══════════════════════════════════════════════════════════
+# 8. execute_sql
+# ═══════════════════════════════════════════════════════════
+
+class ExecuteSqlTool(BaseTool):
+    """任意只读 SQL 执行（data_explore 智能体的核心工具）。
+
+    db_name 由 ToolExecutor 从 session_state 注入（app 绑定库），
+    SQL 经 _check_sql_safety 只读守卫后执行，结果格式化为文本表格（最多展示 50 行）。
+    """
+
+    @property
+    def name(self) -> str:
+        return "execute_sql"
+
+    @property
+    def label(self) -> str:
+        return "data_analysis"
+
+    @property
+    def description(self) -> str:
+        return (
+            "在指定数据库上执行一条任意只读 SQL 查询，返回结果表格（最多展示前 50 行）。"
+            "仅允许 SELECT/SHOW/DESC 语句，禁止写操作与 DDL。"
+            "表结构已在任务上下文中提供，直接编写 SQL 即可。"
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "sql": {
+                    "type": "string",
+                    "description": "完整可执行的只读 SQL 语句（MySQL 语法）",
+                },
+            },
+            "required": ["sql"],
+        }
+
+    async def execute(
+        self, params: dict, signal: asyncio.Event | None = None,
+    ) -> ToolResult:
+        try:
+            return await self._do_execute(params)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("execute_sql 执行异常: {}", exc)
+            return ToolResult(success=False, message=f"SQL 执行失败: {exc}")
+
+    async def _do_execute(self, params: dict) -> ToolResult:
+        sql = str(params.get("sql") or "").strip()
+        if not sql:
+            return ToolResult(success=False, message="SQL 为空，无法执行")
+        db_name = str(params.get("db_name") or "").strip()
+        if not db_name:
+            return ToolResult(success=False, message="当前应用未绑定数据库（db_name 未注入），无法执行 SQL")
+
+        # ── 统一只读守卫（复用 MysqlManager 安全检查） ──
+        _check_sql_safety(sql)
+
+        # ── 按环境分支执行：dev 走 MysqlManager 连接池，非 dev 走 docker 容器内 mysql 客户端 ──
+        from shared import settings
+        if settings.env == "dev":
+            rows = await get_mysql_manager().query(db_name, sql)
+        else:
+            from codegenx.ai_service.agent.db.docker_exec import execute_sql_in_docker
+            rows = await execute_sql_in_docker(
+                container=settings.sql_exec_docker_container,
+                db_name=db_name,
+                sql=sql,
+                mysql_user=settings.userdb_mysql_user,
+                mysql_password=settings.userdb_mysql_password,
+                mysql_host=settings.userdb_mysql_host,
+                mysql_port=settings.userdb_mysql_port,
+            )
+        row_count = len(rows)
+
+        output = f"查询结果（共 {row_count} 行）:\n" + _format_rows(rows)
+        return ToolResult(success=True, data=output, render=f"SQL 执行成功（{row_count} 行）")

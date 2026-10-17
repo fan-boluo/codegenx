@@ -92,29 +92,30 @@ class AgentContext:
     # 会话摘要阈值状态
     summary_state: SummaryState = field(default_factory=SummaryState)
 
-class MessagePayload(BaseModel):
-    task:str = ""               # 发送的消息文本
-    metadata : dict[str, Any] = {}
-
-class NextMessageModel(BaseModel):
-    next_agent:str = ""
-    message: str = ""  # 给下一个agent看的任务
-    metadata: dict[str, Any] = {}  # 执行结果和附带的其它信息
-
 class AgentMessage(BaseModel):
-    """Agent 间消息（控制面）：任务分配、结果返回、意图路由等。
+    """Agent 间消息：路由循环中的一跳（AutoPlanManager 内存接力）。
+
+    语义契约（按跳向，一跳通常只填其一）：
+    - 派发跳（supervisor→executor / planner）：task=任务描述
+    - 回传跳（executor/planner→supervisor）：result=执行结果；task 保留入参原值（追溯）
+    - 终答跳（*→user）：result=面向用户的答复
 
     request_id 复用用户请求 ID，串联同一次任务的全链路消息，不新增 correlation_id。
     """
 
-    sender: str = ""               # 发送方 name
-    recipient: str = ""            # 接收方 name，"*" 表示广播
-    is_user_message : bool|None = None  # 是否是用户发送的消息
-    message: dict[str, Any] = {}  # 发送的消息  {"task":"","metadata":""}
-    summary: str = ""              # 消息文本摘要
+    # ── 信封：路由与追踪（调度器 AutoPlanManager 消费） ──
+    sender: str = ""               # 发送方 agent_name；"user" 表示用户
+    recipient: str = ""            # 接收方 agent_name；"user" 表示面向用户的终答
     request_id: str = ""           # 任务关联 ID（复用请求 ID）
     session_id: str = ""
-    # agent执行完后需要补充的信息
-    output: dict[str, Any] = field(default_factory=dict) # agent执行输出，暂定ActOutput的结构
-    success: bool | None = None  # agent执行结果
-    next: NextMessageModel|None = None  # 接收方完成后下一步：next_agent,message:给下一个的消息
+
+    # ── 载荷：接收方消费 ──
+    task: str = ""                 # 要求接收方完成的任务文本
+    result: str = ""               # 发送方执行结果 / 面向用户的答复
+    task_id: int | None = None     # 看板任务 ID：派发下传、回传原样带回（闭环握手）、直答清除
+    step_id: int | None = None     # 计划步骤号（planner 模式派发携带）
+    direct_reply: bool = False     # 派发标记：执行 agent 完成后直答用户不回传 supervisor
+
+    # ── 状态与低频扩展 ──
+    success: bool | None = None    # 发送方执行成败
+    metadata: dict[str, Any] = {}  # 低频扩展；禁止承载上述一等字段语义

@@ -90,7 +90,7 @@ class CsvManager:
             result = chardet.detect(raw)
             enc = result.get("encoding", "utf-8")
             confidence = result.get("confidence", 0)
-            log.info("编码检测: %s (置信度 %.2f)", enc, confidence)
+            log.info("编码检测: {} (置信度 {:.2f})", enc, confidence)
             return enc or "utf-8"
         return "utf-8"
 

@@ -6,7 +6,7 @@ from codegenx.ai_service.agent.action import Action, ActOutput
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from codegenx.ai_service.system_app import get_app
-from codegenx.ai_service.agent.agents.agent import AgentMessage, NextMessageModel
+from codegenx.ai_service.agent.agents.agent import AgentMessage
 from shared import log
 
 
@@ -122,11 +122,10 @@ class PlannerAgent(BaseReActAgent):
         ReAct 流程（通常 1 步）：
           step 1  think → LLM 生成 PlanOutput JSON
                  act   → PlanAction 解析 + 校验
-                 ── 成功 → next_agent=msg.sender（supervisor），message.task=plan JSON
+                 ── 成功 → 回传跳（recipient=调用方，result=plan JSON）
                  ── 失败 → messages 追加错误提示，继续 try（最多 max_steps 次）
         """
         caller = msg.sender or "user"
-        msg.output = act_output.model_dump(mode="json")
 
         if not act_output.success:
             # ── 规划失败：让 LLM 重试（最多 max_steps 次） ──
@@ -142,7 +141,7 @@ class PlannerAgent(BaseReActAgent):
             msg.success = False
             return msg
 
-        # ── 规划成功：序列化 JSON 返回给调用方 ──
+        # ── 规划成功：序列化 JSON 返回给调用方（回传跳：result 承载 plan） ──
         plan_dict = act_output.output  # dict: {goal, steps}
         try:
             plan_json = _json.dumps(plan_dict, ensure_ascii=False)
@@ -151,9 +150,9 @@ class PlannerAgent(BaseReActAgent):
 
         log.info("Planner observation: 规划成功，返回给 {} | goal={} | steps={}",
                  caller, plan_dict.get("goal", ""), len(plan_dict.get("steps", [])))
-        msg.next = NextMessageModel(
-            next_agent=caller,
-            message=plan_json,  # Supervisor._consume_planner_plan 从 msg.message["task"] 解析
-        )
+        msg.sender = self.agent_name
+        msg.recipient = caller
+        msg.result = plan_json  # Supervisor.consume_planner_plan 从 msg.result 解析
+        msg.task_id = None
         msg.success = True
         return msg

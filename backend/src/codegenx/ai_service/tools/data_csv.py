@@ -28,16 +28,34 @@ MAX_COLS_CSV_WIDE = 30
 # 列统计超时
 CSV_STATS_TIMEOUT = 30
 
-# ── 单例 ──────────────────────────────────────────────────
+# ── 路径解析 ──────────────────────────────────────────────
 
-_csv_manager: CsvManager | None = None
+def _resolve_csv_context(params: dict, file_path: str) -> tuple[CsvManager, str]:
+    """解析 LLM 传入的 file_path 并返回守卫目录正确的 CsvManager。
 
+    LLM 只见文件名（真实路径不可见）：传文件名/相对路径时按用户项目 code_dir 解析；
+    绝对路径且存在则直接使用（是否越界由 _check_safety 守卫）。
+    守卫目录必须设为 code_dir：默认 /data/csv_files 在宿主机不存在，
+    任何路径都会被误拒（app.log:149「文件不在允许的目录中」根因）。
+    """
+    from shared.constants import get_code_dir
+    user_id = str(params.get("user_id") or "main")
+    app_id = str(params.get("app_id") or "main")
+    root = get_code_dir(user_id, app_id).resolve()
 
-def _get_csv_manager() -> CsvManager:
-    global _csv_manager
-    if _csv_manager is None:
-        _csv_manager = CsvManager()
-    return _csv_manager
+    p = Path(file_path)
+    if not (p.is_absolute() and p.exists()):
+        candidate = (root / file_path).resolve()
+        try:
+            # 越界路径（../ 等）不解析，保持原样交给 _check_safety 报错
+            candidate.relative_to(root)
+        except ValueError:
+            candidate = None
+        if candidate is not None:
+            # 目录内但文件不存在也用解析路径：守卫报「文件不存在」而非误导性的「不在允许目录」
+            p = candidate
+
+    return CsvManager(CsvConfig(data_dir=str(root))), str(p)
 
 
 # ── 格式化辅助 ────────────────────────────────────────────
@@ -117,11 +135,11 @@ class DescribeCsvTool(BaseTool):
         self, params: dict, signal: asyncio.Event | None = None,
     ) -> ToolResult:
         file_path = params["file_path"]
-        mgr = _get_csv_manager()
+        mgr, file_path = _resolve_csv_context(params, file_path)
 
         info = mgr.read_info(file_path)
         sample = mgr.read_sample(file_path, limit=5)
-        
+
 
         lines = [
             f"文件: {info['file_name']}",
@@ -197,7 +215,7 @@ class SampleCsvRowsTool(BaseTool):
         if limit > 100:
             limit = 100
 
-        mgr = _get_csv_manager()
+        mgr, file_path = _resolve_csv_context(params, file_path)
         sample = mgr.read_sample(file_path, limit=limit)
 
         output = f"CSV 采样 ({sample['n_rows_sampled']} 行):\n"
@@ -278,7 +296,7 @@ class DescribeCsvStatsTool(BaseTool):
         requested_sample_pct = int(params.get("sample_pct", 100))
         timeout = int(params.get("timeout_seconds", CSV_STATS_TIMEOUT))
 
-        mgr = _get_csv_manager()
+        mgr, file_path = _resolve_csv_context(params, file_path)
         info = mgr.read_info(file_path)
         est_rows = info["estimated_rows"]
         all_col_names = info["columns"]
@@ -388,3 +406,65 @@ class DescribeCsvStatsTool(BaseTool):
         lines.append("")
         lines.append(f"共统计 {len(numeric_results) + len(categorical_results)} 列")
         return ToolResult(success=True, data="\n".join(lines), render=f"CSV 统计: {info['file_name']} ({len(numeric_results) + len(categorical_results)} 列)")
+
+
+# ═══════════════════════════════════════════════════════════
+# 8. list_csv_files
+# ═══════════════════════════════════════════════════════════
+
+class ListCsvFilesTool(BaseTool):
+    """列出当前用户项目下的 csv 文件（user_id/app_id 由 ToolExecutor 注入）。
+
+    返回的完整路径可后续作为 describe_csv 的 file_path 参数使用。
+    """
+
+    @property
+    def name(self) -> str:
+        return "list_csv_files"
+
+    @property
+    def label(self) -> str:
+        return "data_analysis"
+
+    @property
+    def description(self) -> str:
+        return (
+            "列出当前项目下所有 csv 文件，包括文件名、大小与完整路径。"
+            "返回的路径可作为 describe_csv 的 file_path 参数。"
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {},
+        }
+
+    async def execute(
+        self, params: dict, signal: asyncio.Event | None = None,
+    ) -> ToolResult:
+        try:
+            return self._do_execute(params)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("list_csv_files 执行异常: {}", exc)
+            return ToolResult(success=False, message=f"列出 csv 文件失败: {exc}")
+
+    def _do_execute(self, params: dict) -> ToolResult:
+        from shared.constants import get_code_dir
+        user_id = str(params.get("user_id") or "main")
+        app_id = str(params.get("app_id") or "main")
+        code_dir = get_code_dir(user_id, app_id)
+        if not code_dir.exists():
+            return ToolResult(success=True, data=f"（项目目录不存在: {code_dir}）")
+
+        csv_files = sorted(code_dir.glob("*.csv"))
+        if not csv_files:
+            return ToolResult(success=True, data=f"（{code_dir} 下暂无 csv 文件）")
+
+        lines = [f"共找到 {len(csv_files)} 个 csv 文件:"]
+        for fp in csv_files:
+            size_mb = fp.stat().st_size / 1024 / 1024
+            lines.append(f"- {fp.name} ({size_mb:.2f}MB) 路径: {fp}")
+        return ToolResult(success=True, data="\n".join(lines), render=f"csv 文件列表（{len(csv_files)} 个）")

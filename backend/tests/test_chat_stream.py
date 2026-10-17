@@ -44,29 +44,24 @@ def do_login(base_url: str, account: str, password: str) -> str:
     return body["data"]
 
 
-def stream_chat(
-    base_url: str,
-    token: str,
-    app_id: str,
-    message: str,
-    session_id: str,
-    trace_id: str,
-    request_id: str,
-) -> str:
+def stream_chat(user_message:str,token:str) -> str:
     headers = {"Authorization": f"Bearer {token}"}
+    trace_id = uuid.uuid4().hex
+    request_id = uuid.uuid4().hex
     payload = {
         "appId": app_id,
-        "message": message,
+        "message": user_message,
         "sessionId": session_id,
         "traceId": trace_id,
         "requestId": request_id,
-        "user_id":user_id,
-        "db_name":db_name,
+        "userId":user_id,
+        "dbName":db_name,
 
     }
+    base_url = BASE_URL
     print(f"\n>>> [POST] {base_url}/api/ai/chat/gen")
     print(f"    traceId={trace_id} requestId={request_id} sessionId={session_id}")
-    print(f"    message: {message}\n")
+    print(f"    message: {user_message}\n")
 
     start = time.monotonic()
     first_chunk_at = None
@@ -103,57 +98,30 @@ def stream_chat(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="测试 /api/ai/chat/gen 对话流接口")
-    parser.add_argument("--base-url", default=BASE_URL, help="后端地址")
-    parser.add_argument("--token", default="", help="直接指定 JWT token（跳过登录）")
-    parser.add_argument("--account", default=account, help="登录账号")
-    parser.add_argument("--password", default=password, help="登录密码")
-    parser.add_argument("--app-id", default="app_0001", help="应用 ID")
-    parser.add_argument("--session-id", default="", help="复用会话 ID（不传则新生成）")
-    parser.add_argument("-m", "--message", default=user_message, help="要发送的消息（不传则进入交互模式）")
+    parser.add_argument("-m", "--message", help="单次发送的消息（不传则进入交互模式）")
     args = parser.parse_args()
 
-    token = args.token
-    if not token:
-        if not (args.account and args.password):
-            parser.error("必须提供 --token，或同时提供 --account 和 --password")
-        token = do_login(args.base_url, args.account, args.password)
-        print(f"[登录成功] token 前 20 位: {token[:20]}...")
-
-    session_id = args.session_id or f"s_{uuid.uuid4().hex[:16]}"
+    token = do_login(BASE_URL, account, password)
+    print(f"[登录成功] token 前 20 位: {token[:20]}...")
 
     if args.message:
-        stream_chat(
-            base_url=args.base_url,
-            token=token,
-            app_id=args.app_id,
-            message=args.message,
-            session_id=session_id,
-            trace_id=uuid.uuid4().hex,
-            request_id=uuid.uuid4().hex,
-        )
+        stream_chat(args.message, token)
         return
 
     # 交互模式：同一 session 多轮对话
     print(f"[交互模式] sessionId={session_id}（输入 exit 退出）")
     while True:
         try:
-            message = input("\n你 > ").strip()
+            user_message = input("\n你 > ").strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if not message or message.lower() in ("exit", "quit", "q"):
+        if not user_message or user_message.lower() in ("exit", "quit", "q"):
             break
-        stream_chat(
-            base_url=args.base_url,
-            token=token,
-            app_id=args.app_id,
-            message=message,
-            session_id=session_id,
-            trace_id=uuid.uuid4().hex,
-            request_id=uuid.uuid4().hex,
-        )
+        stream_chat(user_message,token)
 
 
 if __name__ == "__main__":
+    session_id = "session_12345678910"
     account = "boluo"
     password = "boluo123"
     app_id = "app_0001"
@@ -164,6 +132,6 @@ if __name__ == "__main__":
     # user_message = "2022年卖出了多少件产品"
     # user_message2 = "2022年订单金额Top3的用户是哪几位？金额分别多少"
     # user_message = "一共多少用户？一共多少产品"
-    # user_message = "2023年订单位于 order_2023.csv，2022年定义位于数据库，对比2022和2023订单数量"
-    user_message = "2023年订单位于 order_2023.csv,计算订单数量"
+    user_message = "2023年订单位于 order_2023.csv，2022年订单位于数据库，对比2022和2023订单数量"
+    # user_message = "2023年订单位于 order_2023.csv,计算订单数量"
     main()

@@ -55,13 +55,9 @@ class AutoPlanManager:
             current_msg = AgentMessage(
                 sender="user",
                 recipient="supervisor",
-                is_user_message=True,
-                message={"task": user_text},
-                summary=user_text[:50],
+                task=user_text,
                 request_id=request_id,
                 session_id=session_state.session_id,
-                success=None,
-                next=None,
             )
 
             # ── 循环路由：跨 agent 消息接力，直到 recipient=="user" ──
@@ -98,8 +94,7 @@ class AutoPlanManager:
                 agent = spec.cls()
 
                 # 4) 日志高亮：TURN ROUND N/M  sender -> recipient
-                task_summary = (current_msg.message.get("task") if current_msg.message else "") or ""
-                task_summary = str(task_summary).replace("\n", " ")[:80]
+                task_summary = str(current_msg.task or "").replace("\n", " ")[:80]
                 log.info("─────────────── [TURN {}/{}] {} ──► {} ─────────────── | request={}",
                          activate_turn.round_counter, max_rounds, current_msg.sender, target, request_id)
                 log.info("  task: {}", task_summary)
@@ -115,18 +110,20 @@ class AutoPlanManager:
                     and next_msg.recipient == "supervisor"
                     and next_msg.sender not in ("supervisor", "user")
                 ):
-                    dispatched_task = str((current_msg.message or {}).get("task", "") or "")
-                    result_text = str((next_msg.message or {}).get("task", "") or "")
+                    dispatched_task = str(current_msg.task or "")
+                    result_text = str(next_msg.result or "")
                     session_state.context_manager.add_agent_result(
                         next_msg.sender, dispatched_task, result_text,
                         success=bool(next_msg.success),
                     )
+                    log.debug("子 agent 回传写入会话历史 | from={} | task_id={} | result_len={}",
+                              next_msg.sender, next_msg.task_id, len(result_text))
 
                 # 6) 兜底：run() 返回空消息或 recipient 丢失
                 if next_msg is None or not getattr(next_msg, "recipient", None):
                     log.warning("agent.run 返回空下一跳，强制终止")
                     await self._reply_and_finish(
-                        session_state, current_msg.message.get("task", "")[:200] if isinstance(current_msg.message, dict) else str(current_msg.message)[:200],
+                        session_state, str(current_msg.task or "")[:200],
                     )
                     return
 
@@ -197,17 +194,12 @@ class AutoPlanManager:
     def _extract_final_text(msg: AgentMessage) -> str:
         """从最终面向用户的 AgentMessage 里抽取纯文本。
 
-        run() 内部组装返回的 AgentMessage 里 message={"task": next_message, ...}，
-        这里兼容 message 为 dict 或 str 两种情况。
+        终答跳 result 承载答复文本；FORCE STOP 降级路径可能停在派发跳（result 空），
+        用 task 兜底返回已派发的任务文本。
         """
         if msg is None:
             return ""
-        payload = msg.message
-        if isinstance(payload, dict):
-            task = payload.get("task", "") or ""
-            if task:
-                return str(task)
-        return str(payload or "")
+        return str(msg.result or msg.task or "")
 
     @staticmethod
     async def _reply_and_finish(session_state: RuntimeSessionState, content: str) -> None:

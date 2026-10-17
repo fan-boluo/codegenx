@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json as _json
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
-
-from codegenx.ai_service.agent.action import Action, ActOutput
-from codegenx.ai_service.agent.agents.agent import AgentMessage, NextMessageModel
+from codegenx.ai_service.agent.action import ActOutput
+from codegenx.ai_service.agent.agents.agent import AgentMessage
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from shared import log
@@ -44,108 +41,41 @@ _FK_META_SQL = (
 )
 
 
-class SqlActionInput(BaseModel):
-    """SQL 分析动作的输入（LLM 返回内容的解析结果）。"""
-    database: str = ""
-    sql: str = ""
+class DateExploreAgent(BaseReActAgent):
+    """数据探索（工具化 agent：自主调用 execute_sql 完成查询并作答）
 
-
-class SQLAction(Action[SqlActionInput]):
-    """SQL 执行动作：解析 LLM 返回的 SQL JSON → 安全检查 → 执行 → 返回 rows。
-
-    dev 环境走宿主机 MysqlManager 直连，非 dev 环境走 docker exec 容器内 mysql 客户端。
+    执行循环由 BaseReActAgent 的原生 tool_calls 循环承担：
+    think →（LLM 发起 execute_sql）→ 工具结果回填 → 继续 think → … → 无工具调用时自由文本作答。
+    简单查询一轮即可自总结答复，复杂任务多轮迭代。
     """
 
-    async def act(self, ai_message: ActOutput, session_state=None, **kwargs) -> ActOutput:
-        parsed = self.parse_ai_message(ai_message, SqlActionInput)
-        if parsed is None:
-            return ActOutput(success=False, message="SQL 解析失败（非合法 JSON）")
-        if not parsed.sql.strip():
-            return ActOutput(success=False, message="SQL 为空，无法分析")
-
-        # ── 统一的 SQL 安全检查（复用 MysqlManager 的只读守卫） ──
-        from codegenx.ai_service.agent.db.mysql_manager import _check_sql_safety
-        try:
-            _check_sql_safety(parsed.sql)
-        except ValueError as exc:
-            log.warning("SQL 安全检查未通过: {}", exc)
-            return ActOutput(success=False, message=f"SQL 不允许执行: {exc}")
-
-        # ── 按环境分支执行 ──
-        from shared import settings
-        try:
-            if settings.env == "dev":
-                rows = await self._execute_local(parsed.database, parsed.sql)
-            else:
-                rows = await self._execute_in_docker(parsed.database, parsed.sql)
-        except Exception as exc:
-            log.error("SQL 执行异常: {}", exc)
-            return ActOutput(success=False, message=f"SQL 执行失败: {exc}")
-        log.debug("【SqlAction】 结果：{}", parsed.model_dump())
-        return ActOutput(success=True, output={
-            "database": parsed.database,
-            "sql": parsed.sql,
-            "rows": rows,
-        })
-
-    @staticmethod
-    async def _execute_local(db_name: str, sql: str) -> list[dict]:
-        """dev 环境：通过 MysqlManager 连接池直连。"""
-        from codegenx.ai_service.agent.db.mysql_manager import get_mysql_manager
-        mgr = get_mysql_manager()
-        return await mgr.query(db_name, sql)
-
-    @staticmethod
-    async def _execute_in_docker(db_name: str, sql: str) -> list[dict]:
-        """非 dev 环境：docker exec 容器内调用 mysql 客户端。"""
-        from codegenx.ai_service.agent.db.docker_exec import execute_sql_in_docker
-        from shared import settings
-        return await execute_sql_in_docker(
-            container=settings.sql_exec_docker_container,
-            db_name=db_name,
-            sql=sql,
-            mysql_user=settings.userdb_mysql_user,
-            mysql_password=settings.userdb_mysql_password,
-            mysql_host=settings.userdb_mysql_host,
-            mysql_port=settings.userdb_mysql_port,
-        )
-
-
-class DateExploreAgent(BaseReActAgent):
-    """ 数据探索 """
     name = "data_explore"
 
     profile: PromptConfig = PromptConfig(
         role="Data Analyst",
         name="data_explore",  # 和config里面的对应
-        goal="根据提供的database信息，使用正确的{{type}} SQL，分析用户输入",
+        goal="使用 execute_sql 工具查询 {{type}} 数据库，基于真实查询结果回答任务并给出结论",
         desc="根据数据库资源进行sql数据分析",
         is_retry_chat=False,
         retry_goal="",
         retry_constraints=[],
         constraints=[
-            "请确保输出符合要求格式。每次分析**仅输出一条分析结果 SQL**，尽可能完整覆盖分析目标内容。",
-            "若存在近期消息记录，分析时请参考历史回答与执行结果，**不要重复生成相同的错误答案**。请仔细校验，保证生成的 SQL 正确。"
-            "必须严格遵守给定的数据结构定义，**禁止使用不存在的字段**；注意区分不同表的字段，不可混淆，支持多表关联查询。",
-            "如果分析目标所需的数据、字段分布在多张不同表中，建议优先使用多表关联查询，并留意多张表结构之间的关联关系。",
-            "**禁止自行编造数据作为查询条件**，仅能使用用户输入中提供的数据值作为查询条件。",
-            "结果以表格形式输出"
+            "可用工具：execute_sql（执行只读 SQL）。数据库及表结构已在下方提供，直接编写 SQL 即可，无需再查询元信息。",
+            "严格按表结构编写 SQL，禁止使用不存在的字段；注意区分不同表的字段，支持多表关联查询，留意表间外键关系。",
+            "仅允许只读语句（SELECT/SHOW/DESC），禁止 INSERT/UPDATE/DELETE/DDL 等写操作。",
+            "禁止自行编造数据作为查询条件，仅能使用任务中提供的数据值作为查询条件。",
+            "查询结果行数较多时合理使用聚合或 LIMIT；一次查询不够时可分步多次查询。",
+            "查询完成后必须基于工具返回的真实数据给出结论：直接回答任务问题，简明陈述关键数值与依据，禁止编造数值。",
+            "若 SQL 执行报错，根据工具返回的错误信息修正后重试；多次失败则如实说明原因与已排除的方向。",
         ],
         resource_prompt="你可以查询的database及数据表schema如下:{{database_info}}",
         expand_prompt="",
         examples="",
-        out_schema="""请严格按如下JSON格式输出：
-{
-    "database": "要查询的database名称",
-    "sql": "一条完整、可执行的SQL语句"
-}
-确保输出仅有JSON，无多余文字，可被python json.loads加载。""",
+        out_schema="最终答复直接用自然语言给出：先给结论，再列关键数据依据。不要输出 JSON，不要描述你的执行过程。",
     )
 
     def __init__(self):
         super().__init__()
-        # 注意：这里是实例而非类，act 是实例方法
-        self.actions = [SQLAction()]
         self._db_info = ""  # _prepare_agent 中填充
 
     def _prepare_prompt_params(self) -> dict:
@@ -163,11 +93,49 @@ class DateExploreAgent(BaseReActAgent):
 
     @staticmethod
     async def _query_available_db_info(session_state: RuntimeSessionState) -> str:
+        """
+        测试阶段为方便直接给结果
+        """
+        return """
+database:prj_ec
+
+tables 建表语句:
+
+CREATE TABLE orders (
+    order_id int,
+    user_id int,
+    product_id int,
+    quantity int COMMENT '数量',
+    order_date date COMMENT '订单日期',
+    PRIMARY KEY (order_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+) COMMENT '订单信息表';
+
+CREATE TABLE products (
+    product_id int,
+    product_name varchar(100) COMMENT '商品名称',
+    product_price float COMMENT '商品价格',
+    PRIMARY KEY (product_id)
+) COMMENT '商品信息表';
+
+CREATE TABLE users (
+    user_id int,
+    user_name varchar(100) COMMENT '用户名',
+    user_email varchar(100) COMMENT '用户邮箱',
+    registration_date date COMMENT '注册日期',
+    user_country varchar(100) COMMENT '用户国家',
+    PRIMARY KEY (user_id)
+) COMMENT '用户信息表';
+        """
+    @staticmethod
+    async def _query_available_db_info_bak(session_state: RuntimeSessionState) -> str:
         """按 app 绑定的数据库实时查询 information_schema，拼出 database + 各表建表语句文本。
 
         绑定关系来源：app 表 dbName → gateway 注入请求 → session_state.db_name。
         元信息不冗余存储，以 information_schema 为单一事实源（与工具层同一查询通道）。
         """
+        # TODO 这种查询所有信息的太冗余了，只给出一些表来先，后续换成根据提示词从向量数据库查询可能涉及的表
         db_name = session_state.db_name
         if not db_name:
             return "（当前应用未绑定数据库，无法执行 SQL 分析）"
@@ -208,72 +176,24 @@ class DateExploreAgent(BaseReActAgent):
         return "\n\n".join(parts)
 
     async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:
-        """观察 SQLAction 执行结果，设置下一跳。
+        """观察最终答复：工具化循环结束后 LLM 的自由文本即结论，直接回传调用方。
 
-        DataExploreAgent 是纯执行器：执行完就把结果返回给调用方（msg.sender），
-        由调用方（通常是 Supervisor）决定总结给用户还是继续编排。
-
-        ReAct 流程（通常 1 步）：
-          step 1  think → LLM 生成 SQL JSON
-                 act   → SQLAction 执行
-                 ── 成功 → next_agent=msg.sender, success=True → 退出
-                 ── 失败 → messages 追加错误, success=False → 继续 try（最多 max_steps 次）
+        工具化模式下 act_output 只是 LLM 响应的封装（无 Action 链）；
+        SQL 执行失败已通过 tool 消息回填由 LLM 自行修正重试，走到这里的
+        都是已生成最终答复的正常路径。任务自包含由 Supervisor 派发保证，
+        本 agent 只对自身任务负责，不感知总体目标。
         """
-        msg.output = act_output.model_dump(mode="json")
-
-        caller = msg.sender or "user"  # 调用方；没设就兜底 user
-
-        if not act_output.success:
-            # ── SQL 执行失败：喂回 messages 让 LLM 修正 SQL（最多 max_steps 次） ──
-            log.warning("DataExploreAgent SQL 执行失败，让 LLM 重试：{}", act_output.message)
-            self._messages.append({
-                "role": "user",
-                "content": (
-                    f"上一次生成的 SQL 执行失败，请修正后重新输出 JSON。\n"
-                    f"失败原因：{act_output.message}\n"
-                    f"请重新生成正确的 SQL。"
-                ),
-            })
+        final_text = str(llm_response.get("content") or "").strip()
+        if not final_text:
+            # 防御：run 循环已兜底空回复，正常不会走到这里
             msg.success = False
             return msg
 
-        # ── SQL 执行成功：rows 截断后返回给调用方（大表避免塞爆 prompt） ──
-        parsed = act_output.output or {}
-        database = parsed.get("database", "")
-        sql = parsed.get("sql", "")
-        rows = parsed.get("rows", [])
-        row_count = len(rows) if isinstance(rows, list) else 0
-
-        # 最多传前 20 行给调用方；Supervisor 审查时根据 row_count 判断是否需要二次查询
-        truncated = rows[:20] if isinstance(rows, list) else []
-
-        payload = {
-            "database": database,
-            "sql": sql,
-            "rows": truncated,
-            "row_count": row_count,
-            "truncated": row_count > 20,
-        }
-
-        log.info("DataExploreAgent SQL 执行成功 | 返回给 {} | rows={}{}",
-                 caller, row_count, " (截断前20行)" if row_count > 20 else "")
-        # message 必须携带真实执行结果（rows），供调用方（Supervisor 审查 / 历史
-        # 记录 auto_plan_manager.add_agent_result）直接看到数据，metadata 保留结构化原文；
-        # default=str 兜底 MySQL 返回的 Decimal/datetime 等非 JSON 原生类型
-        rows_text = _json.dumps(truncated, ensure_ascii=False, default=str)
-        truncation_hint = f"，数据较大仅返回前 {len(truncated)} 行" if row_count > 20 else ""
-        msg.next = NextMessageModel(
-            next_agent=caller,
-            message=(
-                f"任务：{msg.message.get("task")}"
-                f"{self.agent_name} agent执行sql完毕，请核查。\n"
-                f"SQL: {sql}\n"
-                f"查询结果（共 {row_count} 行{truncation_hint}）：\n{rows_text}"
-            ),
-            metadata=payload
-        )
-        msg.success = True
-        return msg
+        # 直答/回传路由：派发标记 direct_reply 且工具未全失败 → 直答用户；否则回传调用方
+        target = self._resolve_final_target(msg)
+        log.info("DataExploreAgent 完成 | 返回 {} | 答复长度={}", target, len(final_text))
+        # 结论写进 result（回传跳 result 承载结果文本，task 保留原任务便于追溯）
+        return self._reply(msg, target, final_text)
 
 
 

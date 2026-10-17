@@ -6,8 +6,9 @@ Four tools that give the LLM full CRUD access to the persistent task board:
   task_get     — fetch a single task record
   task_list    — list all (or filtered) tasks on the board
 
-原注入 TaskManager 实例改为注入 user_id/app_id/session_id，
 工具内部经 get_app().tasks（全局 TaskBoardService，ids 作方法参数）。
+任务看板按 request 维度存储：ids 含 request_id（ToolExecutor 注入），
+task_id 为 request 内局部 id，跨请求互不可见。
 """
 from __future__ import annotations
 
@@ -29,10 +30,12 @@ def _task_service(params: dict) -> Any | None:
 
 
 def _ids(params: dict) -> dict:
+    # request_id 一起下传：任务按 request 单文件隔离，task_id 为 request 内局部 id
     return {
         "user_id": str(params.get("user_id", "") or ""),
         "app_id": str(params.get("app_id", "") or ""),
         "session_id": str(params.get("session_id", "") or ""),
+        "request_id": str(params.get("request_id", "") or ""),
     }
 
 
@@ -93,7 +96,7 @@ class TaskCreateTool(BaseTool):
             )
         except Exception as exc:
             log.error("[task_create] {}", exc)
-            return ToolResult(success=False, message=f"Error: {exc}",render=f"{self.name} 任务创建失败")
+            return ToolResult(success=False, message=f"Error: {exc}", render=f"{self.name} 任务创建失败")
 
 
 class TaskUpdateTool(BaseTool):
@@ -154,7 +157,7 @@ class TaskUpdateTool(BaseTool):
             )
         except Exception as exc:
             log.error("[task_update] {}", exc)
-            return ToolResult(success=False, message=f"Error: {exc}",render=f"{self.name} 任务更新失败")
+            return ToolResult(success=False, message=f"Error: {exc}", render=f"{self.name} 任务更新失败")
 
 
 class TaskGetTool(BaseTool):
@@ -194,7 +197,7 @@ class TaskGetTool(BaseTool):
             return ToolResult(success=True, data=task.model_dump_json(), render=f"获取任务: {task.subject}")
         except Exception as exc:
             log.error("[task_get] {}", exc)
-            return ToolResult(success=False, message=f"Error: {exc}",render=f"{self.name} 任务获取失败")
+            return ToolResult(success=False, message=f"Error: {exc}", render=f"{self.name} 任务获取失败")
 
 
 class TaskListTool(BaseTool):
@@ -209,7 +212,7 @@ class TaskListTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "List all tasks on the board. Optionally filter by status. "
+            "List all tasks of the current request on the board. Optionally filter by status. "
             "Returns an array of TaskRecords and a text summary of the board."
         )
 

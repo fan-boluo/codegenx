@@ -46,11 +46,29 @@ class Action(ABC, Generic[T]):
         """
         raise NotImplementedError
 
+    @staticmethod
+    def _strip_code_fence(content: str) -> str:
+        """剥离 LLM 输出中包裹 JSON 的 markdown 代码围栏（```json ... ```）。
+
+        部分模型输出风格不稳定（同一路由有时裸 JSON 有时带围栏），
+        统一剥离后再 json.loads，避免「非合法 JSON」误判。
+        """
+        text = content.strip()
+        if text.startswith("```"):
+            # 去掉首行 ``` 或 ```json 围栏头
+            first_newline = text.find("\n")
+            if first_newline != -1:
+                text = text[first_newline + 1:]
+            # 去掉结尾 ``` 围栏尾
+            if text.rstrip().endswith("```"):
+                text = text.rstrip()[:-3]
+        return text.strip()
+
     def parse_ai_message(self, ai_message: ActOutput | None, cls: Type[T]) -> T | None:
         """解析 ai_message 成 cls 类型（子类可覆盖定制解析逻辑）。
 
         默认实现：从 ActOutput.output（dict 的 content 字段或纯字符串）中提取内容，
-        json.loads 后 model_validate；解析失败返回 None。
+        剥离 markdown 代码围栏后 json.loads 再 model_validate；解析失败返回 None。
         """
         if ai_message is None:
             return None
@@ -65,7 +83,7 @@ class Action(ABC, Generic[T]):
             return None
         if isinstance(cls, type) and issubclass(cls, BaseModel):
             try:
-                return cls.model_validate(json.loads(content))
+                return cls.model_validate(json.loads(self._strip_code_fence(content)))
             except (json.JSONDecodeError, ValueError):
                 # json 解析失败或 pydantic 校验失败（ValidationError 属于 ValueError）
                 return None

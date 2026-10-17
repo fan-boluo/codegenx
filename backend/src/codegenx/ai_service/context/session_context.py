@@ -75,7 +75,7 @@ class SessionContext:
 
     # ------------------------------------------------------------------ 每轮组装
 
-    async def build_system_prompt(self, query:str) -> str:
+    async def build_system_prompt(self, query:str, request_id: str = "") -> str:
         """每个session要构建的：workspace 元数据 + 记忆 + skill + 任务看板 + 会话摘要。
 
         P4 §10.3：智能体差异（persona/skill 可见范围/记忆 read_types）由 AgentSpec
@@ -97,7 +97,7 @@ class SessionContext:
         )
         self.prompts.skill_prompt = app.skill_manager.build_prompt()
         self.prompts.task_prompt = app.tasks.get_board(
-            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
+            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id, request_id=request_id
         )
 
         self.prompts.session_summary_prompt = app.summary.load(
@@ -118,9 +118,10 @@ class SessionContext:
         return []
 
 
-    def refresh_task_prompt(self) -> None:
-        """从 TaskBoardService 拉取当前会话看板并重渲染进 prompts.task_prompt（方案 §4.2）。
+    def refresh_task_prompt(self, request_id: str = "") -> None:
+        """从 TaskBoardService 拉取当前请求看板并重渲染进 prompts.task_prompt（方案 §4.2）。
 
+        看板按 request 单文件隔离，仅渲染当前请求的任务（历史请求任务不进 prompt）。
         TurnPrompts.task_prompt 是看板文本视图唯一载体；渲染由无状态服务完成。
         刷新时机：请求开始（Supervisor 首次 think 前）与每次审查 think 前
         （turn 过程中任务在完成、依赖在解锁，需最新就绪集）。
@@ -130,7 +131,7 @@ class SessionContext:
         if tasks is None:
             return
         self.prompts.task_prompt = tasks.get_board(
-            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
+            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id, request_id=request_id
         )
 
     def add_user_message(self,message):

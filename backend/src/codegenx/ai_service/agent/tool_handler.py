@@ -144,11 +144,17 @@ class ToolRegistry(BaseComponent):
             for tool in tool_catalog or []
         ]
 
-    async def build_tools_with_name(self,tools:list[str]) -> list[dict]:
-        """使用传入的工具名称"""
+    
 
-        _tools = [tool for tool in self.tools if tool.name in tools ]
+    def build_agent_tools(self, allowlist: list[str] | None = None) -> list[dict]:
+        """按白名单构建 agent 的 function-calling 工具目录。
 
+        白名单非空 → 仅构建白名单内工具；空/None 表示该 agent 不启用工具（返回空列表）。
+        白名单来自 config.json agents[].tools，供 BaseReActAgent._prepare_agent 调用。
+        """
+        if not allowlist:
+            return []
+        names = {str(n).strip() for n in allowlist if str(n).strip()}
         return [
             {
                 "type": "function",
@@ -158,7 +164,7 @@ class ToolRegistry(BaseComponent):
                     "parameters": tool.parameters,
                 },
             }
-            for tool in _tools or []
+            for tool in self.tools if tool.name in names
         ]
 
 

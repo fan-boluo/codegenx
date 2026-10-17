@@ -10,6 +10,7 @@ from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.utils.config import AgentConfig, config
 from codegenx.ai_service.system_app import get_app
+from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from shared import log
 from codegenx.ai_service.agent.agents.agent import Agent, AgentContext, AgentMessage
 
@@ -46,7 +47,10 @@ class BaseReActAgent(Agent):
         # agent 间寻址标识与收件箱（agent_name 全局唯一）
         self.agent_name = self.agent_config.name
         self._inbox: asyncio.Queue | None = None
-        self.actions: List[Action] = []   # act要执行的动作
+        # 保留子类定义的 actions（类属性，如 SupervisorAgent.actions = [SupervisorAction()]）；
+        # 仅未设置时兜底为空链——无条件赋值会遮蔽类属性，导致 Action 链静默失效
+        if not getattr(self, "actions", None):
+            self.actions: List[Action] = []
         # 保留子类定义的 profile；仅未设置时兜底为空 PromptConfig
         if not getattr(self, "profile", None):
             self.profile: PromptConfig = PromptConfig()
@@ -90,13 +94,65 @@ class BaseReActAgent(Agent):
         registry.register_spec(spec)
 
 
+    def _resolve_tool_catalog(self) -> list[dict]:
+        """按 config.json agents[].tools 白名单解析 function-calling 工具目录。
+
+        白名单为空/未配置时不启用工具（supervisor/planner 等纯文本决策链路保持不变）；
+        解析失败（如独立调试场景无 SystemApp）时降级为无工具，不阻断 agent 构建。
+        """
+        allowlist = self.agent_config.tools or []
+        if not allowlist:
+            return []
+        try:
+            return get_tool_registry().build_agent_tools(allowlist)
+        except Exception as exc:
+            log.warning("{} 工具目录解析失败，降级为无工具: {}", self.agent_name, exc)
+            return []
+
+    def _resolve_final_target(self, msg: AgentMessage) -> str:
+        """最终答复目标（直答/回传路由，工具化执行型 agent 通用判据）。
+
+        - 派发消息 direct_reply=True（supervisor 单任务免汇总派发）→ 直答用户；
+        - 但本轮调用过工具且全部失败 → 降级回传调用方（supervisor 审查后重派或如实说明）；
+        - 其余情况回传调用方。
+        """
+        caller = msg.sender or "user"
+        if not msg.direct_reply:
+            return caller
+        if self._tool_seen and not self._tool_any_success:
+            log.warning("{}: 派发标记直答但本轮工具全部失败，降级回传 {}", self.agent_name, caller)
+            return caller
+        return "user"
+
+    def _reply(self, msg: AgentMessage, target: str, result_text: str) -> AgentMessage:
+        """把入参消息改造为回传/直答跳（执行型 agent observation 的统一出口）。
+
+        - task 保留入参原值（追溯），result 承载结果文本；
+        - 回传调用方时原样保留 task_id（看板闭环握手）；直答用户时清除握手字段；
+        - 清除 direct_reply 派发标记（标记仅派发跳有效）。
+        """
+        msg.sender = self.agent_name
+        msg.recipient = target
+        msg.result = result_text
+        if target == "user":
+            msg.task_id = None
+            msg.step_id = None
+        msg.direct_reply = False
+        msg.success = True
+        return msg
+
     async def _prepare_agent(
         self,
         session_state: RuntimeSessionState,
     ) -> None:
         """准备 agent 所需的上下文与收件箱（子类可覆盖扩展，需先调 super()）。"""
         # self._ensure_inbox()
-        self.tools: list[dict] = getattr(self, "tools", None) or []
+        # 工具目录与执行器：config.json agents[].tools 白名单非空才启用 function calling
+        self.tools = self._resolve_tool_catalog()
+        self.tool_executor = None
+        if self.tools:
+            # 配置了工具的 agent 必须拿到执行器，失败直接暴露（fail fast，不静默吞掉）
+            self.tool_executor = get_app().tools_executor
         self.agent_context = AgentContext(
             session_id=session_state.session_id,
             app_id=str(session_state.app_id or ""),
@@ -126,7 +182,7 @@ class BaseReActAgent(Agent):
                 get_app().message_bus.publish_runtime_event(
                     session_state.publish_context,
                     event_type=AgentEventType.REQUEST_COMPLETED,
-                    data={"content": reply.message},
+                    data={"content": reply.result},
                     state=AgentState.COMPLETED,
                 )
             else:
@@ -168,8 +224,7 @@ class BaseReActAgent(Agent):
         """
         if msg is None:
             return ""
-        text = msg.message.get("task","") or ""
-        return text
+        return msg.task or ""
 
 
 
@@ -183,9 +238,21 @@ class BaseReActAgent(Agent):
             temperature=self.agent_config.temperature,
             max_tokens=self.agent_config.max_tokens,
         )
-        log.debug("{},llm_response:{}",self.agent_name,llm_response)
+        log.debug("{},llm_response:{}", self.agent_name, self._trim_response_for_log(llm_response))
 
         return llm_response
+
+    @staticmethod
+    def _trim_response_for_log(llm_response: dict[Any, Any]) -> Any:
+        """日志瘦身：reasoning_content 动辄数千 token（曾出现 6k+ token 的审查思考），
+        截断展示避免刷屏；content/tool_calls 全量保留。"""
+        if not isinstance(llm_response, dict):
+            return llm_response
+        trimmed = dict(llm_response)
+        rc = trimmed.get("reasoning_content")
+        if isinstance(rc, str) and len(rc) > 1500:
+            trimmed["reasoning_content"] = f"{rc[:1500]}...(truncated, total {len(rc)} chars)"
+        return trimmed
 
     async def act(self, llm_response: dict[str, Any], session_state: RuntimeSessionState,
                   **kwargs) -> ActOutput:
@@ -219,11 +286,11 @@ class BaseReActAgent(Agent):
 
 
     async def verify(self, observation:AgentMessage) -> tuple[bool, str]:
-        """验证：检查最终结果是否可用（子类可覆盖定制校验规则）。返回 (ok, reason)。"""
-        if (observation.next is None
-                or observation.next.next_agent is None
-                or observation.next.metadata is None):
-            return False ,f"{self.agent_name} 执行失败没有定义next/next_agent/next_message"
+        """验证：observation 是否产出有效下一跳（子类可覆盖定制校验规则）。返回 (ok, reason)。"""
+        if observation.success is not True:
+            return False, f"{self.agent_name} 未产出成功的 observation（max_steps 耗尽或持续失败）"
+        if not observation.recipient:
+            return False, f"{self.agent_name} observation 未指定下一跳 recipient"
         return True, ""
 
     def _build_history_messages(self, session_state: RuntimeSessionState) -> list[dict[str, Any]]:
@@ -234,6 +301,29 @@ class BaseReActAgent(Agent):
         真相源，获得跨轮对话与子 agent 执行历史，用于意图理解与结果审查。
         """
         return []
+
+    @staticmethod
+    def _normalize_tool_call(tc: dict[str, Any]) -> dict[str, Any]:
+        """归一化 tool_call 为扁平结构 {id, name, arguments(dict)}。
+
+        兼容两种来源：非流式 message.to_dict() 的 OpenAI 原生嵌套格式
+        （{id, type, function: {name, arguments(字符串)}}）与流式 _safe_build_tool_calls
+        的扁平格式（{id, name, arguments(dict)}）。
+        """
+        fn = tc.get("function") or {}
+        name = str(fn.get("name") or tc.get("name") or "")
+        raw_args = fn.get("arguments", tc.get("arguments"))
+        # arguments 可能是 JSON 字符串（OpenAI 原生）或 dict（流式），统一解析为 dict
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args) if raw_args.strip() else {}
+            except json.JSONDecodeError:
+                args = {"_raw_arguments": raw_args}
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            args = {}
+        return {"id": str(tc.get("id") or ""), "name": name, "arguments": args}
 
     async def run(self, agent_message:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage:
         """ReAct 方式执行：think → act 循环 → verify。
@@ -246,7 +336,7 @@ class BaseReActAgent(Agent):
         """
         # 1. 准备 agent 上下文（inbox 已在 __init__ 气注，此处仅组装 prompt/工具）
         await self._prepare_agent(session_state)
-        log.debug("──────────【{}】 STATR───────────── ",self.agent_name)
+        log.debug("+++++++++++++++++++【{}】 STATR +++++++++++++++++++ ",self.agent_name)
         log.debug("接收到消息:{}", agent_message.model_dump())
         # 2.
         request_id = (agent_message.request_id if agent_message else "") or session_state.request_id
@@ -261,21 +351,31 @@ class BaseReActAgent(Agent):
             {"role": "user", "content": task_text},
         ]
 
-        # 4. ReAct 循环：think → act，直到无工具调用或达到 max_steps
+        # 4. ReAct 循环：think →（有 tool_calls 则执行工具回填后继续 think）→
+        #    无工具调用且内容非空时走 Action 链（兼容 supervisor 路由解析）+ observation 定跳
         step = 0
         final_text = ""
         act_output: ActOutput | None = None
-        observation: AgentMessage = AgentMessage()
+        # 下一跳消息：observation 成功时为改造后的入参消息；未成功时保持空信封（verify 兜底终答）
+        observation: AgentMessage = AgentMessage(
+            sender=self.agent_name, recipient="",
+            request_id=request_id, session_id=session_state.session_id,
+        )
+        # 直答降级记账：本轮是否有工具调用、是否有任一成功（observation 直答判据用）
+        self._tool_seen = False
+        self._tool_any_success = False
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
             step += 1
             log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
+            log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name, self._messages[1:])
             response = await self.think(self._messages)
-            if not response:
+            if not response:  # TODO reasoning_content 的解析
                 self._messages.append({"role": "assistant", "content": self.profile.retry_goal})
                 continue
             final_text = str(response.get("content") or "")
-            tool_calls = response.get("tool_calls") or []
+            # tool_calls 归一化为扁平结构（兼容非流式嵌套格式与流式扁平格式）
+            tool_calls = [self._normalize_tool_call(tc) for tc in response.get("tool_calls") or []]
             log.info("【{} Think】:  step {}/{} END | content_len={} tool_calls={}",
                      self.agent_name, step, self.max_steps, len(final_text), len(tool_calls))
             # assistant 消息回写本地对话
@@ -294,46 +394,60 @@ class BaseReActAgent(Agent):
                 ]
             self._messages.append(assistant_message)
 
-            raise_if_stop_signal(session_state)
-            # act：链式执行 actions，失败（success=False）则中断本轮并结束运行
-            act_output = await self.act(response, session_state=session_state)
+            if tool_calls:
+                # 工具化分支：执行 tool_calls 并回填 tool 消息，继续 think（LLM 自主决定下一步）
+                if self.tool_executor is None:
+                    log.error("【{} THINK】返回了 tool_calls 但工具执行器未就绪，强制结束", self.agent_name)
+                    break
+                tool_messages = await self.tool_executor.dispatch_tool_calls(tool_calls, session_state)
+                # _success 为内部记账字段（直答降级判据），回填对话前剔除，不进 LLM API
+                self._tool_seen = True
+                for m in tool_messages:
+                    if m.pop("_success", True):
+                        self._tool_any_success = True
+                self._messages.extend(tool_messages)
+                log.info("【{} ACT】: 执行 {} 个工具并回填 tool 消息", self.agent_name, len(tool_messages))
+                continue
 
+            if not final_text.strip():
+                # 空回复兜底
+                self._messages.append({
+                    "role": "user",
+                    "content": "回复为空，请基于任务描述与现有信息给出答复。",
+                })
+                continue
+
+            raise_if_stop_signal(session_state)
+            # 无工具调用 → Action 链兼容层（supervisor 路由解析），随后 observation 定跳
+            act_output = ActOutput(success=True, output=response)
+            if self.actions:
+                act_output = await self.act(response, session_state=session_state)
             observation:AgentMessage = await self.observation(agent_message, act_output,response)
 
             if observation.success:
                 # observation 判定可结束：退出 ReAct 循环
                 log.info("【{} OBSERVATION】: 判定完成，退出循环", self.agent_name)
                 break
-            # observation.success=False 表示需要继续 think：
-            #   - act 成功但还要进一步推理（如 SQL 执行完要总结给用户）
-            #   - act 失败需要修正重试（如 SQL 语法错、字段不存在）
-            log.info("【{} OBSERVATION】：action执行异常，继续 think", self.agent_name)
+            # observation.success=False 表示需要继续 think
+            #（如 supervisor 的 Action 解析失败，或 observation 判定还需进一步处理）
+            log.info("【{} OBSERVATION】: 未完成，继续 think", self.agent_name)
 
         else:
             log.warning("【{} 】: 达到 max_steps={}，强制结束", self.agent_name, self.max_steps)
 
-        # 5. verify：observation的结果
+        # 5. verify：observation 是否产出有效下一跳
         ok, reason = await self.verify(observation)
-        # 6. 返回结果 ,下一个AgentMessage
+        # 6. 返回下一跳消息：observation 已把入参消息改造为下一跳，直接返回；
+        #    verify 失败（max_steps 耗尽/无效跳）时兜底改写为终答跳
         if not ok:
-            next_agent = "user"
-            next_message = "执行失败，请稍后重试"
-        else:
-            next_agent = observation.next.next_agent
-            next_message = observation.next.message
+            observation.sender = self.agent_name
+            observation.recipient = "user"
+            observation.result = "执行失败，请稍后重试"
+            observation.task_id = None
+            observation.step_id = None
+            observation.direct_reply = False
         log.info("【{} 】结束: {} | steps={} | ok={} | reason={}", self.agent_name, request_id, step, ok, reason)
-        log.debug("──────────【{}】 END ───────────── ", self.agent_name)
+        log.debug("+++++++++++++++++++【{}】 END +++++++++++++++++++ ", self.agent_name)
 
-        return AgentMessage(
-            sender=self.agent_name,
-            recipient=next_agent,
-            is_user_message=False,
-            message={
-                "task": next_message,
-                "metadata": observation.next.metadata if observation.next else {}
-            },
-            request_id=request_id,
-            session_id=session_state.session_id,
-            summary=next_message[:200],
-        )
+        return observation
 

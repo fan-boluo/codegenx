@@ -179,7 +179,7 @@ def initialize_components(app: SystemApp) -> None:
 
     每个组件模块提供 initialize_xxx(system_app) 完成构造+注册（DB-GPT 风格），
     构造知识留在组件模块内。注册顺序 = 启动广播顺序：
-      llm → tools → skills → agents → context → session_io → tasks
+      llm → tools → tool_executor → skills → agents → context → session_io → tasks
       → memory → summary → compaction → chat_messages → monitor
       → monitor_maintenance → memory_scheduler → session_pool → runtime
     其中 AgentRuntime 构造即取 ToolRegistry/SessionPool，故必须排在 tools、session_pool 之后。
@@ -192,6 +192,9 @@ def initialize_components(app: SystemApp) -> None:
 
     from codegenx.ai_service.agent.tool_handler import initialize_tools
     initialize_tools(app)
+
+    from codegenx.ai_service.agent.tool_executor import initialize_tool_executor
+    initialize_tool_executor(app)
 
     from codegenx.ai_service.skill.skill_loader import initialize_skill
     initialize_skill(app)
