@@ -119,3 +119,8 @@ class AgentMessage(BaseModel):
     # ── 状态与低频扩展 ──
     success: bool | None = None    # 发送方执行成败
     metadata: dict[str, Any] = {}  # 低频扩展；禁止承载上述一等字段语义
+
+    # ── 批量派发信封（调度器 AutoPlanManager 消费） ──
+    # 非空 = 批派发信封：每项为完整派发跳，调度器并行执行整批后合并审查摘要回灌 supervisor
+    # （此时本消息 recipient 为哨兵 "__batch__"，普通路由逻辑不消费）
+    dispatch_batch: list[AgentMessage] | None = None

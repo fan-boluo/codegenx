@@ -101,6 +101,7 @@ class TaskBoardCoordinator:
     def dispatch_next_ready(self, session_state, src_msg: AgentMessage) -> AgentMessage | None:
         """按就绪规则（pending 且 blocked_by 空）取本轮看板任务确定性派发（免 think）。
 
+        同波多个就绪任务批量并行派发（dispatch_batch 信封，调度器并行执行整批）；
         executor_agent 为 supervisor 的汇总类步骤不派发，直接标记 completed 以解锁下游。
         """
         tasks = self._service()
@@ -115,15 +116,31 @@ class TaskBoardCoordinator:
             t for t in tasks.list_all(**self._ids(session_state))
             if t.id in turn_ids and tasks.is_ready(t)
         ]
+        wave: list[TaskRecord] = []
         for task in sorted(ready, key=lambda t: t.id):
             if task.executor_agent in (self.sender, "supervisor"):
                 # 汇总类步骤由审查 think 自行完成，此处仅落状态解锁下游
                 tasks.complete(task.id, **self._ids(session_state))
                 continue
-            return self.dispatch_board_task(session_state, src_msg, task)
-        return None
+            wave.append(task)
+        if not wave:
+            return None
+        if len(wave) == 1:
+            return self.dispatch_board_task(session_state, src_msg.request_id, wave[0])
+        # 同波多任务：批量信封（调度器并行执行整批）
+        dispatches = [self.dispatch_board_task(session_state, src_msg.request_id, t) for t in wave]
+        log.info("Supervisor: 计划模式同波并行派发 {} 个就绪任务 | {}",
+                 len(dispatches), "、".join(f"{d.recipient}#{d.task_id}" for d in dispatches))
+        return AgentMessage(
+            sender=self.sender,
+            recipient="__batch__",
+            request_id=src_msg.request_id,
+            session_id=session_state.session_id,
+            success=True,
+            dispatch_batch=dispatches,
+        )
 
-    def dispatch_board_task(self, session_state, src_msg: AgentMessage, task: TaskRecord) -> AgentMessage:
+    def dispatch_board_task(self, session_state, request_id: str, task: TaskRecord) -> AgentMessage:
         """派发指定看板任务：标记 in_progress 并构造派发跳（不经过 LLM think）。"""
         tasks = self._service()
         if tasks is not None:
@@ -136,7 +153,7 @@ class TaskBoardCoordinator:
             task=task.subject,
             task_id=task.id,
             step_id=task.step_id,
-            request_id=src_msg.request_id,
+            request_id=request_id,
             session_id=session_state.session_id,
             success=True,
         )
@@ -157,26 +174,50 @@ class TaskBoardCoordinator:
                 return t
         return None
 
+    @staticmethod
+    def _norm_subject(text: str) -> str:
+        """任务描述归一化：去除全部空白字符后比较（仅空白差异视为相同任务）。"""
+        return "".join(str(text or "").split())
+
+    def find_same_task(self, session_state, agent: str, subject: str) -> TaskRecord | None:
+        """本 request 内查找该 agent 的相同任务（归一化 subject 完全一致，含已完成）。
+
+        供 dispatch_agent 防重复派发守卫使用：已完成任务的执行结果已在对话历史中，
+        重跑相同任务只会产生重复/矛盾结果。
+        """
+        tasks = self._service()
+        if tasks is None:
+            return None
+        target = self._norm_subject(subject)
+        if not target:
+            return None
+        for t in tasks.list_all(**self._ids(session_state)):
+            if t.executor_agent == agent and self._norm_subject(t.subject) == target:
+                return t
+        return None
+
     def create_dispatch_task(self, session_state, agent: str, subject: str) -> TaskRecord | None:
-        """派发执行智能体前在看板登记任务（线性依赖上一任务，供前端展示与状态跟踪）。"""
+        """派发执行智能体前在看板登记任务（批内互不依赖，供前端展示与状态跟踪）。
+
+        自主编排的任务间真实依赖由 supervisor 串行派发次序保证（依赖前置结果的
+        任务等回传后再派发），看板不再强制线性依赖以支持批量并行派发。
+        """
         if session_state is None or not subject:
             return None
         tasks = self._service()
         orch = self.orchestration(session_state)
         if tasks is None or orch is None:
             return None
-        last_id = orch.last_task_id
         record = tasks.create(
             subject=subject,
             description="自主编排模式派发",
-            depends_on=[last_id] if last_id else [],
+            depends_on=[],
             executor_agent=agent,
             source="direct",
             **self._ids(session_state),
         )
         tasks.update(record.id, status="in_progress", **self._ids(session_state))
         orch.turn_task_ids.append(record.id)
-        orch.last_task_id = record.id
         log.info("Supervisor: 登记看板任务 #{} → {}（in_progress）", record.id, agent)
         return record
 

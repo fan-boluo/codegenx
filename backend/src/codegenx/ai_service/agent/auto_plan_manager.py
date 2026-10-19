@@ -5,6 +5,7 @@ from codegenx.ai_service.agent.agent_schema import AgentState, AgentEventType
 from codegenx.ai_service.agent.agents.agent import AgentMessage
 import traceback
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, TurnStoppedError, raise_if_stop_signal
+from codegenx.ai_service.agent.agents.supervisor_board import TaskBoardCoordinator
 from codegenx.ai_service.hook import HookEvent, hook_manager, HookContext, HookAction
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.utils.config import config
@@ -102,6 +103,12 @@ class AutoPlanManager:
                 # 5) run：agent 内部执行 ReAct 循环，返回下一跳 AgentMessage
                 next_msg = await agent.run(current_msg, session_state)
 
+                # 5.4) 批量派发信封：并行执行整批子任务，合并结果为审查摘要回灌 supervisor
+                #      （子任务的看板闭环与入史在批分支内逐个完成，不走下方通用入史逻辑）
+                if next_msg is not None and next_msg.dispatch_batch:
+                    current_msg = await self._execute_batch(next_msg, session_state, activate_turn)
+                    continue
+
                 # 5.5) 子 agent 回传 supervisor → 写入会话历史（带 agent 附带字段，
                 #      供 Supervisor 历史视图过滤；planner 回传同样经此入史）
                 if (
@@ -189,6 +196,87 @@ class AutoPlanManager:
             log.info("═══════════════ TURN END ═══════════════ | request={} final_state={} total_rounds={}",
                      request_id, activate_turn.state.value, activate_turn.round_counter)
             log.debug("OnTurnEnd {},{}", request_id, activate_turn.round_counter)
+
+    async def _execute_batch(
+        self, envelope: AgentMessage, session_state: RuntimeSessionState, activate_turn,
+    ) -> AgentMessage:
+        """并行执行批量派发的子任务，逐个闭环看板 + 写入会话历史，合并为批审查摘要回灌 supervisor。
+
+        - 并发受 config.multi_agents.max_parallel 信号量限制（asyncio.Task 并行）；
+        - gather(return_exceptions=True)：单个子任务失败/异常不炸批，失败说明进摘要由 supervisor 审查；
+        - 停止信号：批启动前检查 + 每个子任务启动前检查，TurnStoppedError / CancelledError 传播终止整个请求；
+        - 子任务结果逐个消费（TaskBoardCoordinator.consume_child_result + add_agent_result），
+          握手协议与单任务链路完全一致；摘要消息 sender="batch"，supervisor 侧跳过重复消费。
+        """
+        raise_if_stop_signal(session_state)
+        dispatches = [m for m in (envelope.dispatch_batch or []) if m.recipient]
+        log.info("═══════════════ BATCH DISPATCH（{} 个子任务并行）═══════════════ | request={}",
+                 len(dispatches), session_state.request_id)
+        semaphore = asyncio.Semaphore(max(1, int(config.multi_agents.max_parallel)))
+
+        async def _run_one(dispatch: AgentMessage) -> AgentMessage:
+            async with semaphore:
+                raise_if_stop_signal(session_state)  # 子任务启动前检查停止信号
+                spec = get_app().agents.get(dispatch.recipient)
+                if spec is None or spec.cls is None:
+                    return AgentMessage(
+                        sender=dispatch.recipient, recipient="supervisor",
+                        task=dispatch.task, task_id=dispatch.task_id,
+                        result=f"执行失败：找不到智能体 {dispatch.recipient}",
+                        request_id=dispatch.request_id, session_id=dispatch.session_id,
+                        success=False,
+                    )
+                agent = spec.cls()
+                return await agent.run(dispatch, session_state)
+
+        results = await asyncio.gather(*(_run_one(d) for d in dispatches), return_exceptions=True)
+
+        # 逐个消费：看板闭环 + 入史（串行段，无并发写）+ 轮次计数
+        board = TaskBoardCoordinator()
+        parts: list[str] = []
+        for dispatch, outcome in zip(dispatches, results):
+            activate_turn.round_counter += 1
+            if isinstance(outcome, (TurnStoppedError, asyncio.CancelledError)):
+                # 停止信号 / 任务取消：传播终止整个请求（部分子任务可能已完成，由停止流程收尾）
+                raise outcome
+            if isinstance(outcome, BaseException):
+                # 单失败隔离：异常转失败说明进摘要，不炸批
+                log.warning("批内子任务异常 | agent={} | task_id={} | exc={}",
+                            dispatch.recipient, dispatch.task_id, outcome)
+                child = AgentMessage(
+                    sender=dispatch.recipient, recipient="supervisor",
+                    task=dispatch.task, task_id=dispatch.task_id,
+                    result=f"执行异常：{outcome}", success=False,
+                    request_id=dispatch.request_id, session_id=dispatch.session_id,
+                )
+            else:
+                child = outcome
+            # 看板闭环（task_id 精确握手）+ 执行轨迹
+            board.consume_child_result(child, session_state)
+            # 子 agent 回传写入会话历史真相源（与单任务链路一致，供 supervisor 历史视图）
+            if session_state.context_manager is not None:
+                session_state.context_manager.add_agent_result(
+                    child.sender, str(dispatch.task or ""), str(child.result or ""),
+                    success=bool(child.success),
+                )
+            log.info("  [批] {} 回传（{}）| task_id={} | result_len={}",
+                     child.sender, "成功" if child.success else "失败",
+                     child.task_id, len(str(child.result or "")))
+            parts.append(f"[{child.sender}] 任务「{dispatch.task}」执行结果：\n{child.result or '（无结果）'}")
+
+        # 合并批审查摘要 → 回灌 supervisor 审查模式（sender="batch"：已逐个消费，跳过重复消费）
+        summary = "\n\n".join(parts)
+        log.info("═══════════════ BATCH COMPLETE（{} 个子任务回传）═══════════════ | request={} | summary_len={}",
+                 len(parts), session_state.request_id, len(summary))
+        return AgentMessage(
+            sender="batch",
+            recipient="supervisor",
+            task=f"批量执行 {len(parts)} 个子任务",
+            result=summary,
+            request_id=envelope.request_id,
+            session_id=envelope.session_id,
+            success=True,
+        )
 
     @staticmethod
     def _extract_final_text(msg: AgentMessage) -> str:

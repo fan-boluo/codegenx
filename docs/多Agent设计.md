@@ -1,194 +1,163 @@
-# 多智能体数据分析系统 · 架构设计方案
+# 多智能体数据分析系统 · 架构设计（当前实现版）
 
-> **方案模式**：A — Supervisor + Planner-Executor（主管调度式）
-> **日期**：2026-10-09（v3，合入 LangGraph 实现机制映射、三项决策落定，移除备选方案章节）
-> **状态**：已经用户确认通过
-> **系统目标**：辅助用户进行数据探查、代码生成、图表可视化及分析报告撰写
+> 本文档描述 **P1~P3 改造后** 的实际架构（并行派发 → 决策工具化 → 模板合一），
+> 是当前代码的设计契约与对照基准。原 LangGraph 方案与早期 AgentRuntime 方案均已废弃。
+> 遗留项见文末。
 
-## 0. 需求约束
+## 1. 系统总览
 
-| 维度  | 结论  |
-| --- | --- |
-| 数据来源 | 用户上传文件（Excel/CSV/JSON）+ 数据库/数仓（SQL 检索） |
-| 编排技术 | LangGraph（StateGraph + conditional edges + interrupt + checkpointer） |
-| 交互形态 | 两者都要：对话式多轮追问 + 一次性端到端自动出报告 |
-| 既有基础设施 | MySQL、Redis、Qdrant（存储方案基于此选型，不引入 SQLite） |
-| 产出物 | 架构设计方案（本文档） |
+- 调度入口：`AgentRuntime` 已退役，`AutoPlanManager`（agent/auto_plan_manager.py）是唯一调度循环
+- 跨 agent 路由：调度器主循环**直接方法接力**（`current_msg` 内存变量），无收件箱/队列，停止时无需 purge
+- MessageBus 职责收窄：仅用于用户请求 inbound 与 SSE 事件下发（`publish_runtime_event`），不承载 agent 间消息
+- 轮次上限：全局跨 agent 轮次取 `config.multi_agents.turn_max`（while 循环判断），超限 FORCE STOP；单 agent 内部 ReAct 步数取各自 `maxSteps`
+- 系统仅走多 agent 链路（无单 agent 退化路径）
 
-## 1. 架构总览
+核心目录：
 
 ```
-                         ┌─────────────┐
-        用户消息 ───────▶│  Supervisor │◀─────── 澄清/确认（human-in-the-loop）
-                         └──────┬──────┘
-                     简单请求 │  │ 复杂任务
-                 ┌────────────┘  └────────────┐
-                 ▼                            ▼
-          直达单个 Agent               ┌────────────┐
-        （轻量对话模式）               │   Planner  │──▶ 生成执行计划(DAG，动态)
-                                      └─────┬──────┘
-                                            ▼
-        ┌───────────────── 执行循环（LangGraph StateGraph）─────────────────┐
-        │                                                                   │
-        │  Schema Profiler ─▶ Data Retriever ─▶ Code Executor ─▶ Analyst    │
-        │       （数据探查）      （取数/SQL）      （沙箱执行）    （统计分析）│
-        │                                                   │               │
-        │                              ┌────────────────────┤               │
-        │                              ▼                    ▼               │
-        │                         Visualizer            Critic ──不通过──▶ 回│
-        │                          （图表）          （校验/反思）    Planner │
-        │                              │                │通过       重规划   │
-        │                              └────────┬───────┘                   │
-        └───────────────────────────────────────┼───────────────────────────┘
-                                                ▼
-                                           ┌─────────┐
-                                           │ Reporter │──▶ 分析报告 / 总结输出
-                                           └─────────┘
-        共享层：Global State（LangGraph State）+ Artifact Store（中间产物：DataFrame/图表/SQL）
+backend/src/codegenx/ai_service/
+├── agent/
+│   ├── auto_plan_manager.py      # 调度循环 + _execute_batch 并行执行
+│   ├── runtime_schema.py         # RuntimeSessionState / ActivateTurn / TurnStoppedError / stop_signal
+│   └── agents/
+│       ├── agent.py              # AgentMessage 扁平协议
+│       ├── base_react_agent.py   # ReAct 循环 + 原生 tool_calls + _reply 回传出口 + 失败兜底
+│       ├── intention_agent.py    # SupervisorAgent（编排入口）
+│       ├── supervisor_decision.py# SupervisorDecisionEngine（单一 profile 模板）
+│       ├── supervisor_board.py   # TaskBoardCoordinator（看板协调）
+│       └── data_explore_agent.py / csv_explore_agent.py / planner ...
+├── context/session_context.py    # chat_messages 会话历史真相源
+├── task/task_manager.py          # TaskBoardService（按 request 落盘）
+├── session/session_pool.py       # 会话池（idle 回收 + 停止逻辑下沉）
+├── tools/                        # execute_sql / list_csv_files / run_python / 决策工具描述符
+├── tool_executor.py              # ToolExecutor 统一执行回填
+└── tool_handler.py               # ToolRegistry + build_agent_tools 白名单
 ```
 
-**核心数据流**：用户需求 → Planner 拆解为步骤计划（DAG）→ 各 Worker 按计划顺序/并行执行，产物写入共享 State → Critic 逐步校验（数字对不对、SQL 合不合理、图表是否匹配结论）→ 不合格带着失败原因回 Planner 局部重规划（最多 N 次，默认 2）→ Reporter 汇总所有产物生成报告。
+## 2. 消息协议（AgentMessage 扁平一等字段）
 
-## 2. Agent 职责定义（9 个）
-
-| Agent | 职责  | 输入  | 输出  |
-| --- | --- | --- | --- |
-| **Supervisor** | 唯一对话入口；意图识别与路由：闲聊直接回、简单请求直达单 agent、复杂任务转 Planner；管理多轮对话上下文与澄清 | 用户消息、会话历史 | 路由决策 / 直达回复 |
-| **Planner** | 把任务拆解为带依赖关系的步骤计划（DAG）；接收 Critic 的失败反馈做局部重规划 | 用户需求、数据源元信息、Critic 反馈 | 结构化执行计划 |
-| **Schema Profiler** | 数据探查：上传文件做画像（列类型、缺失率、分布、样例值）；数据库拉取 schema、表关系、行数、枚举值字典 | 文件路径 / 库连接配置 | 数据画像报告（元数据 JSON） |
-| **Data Retriever** | 依据画像和需求生成取数方案：数据库走 Text-to-SQL，文件走 pandas 读取代码；SQL 先 EXPLAIN/dry-run 校验 | 执行计划步骤、数据画像 | SQL / 取数代码 + 结果集引用 |
-| **Code Executor** | 沙箱执行 Retriever/Analyst 生成的 Python 代码；捕获异常、超时、内存越界；返回 stdout/错误栈 | 代码 + 数据引用 | 执行结果 / 错误信息（错误回传生成方自修复，最多 3 次） |
-| **Analyst** | 生成分析代码（描述统计、分组对比、相关性、趋势、异常检测），解读执行结果，提炼洞察结论 | 计划步骤、结果集 | 分析代码 + 洞察结论（含数字溯源） |
-| **Visualizer** | 按洞察选图表类型，生成绘图代码（matplotlib/pyecharts），产出图片 artifact + 图表配置 | 分析结果、洞察 | 图表文件 + 说明 |
-| **Critic** | 独立校验环：核对结论中每个数字能否溯源到执行结果、SQL 语义是否匹配需求、图表与结论是否一致；输出通过/驳回+具体理由 | 各步骤产物 | 校验报告（pass / fail + reason） |
-| **Reporter** | 汇总全流程产物，按模板撰写分析报告（背景→数据说明→发现→图表→结论建议）；对话模式下则输出轻量总结 | 全部 artifacts + 洞察 | Markdown/PDF 报告 |
-
-**设计要点**：
-
-- **Code Executor 独立成 agent** 而非 Analyst 的内嵌工具：所有代码（取数、分析、绘图）统一走一个受控沙箱，安全边界清晰，且执行错误有统一的自修复回路。
-- **Critic 与生成方分离**：校验者不看生成过程的"心路历程"，只对照产物和原始数据，避免自己给自己打分。
-- **Artifact Store**：DataFrame、图片、SQL、中间结论都带 ID 存共享层，报告里的每个数字可溯源——这是数据分析系统可信度的关键。
-
-## 3. Supervisor 路由三档判定
-
-Supervisor 对每条消息做意图分类（structured output 输出 `route: chat | single_agent | plan`），LangGraph 用 conditional edge 分发：
-
-1. **闲聊/元问题** → Supervisor 自己回复（hello、能力介绍、澄清追问），不触发 Planner，不调用任何 Worker
-2. **简单数据请求** → 直达单个 Worker（"这表有多少行" → Schema Profiler；"刚才的图换成饼图" → Visualizer），复用已有 artifact，不重复取数
-3. **复杂分析任务** → 转 Planner 走完整计划执行流程（"帮我做完整的销售分析报告"）
-
-约 90% 的日常对话走轻量路径，只有真正需要端到端分析时才付完整流程的成本。
-
-## 4. 动态执行计划（Plan 是数据，不是拓扑）
-
-**执行计划图不是固定的**。固定的是「有哪些 agent 可用 + 消息协议 + 状态结构」，动态的是「每次任务激活哪几个 agent、以什么顺序和依赖关系执行」。Planner 每次根据任务动态生成 DAG，用不到的 agent 不会被调度。
-
-**实现机制**：
-
-1. **Plan 是 State 里的数据结构，不是图的拓扑**。LangGraph 的 StateGraph 包含所有 agent 节点，但执行时按 `plan: list[PlanStep]` 里的依赖关系走——每个节点执行前检查"计划里有没有我的步骤"，没有就直接跳过（conditional edge 按 plan 分发）。
-2. **Planner 的裁剪原则写进提示词**：只安排完成目标所必需的步骤，产物形态跟着用户意图走（要图给图、要数给数、要报告才走 Reporter）。Critic 重规划时只重排出问题的局部步骤，不推倒重来。
-
-**典型任务的计划示例**：
-
-| 用户请求 | 生成的计划 |
-| --- | --- |
-| 「帮我看看各区域销售额，画个图就行」 | Schema Profiler（首次接触数据才需要）→ Data Retriever → Code Executor → Analyst → Visualizer → 轻量总结。**无 Reporter，不产报告** |
-| 「这个月的毛利率是多少」（单指标查询） | Data Retriever → Code Executor → 返回。甚至不需要 Planner 建正式计划，Supervisor 判定为简单请求直达路由 |
-| 「做一份完整的季度销售分析报告」 | Schema Profiler → Data Retriever → Analyst（多维分析，可并行拆子任务）→ Visualizer → Critic → Reporter。全流程，Critic 不过触发局部重规划 |
-| 对话中途「刚才那张图换成按月份的折线图」 | Visualizer（复用已有 artifact，跳过取数） |
-
-## 5. 共享状态（LangGraph State Schema）
-
-```python
-class AnalysisState(TypedDict):
-    messages: Annotated[list, add_messages]   # 对话历史
-    user_request: str                          # 当前任务描述
-    data_sources: list[DataSource]             # 文件/数据库连接元信息
-    data_profile: dict | None                  # Schema Profiler 产物
-    plan: list[PlanStep]                       # 当前计划（含依赖、状态）——动态生成
-    artifacts: dict[str, Artifact]             # ID → 产物（df/图/sql/结论）
-    critic_report: CriticReport | None         # 最近一次校验结果
-    replan_count: int                          # 重规划次数（上限 2）
-    final_report: str | None                   # Reporter 产物
-```
-
-## 6. Agent 间消息协议
-
-统一用结构化消息，不走自由文本，降低歧义：
-
-```json
-{
-  "task_id": "step-003",
-  "from": "planner", "to": "data_retriever",
-  "action": "retrieve_data",
-  "payload": { "requirement": "按月汇总各区域销售额", "depends_on": ["step-001"], "source_hint": "sales_db.orders" },
-  "constraints": { "max_rows": 100000, "timeout_s": 60 }
-}
-```
-
-Worker 返回统一为 `{status: ok|error, artifacts: [id...], summary, error_detail?}`。失败时 `error_detail` 直接回给生成方触发自修复，不上抛给用户。
-
-## 7. 两种交互模式的流程
-
-**对话式（轻量路径）**：用户问"这份表里缺失值多吗" → Supervisor 判定为简单请求 → 直达 Schema Profiler → 结果口语化返回。不建计划、不走 Critic 全流程（但涉及数字仍过一遍溯源检查）。追问"再按月份拆一下"→ Supervisor 携带上下文路由给 Analyst，复用已有 artifact，不重复取数。
-
-**一次性任务（完整路径）**：用户提交数据集+"帮我做完整销售分析" → Planner 出计划 →（可选）计划先展示给用户确认（human-in-the-loop interrupt，可开关）→ 执行循环 → Critic 把关 → Reporter 出报告。中途执行进度通过 State 流式推送给前端。
-
-## 8. 技术栈与存储选型（基于既有 MySQL + Redis + Qdrant）
-
-**原则：不引入 SQLite，充分复用既有三件套。** Checkpointer 的本质是"按 thread_id 存每一步的 State 快照"，负载特征是高频小写入，MySQL 完全胜任，且相比 SQLite 具备两个必需能力：服务重启/容器漂移后状态不丢（SQLite 本地文件在多实例部署下直接失效）、多 worker 共享同一份状态。
-
-| 组件  | 在本系统中的角色 |
-| --- | --- |
-| **MySQL** | ① LangGraph Checkpointer（`langgraph-checkpoint-mysql`，会话状态、任务中断恢复）② Artifact Store 的元数据表（artifact_id → 类型/来源步骤/溯源信息）③ 业务数据源本身 |
-| **Redis** | ① 热数据缓存：大 DataFrame 的序列化结果（避免每次追问都重新取数）② 流式进度推送（pub/sub，前端实时看到"正在执行第 3/7 步"）③ 沙箱任务的分布式锁/限流 |
-| **Qdrant** | ① 数据画像向量化：Schema Profiler 产物入库，支持"哪张表有销售额字段"类语义检索 ② 历史 SQL/洞察库：Text-to-SQL 时检索相似历史查询做 few-shot，越用越准 ③ 跨会话长期记忆 |
-
-> **Qdrant 存历史 SQL 是 Text-to-SQL 准确率的最有效手段之一**：相似问题直接参考已验证过的 SQL，比裸生成可靠得多。
-
-Checkpointer 初始化示例：
-
-```python
-from langgraph.checkpoint.mysql import MySQLSaver
-
-checkpointer = MySQLSaver.from_conn_string("mysql://user:pass@host:3306/agent_db")
-graph = workflow.compile(checkpointer=checkpointer)
-```
-
-**选型风险提示**：`langgraph-checkpoint-mysql` 的成熟度略低于 Postgres 版（Postgres 是 LangGraph 一等公民），实施时锁定版本号、跑通中断恢复的集成测试再上生产。若发现阻塞性问题，兜底方案是自己实现 `BaseCheckpointSaver` 接口（仅四个方法，工作量一天以内），而不是换数据库。
-
-**其余关键依赖**：
-
-- **编排**：LangGraph（StateGraph + conditional edges + interrupt + checkpointer）
-- **沙箱**：Docker 容器执行 Python（受限网络、资源限额）
-- **数据层**：pandas/polars + SQLAlchemy（多数据库方言）
-- **可视化**：matplotlib（报告静态图）+ ECharts 配置（前端交互图）
-- **模型分级**：Supervisor/Planner/Critic 用强模型，Executor 类（SQL/代码生成）可用快模型，按 agent 分级配置
-
-## 9. **决策与开放问题**
-
-- 已定决策 1：数据库权限强制只读，不提供写库通道，目前在skill中是这样设计的
-- 已定决策 2：报告先做通用模板，不做行业定制，skill中有一个报告的
-- 保留开放问题：前端形态待定——现有三栏代码展示界面与本系统形态不匹配，需重新设计，届时同步确定 Redis pub/sub 订阅端方案
-
-## 10 当前与多智能体相关
-
-AgentSpec 注册表  ai_service/agent/agent_registry.py
-子agent工具：ai_service/tools/subagent
-核心循环AgentRuntime：ai_service/agent/runtime.py，重要改造点
-
-### 10.1 差异注入点
-
-| 差异 | 注入点 |
+| 字段 | 语义 |
 |---|---|
-| persona | `ContextService.render_turn_context(prompts, persona=spec.persona)`；空=内置模板 |
-| 工具可见 | `app.tools.child_view(excluded, allowed=spec.tools)`（subagent_runner 复用） |
-| 限额 | `spec.limits.max_steps/max_tool_iterations` 覆盖 runtime 默认 |
-| 模型路由 | 解析序：`spec.model_override[scenario]` → `model_roles["{agent}:{scenario}"]` → `model_roles[scenario]` → 默认模型（`config.get_model_chain(scenario, agent=, agent_override=)`） |
-| 记忆策略 | hot/warm 仍按 app+user 共享（用户级记忆跨智能体共享是特性）；防污染/防矛盾靠 MemoryPolicy 元数据过滤 + source_agent 标注，**起步不分片** |
-| 会话归属 | 请求 `metadata.agent_name` → `RuntimeSessionState.agent_name`（空=默认） |
+| `task` | 派发跳=任务文本；回传跳保留原值（追溯） |
+| `result` | 回传跳=执行结果；终答跳（recipient="user"）=面向用户的答复 |
+| `task_id` / `step_id` | 看板闭环握手字段（派发下传、回传保留、直答清除） |
+| `direct_reply` | 直答标记（派发方打标、执行方消费） |
+| `dispatch_batch` | 批信封载荷（recipient=`__batch__` 时携带多个派发跳） |
+| `sender` / `recipient` / `success` | 每跳必设 |
 
-subagent 编排：`SubagentContext.agent_name` → `app.agents.get()` 取 spec → child_view
-工具视图 + persona + 限额；主/子智能体只是调用拓扑差异，同一 AgentRuntime。
+跳向语义契约：**派发跳填 task、回传跳填 result、终答跳填 result**。
+旧协议（NextMessageModel / MessagePayload / next/message dict）已删除，禁止复活。
 
----
+## 3. BaseReActAgent（执行型智能体基类）
+
+### ReAct 循环
+`think → act/tool_calls → observation → verify`，循环边界为 observation 返回 `success=True` 或达到 `maxSteps`。
+
+- **observation 协议**：把入参消息**原地改造**为下一跳（必设 sender/recipient/success），`run()` 尾部直接返回 observation，不再新建消息
+- **_reply 统一回传出口**：回传调用方保留 task_id、清 direct_reply、task 保留原值；直答 user 清除 task_id/step_id 握手字段
+- **verify 失败兜底按调用方分流**：
+  - 入口 agent（sender=user，如 supervisor）→ 终答跳兜底（"执行失败，请稍后重试"）
+  - 执行 agent → **失败回传调用方**：task 保留原值、task_id/step_id 闭环握手保留、`result="执行失败：{reason}"`、`success=False`——supervisor 保留审查/重试/换路决策权，看板任务不悬挂 in_progress
+
+### 工具化执行
+- 工具白名单：`config.json agents[].tools` → `build_agent_tools`（白名单非空才启用 function calling；supervisor/planner 的决策工具除外，见 §4）
+- `_normalize_tool_call` 双格式归一化：非流式 OpenAI 嵌套格式与流式扁平格式统一
+- ToolExecutor 统一执行并回填 tool 消息（成功回传 data、失败回传 message，`MAX_TOOL_RESULT_CHARS=8000` 截断；`_success` 记账字段回填前 pop 不进 LLM API）
+- 工具执行结果固定 `ToolResult` 类型，仅按 `success` 字段判定状态
+
+### 会话历史注入
+- 执行型 agent（data_explore/csv_explore）**默认不注入**（任务自包含：只看 task 文本）
+- Supervisor 覆盖注入 `chat_messages[:-1]`（末条内容由本轮输入承载，见 §4.5）
+
+## 4. Supervisor 编排
+
+三类拆分：**SupervisorAgent**（编排流程）/ **SupervisorDecisionEngine**（单一模板）/ **TaskBoardCoordinator**（看板确定性操作）。
+`profile` 必须为类属性（`register()` 是 classmethod 读 `cls.profile`）。
+
+### 4.1 决策协议（P2 工具化）
+JSON 文本决策协议已退役，决策走 function-calling，两个**控制流工具**在 `SupervisorAgent._execute_tool_calls` 本地拦截执行（不走 ToolExecutor）：
+
+- `dispatch_agent(agent, task, direct_reply?)`：登记看板 + 累积待派发跳
+- `request_plan(task)`：登记计划请求（observation 路由 planner）
+- **不调用工具且输出非空文本 = 终答**（direct_answer / FINISH 合一）
+
+`observation` 三分支优先级：**计划请求 > 待派发（单项普通跳 / 多项批信封）> 终答**。
+
+### 4.2 并行派发（P1 批信封）
+- 同一回复多次调用 dispatch_agent → 批信封（recipient=`__batch__`，`dispatch_batch` 携带全部派发跳）
+- 批 >1 **强制 `direct_reply=False`**（执行完必须回传审查汇总）
+- 调度器 `_execute_batch`：`asyncio` 并行（`Semaphore(max_parallel)`），逐个看板闭环 + 写入会话历史，单失败隔离不炸批，停止信号传播
+- 批摘要以 `sender="batch"` 回灌 supervisor（run 阶段1 跳过重复消费）
+
+### 4.3 防重复派发守卫
+`_exec_dispatch_agent` 两道判重（登记前）：
+1. **同 run 判重**：本回复已登记相同 `(agent, task)` → 拒绝（qwen-flash 曾登记确认后原样重复 tool_calls）
+2. **同 request 判重**：看板归一化 subject 判重（`find_same_task`，去除全部空白比较，**含已完成任务**——重跑相同任务只会产生重复/矛盾结果）
+
+登记确认消息必须带累计数与停止指引：「全部任务登记完毕后直接输出简短说明文本结束本轮，不要再调用 dispatch_agent」。矛盾核实最多一次（新口径任务描述）。
+
+### 4.4 双模式编排
+- **自主编排（direct，默认）**：路由/审查 think → dispatch_agent 派发 → 收结果 → 再决策 → 终答
+- **planner-executor**：request_plan → planner 产出计划（PlanOutput JSON 放 `msg.result`）→ `consume_planner_plan` 落看板（step→TaskRecord，depends_on→blocked_by DAG）→ `dispatch_next_ready` 波次确定性派发（免 think）→ 无就绪任务才 think 审查
+  - 计划模式僵局逃生：dispatch_agent 优先 `pick_task_for_agent` 派看板待办（状态机天然防重）
+  - 跨 run 编排上下文：`SessionContext.orchestration`（mode/plan/step_task_map/turn_task_ids/last_task_id/execution_trace），turn 级重置
+
+### 4.5 模板合一与输入组装（P3）
+- **单一 profile**（无 route/review 双模板、无 `_is_review` 标志、无 `_prepare_agent` 二次覆盖）：约束合并为决策三选一 / 直接答复时机 / dispatch 场景 / direct_reply 判据 / request_plan 场景+僵局逃生 / 汇总职责 / task 自包含 / 矛盾核实一次 / 每任务只调用一次
+- 路由与审查的区分**完全由输入侧承载**：`_extract_task_text` 按 `msg.sender` 分支
+  - `user`/空 → 用户请求原文（路由）
+  - `batch` → 批审查框架（全部子任务结果摘要）
+  - 其它（执行智能体/planner）→ 单任务审查框架（最新回传以最高显著性呈现，result 空回落 task）
+- `_prepare_prompt_params` 统一注入 `agents_list_desc`（含 planner，request_plan 可用性由运行时校验）+ `board_desc`
+- `[:-1]` 历史切片的正确性依赖上述改写：route 末条=请求原文、单回传末条=最新回传、batch 末条=批内最后子任务回传（批摘要已含其内容）
+
+### 4.6 职责分层与直答
+- 取数类 agent 只产出其数据源内的原始统计结果；**跨数据源对比/汇总/换算由 supervisor 终答完成**，禁止塞进派发 task 或 planner 步骤
+- 派发 task 必须完全自包含（执行 agent 看不到对话历史与其它任务）
+- **direct_reply 直答模式**：恰好 1 个子任务且结果无需跨任务汇总 → `direct_reply=true` 下传；执行 agent `_resolve_final_target` 判定（`msg.direct_reply` 且本轮工具未全失败 → 直答 user，省审查轮）；工具全失败自动降级回传 supervisor
+- 直答已知代价（可接受）：审查兜底丢失（靠降级+多轮追问纠正）、看板任务停留 in_progress 至下一轮 reset（仅展示层）、execution_trace 不记录该轮
+
+## 5. 任务看板
+
+- 按 **request 维度**存储：`.data/{user}/{app}/session/{sid}/.tasks/{request_id}.json` 单文件（该请求全部 TaskRecord 列表）
+- `task_id` 按 request 从 1 计数，`(request_id, task_id)` 复合键天然唯一（跨请求不串号）
+- `get_board` 仅渲染当前 request 任务，历史请求不进 prompt
+- **task_id 精确闭环握手**：supervisor 三条派发路径（CALL_EXECUTOR 登记 / 计划模式 dispatch_board_task / NEXT_STEP）均下传 task_id；执行 agent `_reply` 回传原样保留（直答 user 清除）；`consume_child_result` 按 task_id 精确闭环，仅缺失 task_id 的异常消息才按 executor_agent+turn_ids 兜底
+
+## 6. 会话与停止机制
+
+- `stop_request` 仅停止单个请求、保留会话；`stop_session` 停止会话所有任务并关闭会话——**分离实现**
+- 统一 `stop_signal` 检查点机制 + `TurnStoppedError` 异常处理复用
+- 停止/状态管理逻辑统一下沉 `session_pool.py`，chat_service 为薄委托层
+- 会话池 idle 回收带 `_is_quiescent` 活跃检查（仅回收无在途任务的空闲会话）
+- **会话复用不改写 `session.request`**：request 由 worker pop 时统一设置；入队时改写会致执行中请求的 request_id/publish_context/db_name 串号
+
+## 7. 执行智能体
+
+- **data_explore**：元信息查询当前为硬编码测试桩（见遗留项 H1）；SQL 查询结果默认截断保留前 N 行 + 总行数 + 截断标记，避免大表撑爆上下文
+- **csv_explore**：`_resolve_csv_context` 统一路径解析（裸文件名/相对路径→用户项目 code_dir，绝对路径直接用，越界拒绝）
+- **run_python**：`__CSV_DIR__` 占位符；dev 本地 subprocess / 非 dev docker 分支，与 SQL 复用同一执行容器
+- SQL rows 序列化必须 `json.dumps(..., default=str)`（Decimal/datetime）
+- 会话历史默认不注入（任务自包含）
+
+## 8. 遗留项（P4 设计对照审查，2026-10-17）
+
+### 已确认保留的现状
+- **H1**：data_explore 元信息查询为硬编码测试桩（prj_ec 三表，真实 information_schema 实现存于 `_query_available_db_info_bak`）——**用户确认有意保留**，后续将转向向量数据库按提示词检索相关表，恢复前不得当作缺陷修复
+
+### 中危待办
+1. `data_mysql.compute_correlation` 未导入——全量+2~10 数值列时必 NameError，被 except 吞为「相关性计算失败」；补 import
+2. `BaseReActAgent._reply` 恒 `success=True`——子任务失败信号丢失，consume_child_result 全按成功闭环；observation 应传入成败
+3. `supervisor_board` execution_trace 固定 `"success": True`——失败轨迹失真；改 `bool(msg.success)`
+4. 看板每操作全文件读+全量回写——N 任务一次闭环 O(N²) IO；建议进程内缓存+合并写
+5. `_execute_batch` 批内每子任务各计 1 轮——多波计划（15 任务）易提前触发 FORCE STOP(turn_max=20)；建议批计 1 轮或校准上限
+
+### 低危待办
+1. `agent/runtime.py` 死文件（无引用，与 auto_plan_manager 重复）——删除
+2. `tool_executor.parallel/sequence_execute` 空壳、`data_mysql._resolve_sample_pct` 导入未用——删除
+3. `max_tool_iterations/max_same_tool_calls` 配置读后未落地——删除或落地
+4. `data_mysql` SQL 行截断 50 与设计值 20 不一致——对齐口径
+
+### 其它已知代价（可接受，暂不处理）
+- 直答模式：审查兜底丢失 / 看板停留 in_progress / execution_trace 缺记录（见 §4.6）
+- 每跳 `spec.cls()` 重建 agent 实例（supervisor 每跳重建 engine+coordinator）——量级小可接受，量大时缓存

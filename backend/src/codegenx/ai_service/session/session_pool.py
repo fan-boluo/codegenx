@@ -112,7 +112,10 @@ class SessionPool(BaseComponent):
             if session_id in self._sessions:
                 session = self._sessions[session_id]
                 self._sessions.move_to_end(session_id)
-                session.request = request
+                # 注意：此处不得改写 session.request——执行中的请求动态读取
+                # request_id/publish_context/db_name，入队新请求时改写会导致
+                # 看板写入他人 request 文件、SSE 事件发错订阅队列（竞态）。
+                # request 由 worker pop 时统一设置（chat_service）。
                 session.touch()
                 return session, False
 

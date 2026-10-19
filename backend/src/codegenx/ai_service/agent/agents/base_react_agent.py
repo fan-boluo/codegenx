@@ -47,8 +47,9 @@ class BaseReActAgent(Agent):
         # agent 间寻址标识与收件箱（agent_name 全局唯一）
         self.agent_name = self.agent_config.name
         self._inbox: asyncio.Queue | None = None
-        # 保留子类定义的 actions（类属性，如 SupervisorAgent.actions = [SupervisorAction()]）；
-        # 仅未设置时兜底为空链——无条件赋值会遮蔽类属性，导致 Action 链静默失效
+        # 保留子类定义的 actions（类属性）；仅未设置时兜底为空链——
+        # 无条件赋值会遮蔽类属性，导致 Action 链静默失效
+        #（supervisor 已工具化：actions 为空，决策走 tool_calls 分支）
         if not getattr(self, "actions", None):
             self.actions: List[Action] = []
         # 保留子类定义的 profile；仅未设置时兜底为空 PromptConfig
@@ -302,6 +303,26 @@ class BaseReActAgent(Agent):
         """
         return []
 
+    async def _execute_tool_calls(
+        self, tool_calls: list[dict[str, Any]], session_state: RuntimeSessionState,
+    ) -> list[dict[str, Any]] | None:
+        """执行 tool_calls 并返回 tool 消息列表（_success 记账字段已剔除）。
+
+        返回 None 表示执行器未就绪（run 循环强制结束）。
+        子类可覆盖实现控制流工具的本地执行（如 SupervisorAgent 的决策工具：
+        dispatch_agent / request_plan 不走通用执行器，本地登记后由 observation 消费）。
+        """
+        if self.tool_executor is None:
+            log.error("【{} THINK】返回了 tool_calls 但工具执行器未就绪", self.agent_name)
+            return None
+        tool_messages = await self.tool_executor.dispatch_tool_calls(tool_calls, session_state)
+        # _success 为内部记账字段（直答降级判据），回填对话前剔除，不进 LLM API
+        self._tool_seen = True
+        for m in tool_messages:
+            if m.pop("_success", True):
+                self._tool_any_success = True
+        return tool_messages
+
     @staticmethod
     def _normalize_tool_call(tc: dict[str, Any]) -> dict[str, Any]:
         """归一化 tool_call 为扁平结构 {id, name, arguments(dict)}。
@@ -396,17 +417,12 @@ class BaseReActAgent(Agent):
 
             if tool_calls:
                 # 工具化分支：执行 tool_calls 并回填 tool 消息，继续 think（LLM 自主决定下一步）
-                if self.tool_executor is None:
-                    log.error("【{} THINK】返回了 tool_calls 但工具执行器未就绪，强制结束", self.agent_name)
+                # （决策工具由子类覆盖 _execute_tool_calls 本地执行）
+                tool_messages = await self._execute_tool_calls(tool_calls, session_state)
+                if tool_messages is None:
                     break
-                tool_messages = await self.tool_executor.dispatch_tool_calls(tool_calls, session_state)
-                # _success 为内部记账字段（直答降级判据），回填对话前剔除，不进 LLM API
-                self._tool_seen = True
-                for m in tool_messages:
-                    if m.pop("_success", True):
-                        self._tool_any_success = True
                 self._messages.extend(tool_messages)
-                log.info("【{} ACT】: 执行 {} 个工具并回填 tool 消息", self.agent_name, len(tool_messages))
+                log.info("【{} ACT】: 执行 {} 个工具并回填 tool 消息", self.agent_name, len(tool_calls))
                 continue
 
             if not final_text.strip():
@@ -438,14 +454,25 @@ class BaseReActAgent(Agent):
         # 5. verify：observation 是否产出有效下一跳
         ok, reason = await self.verify(observation)
         # 6. 返回下一跳消息：observation 已把入参消息改造为下一跳，直接返回；
-        #    verify 失败（max_steps 耗尽/无效跳）时兜底改写为终答跳
+        #    verify 失败（max_steps 耗尽/无效跳）时按调用方分流兜底：
+        #    - 入口 agent（sender=user，如 supervisor）→ 终答跳兜底；
+        #    - 执行 agent → 失败回传调用方（supervisor 审查后决定重试/换路/终答），
+        #      保留 task_id 闭环握手，避免看板任务永久 in_progress。
         if not ok:
+            caller = str(agent_message.sender or "user")
             observation.sender = self.agent_name
-            observation.recipient = "user"
-            observation.result = "执行失败，请稍后重试"
-            observation.task_id = None
-            observation.step_id = None
+            observation.recipient = caller
             observation.direct_reply = False
+            if caller == "user":
+                observation.result = "执行失败，请稍后重试"
+                observation.task_id = None
+                observation.step_id = None
+            else:
+                observation.task = agent_message.task  # task 保留原值（回传协议追溯）
+                observation.result = f"执行失败：{reason}" if reason else "执行失败，请稍后重试"
+                observation.task_id = agent_message.task_id  # 看板闭环握手
+                observation.step_id = agent_message.step_id
+                observation.success = False  # 消息级失败标记（入史/批摘要消费）
         log.info("【{} 】结束: {} | steps={} | ok={} | reason={}", self.agent_name, request_id, step, ok, reason)
         log.debug("+++++++++++++++++++【{}】 END +++++++++++++++++++ ", self.agent_name)
 
