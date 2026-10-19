@@ -1,14 +1,17 @@
+import asyncio
 import inspect
 import json
+import re
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.tools.base import ToolResult
-from codegenx.ai_service.agent.runtime_schema import  RuntimeSessionState
+from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, TurnStoppedError
 from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
 from codegenx.ai_service.system_app import get_app
+from codegenx.ai_service.utils.config import config
 from shared import log
 from shared.constants import get_code_dir
 
@@ -30,6 +33,11 @@ DATA_ANALYSIS_TOOL_NAMES = {
 
 
 TASK_TOOL_NAMES = {"task_create", "task_update", "task_get", "task_list"}
+
+# 长耗时可并行工具（如 dispatch_agent 派发子智能体）：同轮多次调用 = 并行执行
+# （gather + multi_agents.max_parallel 信号量限流）；其余工具保持串行
+# （run_python 等共享执行容器，并行会冲突）
+PARALLEL_TOOL_NAMES = {"dispatch_agent"}
 
 
 # ── 路径安全守卫（无状态函数 + 模块级监听器，docs/Hook设计.md §4.2）──────────
@@ -136,8 +144,15 @@ class ToolExecutor(BaseComponent):
         self, tool_calls: list[dict[str, Any]] | None,
         session_state: RuntimeSessionState | None = None,
     ) -> list[dict[str, Any]]:
-        """执行 tool_calls 列表，返回 [{"role": "tool", ...}] 消息列表（与 tool_calls 顺序对应）。"""
-        results: list[dict[str, Any]] = []
+        """执行 tool_calls 列表，返回 [{"role": "tool", ...}] 消息列表（与 tool_calls 顺序对应）。
+
+        - PARALLEL_TOOL_NAMES 内的长耗时工具（如 dispatch_agent）同轮多次调用
+          并行执行（gather + multi_agents.max_parallel 信号量限流），其余串行；
+        - 同批参数完全相同的 tool_call 只执行一次、结果复用（防 LLM 重复调用）；
+        - 停止信号（TurnStoppedError/CancelledError）透传终止请求，不吞成工具失败。
+        """
+        # 归一化：(name, arguments, tool_call_id, 去重 key)
+        normalized: list[tuple[str, dict, str, str]] = []
         for tc in tool_calls or []:
             name = str(tc.get("name") or "")
             arguments = tc.get("arguments") or {}
@@ -147,14 +162,48 @@ class ToolExecutor(BaseComponent):
                     arguments = json.loads(arguments)
             if not isinstance(arguments, dict):
                 arguments = {}
+            # 去重 key：参数序列化后剔除全部空白（仅空白差异视为同一调用）
+            key = re.sub(r"\s+", "", name + "|" + json.dumps(arguments, sort_keys=True, ensure_ascii=False))
+            normalized.append((name, arguments, str(tc.get("id") or ""), key))
+
+        # 同批去重缓存：key → 执行结果（asyncio 单线程，闭包 dict 并发安全）
+        cache: dict[str, ToolResult] = {}
+
+        async def _run_one(name: str, arguments: dict, key: str) -> ToolResult:
+            if key in cache:
+                return cache[key]
             try:
                 result = await self.execute(
-                    {"name": name, "arguments": arguments, "id": str(tc.get("id") or "")},
-                    session_state,
-                )
+                    {"name": name, "arguments": arguments, "id": ""}, session_state)
+            except (TurnStoppedError, asyncio.CancelledError):
+                raise  # 停止信号传播终止请求
             except Exception as exc:
                 log.error("工具 {} 执行异常: {}", name, exc)
                 result = ToolResult(success=False, message=str(exc))
+            cache[key] = result
+            return result
+
+        results_by_id: dict[str, ToolResult] = {}
+        # 并行组：长耗时工具 gather 执行（信号量限流；停止信号经 gather 传播）
+        parallel = [t for t in normalized if t[0] in PARALLEL_TOOL_NAMES]
+        if parallel:
+            semaphore = asyncio.Semaphore(max(1, int(config.multi_agents.max_parallel)))
+
+            async def _one(item):
+                async with semaphore:
+                    return item[2], await _run_one(*item[:2], item[3])
+
+            for tc_id, result in await asyncio.gather(*(_one(i) for i in parallel)):
+                results_by_id[tc_id] = result
+        # 串行组：其余工具顺序执行
+        for name, arguments, tc_id, key in normalized:
+            if tc_id not in results_by_id:
+                results_by_id[tc_id] = await _run_one(name, arguments, key)
+
+        # 统一转换为 tool 消息（按原 tool_calls 顺序）
+        results: list[dict[str, Any]] = []
+        for name, _arguments, tc_id, _key in normalized:
+            result = results_by_id[tc_id]
             # 约定：仅按 success 字段判定执行状态；成功回传 data，失败优先回传原因
             content = result.data if result.success else (result.message or result.data or "工具执行失败")
             if len(content) > self.MAX_TOOL_RESULT_CHARS:
@@ -164,22 +213,13 @@ class ToolExecutor(BaseComponent):
             log.info("工具执行完成: {} | success={} | content_len={}", name, result.success, len(content))
             results.append({
                 "role": "tool",
-                "tool_call_id": str(tc.get("id") or ""),
+                "tool_call_id": tc_id,
                 "name": name,
                 "content": content,
-                # 内部记账字段：供调用方统计直答降级判据（回填对话前剔除，不进 LLM API）
+                # 内部记账字段：供调用方统计工具成败（回填对话前剔除，不进 LLM API）
                 "_success": result.success,
             })
         return results
-
-    async def parallel_execute(self,):
-        """ 并行执行 """
-        pass
-    async def sequence_execute(self,):
-        """ 顺序执行 """
-        pass
-
-    
 
     async def execute(self, tool_call: dict[str, Any],
                       session_state: RuntimeSessionState | None = None) -> ToolResult:
@@ -238,6 +278,10 @@ class ToolExecutor(BaseComponent):
         call_kwargs = {"params": tool_input}
         if "signal" in inspect.signature(func).parameters:
             call_kwargs["signal"] = stop_signal
+        # 声明 session_state 参数的工具自动注入完整会话状态
+        # （如 dispatch_agent：需要停止信号、看板握手、结果入史等会话能力）
+        if "session_state" in inspect.signature(func).parameters:
+            call_kwargs["session_state"] = session_state
         if inspect.iscoroutinefunction(func):
             result = await func(**call_kwargs)
         else:

@@ -189,8 +189,8 @@ CREATE TABLE users (
             msg.success = False
             return msg
 
-        # 直答/回传路由：派发标记 direct_reply 且工具未全失败 → 直答用户；否则回传调用方
-        target = self._resolve_final_target(msg)
+        # 回传调用方（lead 同步派发执行器消费 result；task_id 原样保留供计划链路闭环）
+        target = msg.sender or "user"
         log.info("DataExploreAgent 完成 | 返回 {} | 答复长度={}", target, len(final_text))
         # 结论写进 result（回传跳 result 承载结果文本，task 保留原任务便于追溯）
         return self._reply(msg, target, final_text)

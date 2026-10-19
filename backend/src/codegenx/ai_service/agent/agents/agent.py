@@ -93,12 +93,13 @@ class AgentContext:
     summary_state: SummaryState = field(default_factory=SummaryState)
 
 class AgentMessage(BaseModel):
-    """Agent 间消息：路由循环中的一跳（AutoPlanManager 内存接力）。
+    """Agent 间消息协议。
 
-    语义契约（按跳向，一跳通常只填其一）：
-    - 派发跳（supervisor→executor / planner）：task=任务描述
-    - 回传跳（executor/planner→supervisor）：result=执行结果；task 保留入参原值（追溯）
-    - 终答跳（*→user）：result=面向用户的答复
+    agent-as-tool 同步派发后，跨 agent 消息跳只剩两条：
+    - 入口跳（user→lead）：task=用户请求原文
+    - 终答跳（lead→user）：result=面向用户的答复
+    派发（lead→子智能体）为同步内联调用，构造 dispatch 消息传给子智能体 run()，
+    其回传（result=执行结果）由 lead 的派发执行器消费，不再经调度循环路由。
 
     request_id 复用用户请求 ID，串联同一次任务的全链路消息，不新增 correlation_id。
     """
@@ -112,15 +113,9 @@ class AgentMessage(BaseModel):
     # ── 载荷：接收方消费 ──
     task: str = ""                 # 要求接收方完成的任务文本
     result: str = ""               # 发送方执行结果 / 面向用户的答复
-    task_id: int | None = None     # 看板任务 ID：派发下传、回传原样带回（闭环握手）、直答清除
-    step_id: int | None = None     # 计划步骤号（planner 模式派发携带）
-    direct_reply: bool = False     # 派发标记：执行 agent 完成后直答用户不回传 supervisor
+    task_id: int | None = None     # 看板任务 ID：派发下传、回传原样带回（计划链路闭环握手）
+    step_id: int | None = None     # 计划步骤号（计划任务派发携带）
 
     # ── 状态与低频扩展 ──
     success: bool | None = None    # 发送方执行成败
     metadata: dict[str, Any] = {}  # 低频扩展；禁止承载上述一等字段语义
-
-    # ── 批量派发信封（调度器 AutoPlanManager 消费） ──
-    # 非空 = 批派发信封：每项为完整派发跳，调度器并行执行整批后合并审查摘要回灌 supervisor
-    # （此时本消息 recipient 为哨兵 "__batch__"，普通路由逻辑不消费）
-    dispatch_batch: list[AgentMessage] | None = None

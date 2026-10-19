@@ -126,10 +126,12 @@ class ToolRegistry(BaseComponent):
         else:
             return {"error": f"未知工具：{tool_name}"}
 
-    async def build_tool(self) -> list[dict]:
-        """构建 LLM function-calling 工具目录（不启用的工具已在注册时排除）。"""
-        # build_tool = await self.build_tool(runtime.tool_registry.tools, runtime.config.tools.excluded)
+    def build_tool(self) -> list[dict]:
+        """构建全量 function-calling 工具目录（不启用的工具已在注册时排除）。
 
+        原为 async def 但体内无 await，改同步以适配 _resolve_tool_catalog 同步链路
+        （BaseReActAgent._prepare_agent 经 _resolve_tool_catalog 取目录）。
+        """
         tool_catalog = self.tools
 
         return [

@@ -19,32 +19,6 @@ from shared import log
 
 
 @dataclass
-class OrchestrationState:
-    """Supervisor 编排上下文（turn 级：请求开始重置，不参与 swap-out 快照/MySQL）。
-
-    方案《上下文工程设计方案2》§5：Supervisor 是主 agent，编排状态归口
-    SessionContext；RuntimeSessionState 回归纯运行时调度职责。
-    - step_task_map 仅存 step_id → task_id 方向，反向由 TaskRecord.step_id 派生；
-    - execution_trace 为每跳关键事件的可观测视图（非真相源，随请求重置）。
-    """
-    mode: str = "direct"                                        # direct / planner_executor
-    plan: dict[str, Any] | None = None                          # Planner 计划（含 goal）
-    step_task_map: dict[int, int] = field(default_factory=dict)  # step_id → task_id
-    turn_task_ids: list[int] = field(default_factory=list)       # 本轮看板任务范围
-    last_task_id: int | None = None                             # direct 模式线性依赖链尾
-    execution_trace: list[dict[str, Any]] = field(default_factory=list)  # 执行轨迹
-
-    def reset(self) -> None:
-        """新请求开始时重置为自主编排模式初始态。"""
-        self.mode = "direct"
-        self.plan = None
-        self.step_task_map = {}
-        self.turn_task_ids = []
-        self.last_task_id = None
-        self.execution_trace = []
-
-
-@dataclass
 class SessionContext:
     """
     负责一个session的上下文管理（纯状态，行为委托 SystemApp 服务）
@@ -67,8 +41,6 @@ class SessionContext:
     prompts: TurnPrompts = field(default_factory=TurnPrompts)
     # 会话摘要阈值状态（原 SessionSummaryService 实例字段）
     summary_state: SummaryState = field(default_factory=SummaryState)
-    # Supervisor 编排上下文（turn 级：请求开始重置；快照只含 chat_messages，天然不含此字段）
-    orchestration: OrchestrationState = field(default_factory=OrchestrationState)
 
     def __post_init__(self) -> None:
         log.info("{} SessionContext 启动完毕", self.session_id)

@@ -1,29 +1,32 @@
-"""TaskBoardCoordinator —— Supervisor 看板协调器（从 intention_agent.py 拆分）。
+"""TaskBoardCoordinator —— 看板协调器
+集中全部看板确定性操作（无 LLM 参与）。agent-as-tool 同步派发后看板语义收窄
+为「计划任务看板」：登记与闭环只服务计划链路（planner 登记的 depends_on DAG
+解锁握手）；普通派发不再登记看板（无隐式副作用），LLM 经 task_create/update/
+get/list 工具显式管理（如亲自执行的计划任务完成后标记 completed）。
 
-集中全部看板/编排状态的确定性操作（无 LLM 参与）：
-- turn 生命周期：reset_turn（编排上下文重置 + 看板视图刷新）
-- 计划模式：consume_planner_plan（plan 落看板）/ dispatch_next_ready（就绪任务免 think 派发）
-- 结果消费：consume_child_result（执行轨迹 + 看板闭环，task_id 精确握手）
-- 任务登记与选取：create_dispatch_task / pick_task_for_agent / dispatch_board_task
-- prompt 渲染：render_board
+- 计划登记：register_plan（planner 产出计划后自行落板——计划只拆任务不指派
+  执行者，怎么执行由 lead agent 逐任务决定）
+- 计划任务认领：pick_ready_planner_task / claim_board_task（lead 派发时复用
+  就绪计划任务，task_id 沿用）
+- 结果闭环：consume_child_result（task_id 严格匹配，completed 解锁下游）
+- 防重复规划：has_planner_tasks
+- prompt 渲染：render_board（每次 think 前刷新，无需 turn 重置钩子）
+
+编排上下文 OrchestrationState 已删：看板（按 request 落盘）即唯一共享状态，
+执行轨迹观测由后续 trace/hook 模块承担。
 
 看板复用全局 TaskBoardService（.data/{user}/{app}/session/{sid}/.tasks/{request_id}.json，
-按 request 单文件隔离，task_id 各自从 1 计数）；编排上下文复用 SessionContext.orchestration（turn 级）。
+按 request 单文件隔离，task_id 各自从 1 计数）。
 """
 
-import json as _json
-
 from codegenx.ai_service.agent.agents.agent import AgentMessage
-from codegenx.ai_service.context.session_context import OrchestrationState
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.task.task_manager import TaskRecord, TaskStatus
 from shared import log
 
 
 class TaskBoardCoordinator:
-    """看板协调器：任务看板读写 + 编排上下文维护（supervisor 编排的确定性动作层）。"""
-
-    sender = "supervisor"
+    """看板协调器：计划任务看板读写（lead 编排的确定性动作层）。"""
 
     # ── 服务与上下文访问 ──
 
@@ -41,149 +44,60 @@ class TaskBoardCoordinator:
             "request_id": str(getattr(session_state, "request_id", "") or ""),
         }
 
-    @staticmethod
-    def orchestration(session_state) -> OrchestrationState | None:
-        """取编排上下文（SessionContext.orchestration；context 未初始化时返回 None）。"""
-        cm = getattr(session_state, "context_manager", None)
-        return cm.orchestration if cm is not None else None
+    # ── 计划登记（planner 侧调用）──
 
-    # ── turn 生命周期 ──
+    def register_plan(self, session_state, plan_dict: dict) -> dict | None:
+        """Planner 计划落板（planner observation 调用）。
 
-    def reset_turn(self, session_state) -> None:
-        """新请求开始：重置编排上下文（turn 级）+ 刷新看板视图，回到自主编排模式。"""
-        cm = getattr(session_state, "context_manager", None)
-        if cm is not None:
-            cm.orchestration.reset()
-            cm.refresh_task_prompt(str(getattr(session_state, "request_id", "") or ""))
-
-    # ── 计划模式：计划落板 + 确定性派发 ──
-
-    def consume_planner_plan(self, msg: AgentMessage, session_state) -> None:
-        """Planner 回传 plan（msg.result 为 plan JSON）→ 逐 step 落任务看板
-        （executor_agent=执行智能体，depends_on=DAG 前置）。"""
-        try:
-            parsed = _json.loads(msg.result or "")
-        except Exception:
-            parsed = None
-        if not (isinstance(parsed, dict) and parsed.get("steps")):
-            log.warning("Supervisor: Planner 回传无法解析为 plan，跳过")
-            return
-
-        orch = self.orchestration(session_state)
+        计划只做任务分解、不指派执行者（executor_agent 留空，由 lead agent
+        逐任务决定自己执行还是派发哪个子智能体）：
+        - 逐 step 登记看板任务（subject / depends_on=DAG 前置 / source=planner）；
+        - 返回登记摘要 {goal, total, ready} 供 planner 回传
+          （lead agent 据摘要与看板视图审查并自主决定执行方式）。
+        """
         tasks = self._service()
-        if orch is None or tasks is None:
-            return
-        orch.mode = "planner_executor"
-        orch.plan = parsed
-        turn_ids: list = []
+        if tasks is None or not (isinstance(plan_dict, dict) and plan_dict.get("steps")):
+            return None
         ids = self._ids(session_state)
-        step_task_map: dict = {}
-        for s in sorted(parsed.get("steps", []), key=lambda x: x.get("step_id", 0)):
+        step_task_map: dict = {}   # step_id → task_id 依赖换算
+        record_ids: list = []
+        for s in sorted(plan_dict.get("steps", []), key=lambda x: x.get("step_id", 0)):
             dep_ids = [step_task_map[d] for d in (s.get("depends_on") or []) if d in step_task_map]
-            # 计划落板：step_id / executor_agent / source=planner 一次性写入 TaskRecord
             record = tasks.create(
                 subject=str(s.get("task", "") or ""),
                 description="; ".join(str(r) for r in (s.get("resources") or [])),
                 depends_on=dep_ids,
-                executor_agent=str(s.get("agent", "") or ""),
                 step_id=int(s.get("step_id", 0) or 0) or None,
                 source="planner",
                 **ids,
             )
             step_task_map[s.get("step_id")] = record.id
-            turn_ids.append(record.id)
-        # task→step 方向由 TaskRecord.step_id 派生，不再单独存映射
-        orch.step_task_map = step_task_map
-        orch.turn_task_ids = turn_ids
-        log.info("Supervisor: 计划已落任务看板 | goal={} | steps={} | mode=planner_executor",
-                 parsed.get("goal", ""), len(parsed.get("steps", [])))
+            record_ids.append(record.id)
+        ready = sum(1 for t in tasks.list_all(**ids) if t.id in record_ids and tasks.is_ready(t))
+        log.info("Planner: 计划已登记任务看板 | goal={} | tasks={} | ready={}",
+                 str(plan_dict.get("goal", ""))[:80], len(record_ids), ready)
+        return {
+            "goal": str(plan_dict.get("goal", "")),
+            "total": len(record_ids),
+            "ready": ready,
+        }
 
-    def dispatch_next_ready(self, session_state, src_msg: AgentMessage) -> AgentMessage | None:
-        """按就绪规则（pending 且 blocked_by 空）取本轮看板任务确定性派发（免 think）。
-
-        同波多个就绪任务批量并行派发（dispatch_batch 信封，调度器并行执行整批）；
-        executor_agent 为 supervisor 的汇总类步骤不派发，直接标记 completed 以解锁下游。
-        """
+    def has_planner_tasks(self, session_state) -> bool:
+        """本 request 看板是否已有 planner 来源任务（防重复规划导致重复登记）。"""
         tasks = self._service()
         if tasks is None:
-            return None
-        orch = self.orchestration(session_state)
-        turn_ids = set(orch.turn_task_ids) if orch is not None else set()
-        if not turn_ids:
-            return None
-
-        ready = [
-            t for t in tasks.list_all(**self._ids(session_state))
-            if t.id in turn_ids and tasks.is_ready(t)
-        ]
-        wave: list[TaskRecord] = []
-        for task in sorted(ready, key=lambda t: t.id):
-            if task.executor_agent in (self.sender, "supervisor"):
-                # 汇总类步骤由审查 think 自行完成，此处仅落状态解锁下游
-                tasks.complete(task.id, **self._ids(session_state))
-                continue
-            wave.append(task)
-        if not wave:
-            return None
-        if len(wave) == 1:
-            return self.dispatch_board_task(session_state, src_msg.request_id, wave[0])
-        # 同波多任务：批量信封（调度器并行执行整批）
-        dispatches = [self.dispatch_board_task(session_state, src_msg.request_id, t) for t in wave]
-        log.info("Supervisor: 计划模式同波并行派发 {} 个就绪任务 | {}",
-                 len(dispatches), "、".join(f"{d.recipient}#{d.task_id}" for d in dispatches))
-        return AgentMessage(
-            sender=self.sender,
-            recipient="__batch__",
-            request_id=src_msg.request_id,
-            session_id=session_state.session_id,
-            success=True,
-            dispatch_batch=dispatches,
+            return False
+        return any(
+            t.source == "planner" for t in tasks.list_all(**self._ids(session_state))
         )
 
-    def dispatch_board_task(self, session_state, request_id: str, task: TaskRecord) -> AgentMessage:
-        """派发指定看板任务：标记 in_progress 并构造派发跳（不经过 LLM think）。"""
-        tasks = self._service()
-        if tasks is not None:
-            tasks.update(task.id, status="in_progress", **self._ids(session_state))
-        log.info("Supervisor: 派发看板任务 #{} → {}（免 think）| {}",
-                 task.id, task.executor_agent, task.subject[:60])
-        return AgentMessage(
-            sender=self.sender,
-            recipient=task.executor_agent,
-            task=task.subject,
-            task_id=task.id,
-            step_id=task.step_id,
-            request_id=request_id,
-            session_id=session_state.session_id,
-            success=True,
-        )
+    # ── 计划任务认领（lead 派发时复用） ──
 
-    # ── 任务登记与选取 ──
+    def pick_ready_planner_task(self, session_state, subject: str) -> TaskRecord | None:
+        """查找相同 subject 的「pending 就绪」计划任务（source=planner）
+        → 供 dispatch_agent 复用派发（不新建重复任务）。
 
-    def pick_task_for_agent(self, agent: str, session_state) -> TaskRecord | None:
-        """从看板找该 agent 本轮的待办任务（pending 且依赖已满足）。"""
-        tasks = self._service()
-        if tasks is None:
-            return None
-        orch = self.orchestration(session_state)
-        turn_ids = set(orch.turn_task_ids) if orch is not None else set()
-        for t in tasks.list_all(**self._ids(session_state)):
-            if t.id not in turn_ids:
-                continue
-            if t.executor_agent == agent and tasks.is_ready(t):
-                return t
-        return None
-
-    @staticmethod
-    def _norm_subject(text: str) -> str:
-        """任务描述归一化：去除全部空白字符后比较（仅空白差异视为相同任务）。"""
-        return "".join(str(text or "").split())
-
-    def find_same_task(self, session_state, agent: str, subject: str) -> TaskRecord | None:
-        """本 request 内查找该 agent 的相同任务（归一化 subject 完全一致，含已完成）。
-
-        供 dispatch_agent 防重复派发守卫使用：已完成任务的执行结果已在对话历史中，
-        重跑相同任务只会产生重复/矛盾结果。
+        计划任务无预指派执行者（执行者由本次派发的 agent 参数决定）。
         """
         tasks = self._service()
         if tasks is None:
@@ -192,98 +106,57 @@ class TaskBoardCoordinator:
         if not target:
             return None
         for t in tasks.list_all(**self._ids(session_state)):
-            if t.executor_agent == agent and self._norm_subject(t.subject) == target:
+            if (t.source == "planner" and t.status is TaskStatus.PENDING
+                    and self._norm_subject(t.subject) == target and tasks.is_ready(t)):
                 return t
         return None
 
-    def create_dispatch_task(self, session_state, agent: str, subject: str) -> TaskRecord | None:
-        """派发执行智能体前在看板登记任务（批内互不依赖，供前端展示与状态跟踪）。
-
-        自主编排的任务间真实依赖由 supervisor 串行派发次序保证（依赖前置结果的
-        任务等回传后再派发），看板不再强制线性依赖以支持批量并行派发。
-        """
-        if session_state is None or not subject:
-            return None
+    def claim_board_task(self, session_state, task_id: int, agent: str) -> None:
+        """计划任务认领：写入本次派发的执行者并标记 in_progress
+        （task_id 沿用看板任务，回传后 consume_child_result 闭环解锁下游）。"""
         tasks = self._service()
-        orch = self.orchestration(session_state)
-        if tasks is None or orch is None:
-            return None
-        record = tasks.create(
-            subject=subject,
-            description="自主编排模式派发",
-            depends_on=[],
-            executor_agent=agent,
-            source="direct",
-            **self._ids(session_state),
-        )
-        tasks.update(record.id, status="in_progress", **self._ids(session_state))
-        orch.turn_task_ids.append(record.id)
-        log.info("Supervisor: 登记看板任务 #{} → {}（in_progress）", record.id, agent)
-        return record
+        if tasks is not None:
+            tasks.update(task_id, status="in_progress", executor_agent=agent,
+                         **self._ids(session_state))
+        log.info("lead: 认领看板计划任务 #{} → {}（in_progress）", task_id, agent)
 
-    # ── 结果消费 ──
+    @staticmethod
+    def _norm_subject(text: str) -> str:
+        """任务描述归一化：去除全部空白字符后比较（仅空白差异视为相同任务）。"""
+        return "".join(str(text or "").split())
 
-    def consume_child_result(self, msg: AgentMessage, session_state) -> None:
-        """执行智能体回传结果 → 追加执行轨迹 + 看板任务标记 completed（自动解锁下游）。
+    # ── 结果闭环 ──
 
-        任务闭环优先按回传 task_id（一等字段）精确匹配派发时的看板任务
-        （同 agent 多任务/残留 in_progress 时不会误标）；仅缺失 task_id 的
-        异常消息才按 executor_agent 兜底匹配本轮 in_progress 任务。
+    def complete_task(self, task_id: str,executor:str, session_state) -> None:
+        """子智能体回传 → 看板计划任务标记 completed（自动解锁下游 depends_on）。
+
+        task_id 严格匹配（计划链路派发时 claim 的任务）：普通派发不登记看板、
+        不携带 task_id，直接跳过（无隐式副作用）。
         """
-        caller = msg.sender
-        task_id = msg.task_id
-        summary = (msg.task or "")[:300]
-        orch = self.orchestration(session_state)
-
-        # 执行轨迹（turn 级可观测视图，非真相源）
-        if orch is not None:
-            orch.execution_trace.append({
-                "seq": len(orch.execution_trace) + 1,
-                "agent": caller,
-                "task_id": task_id,
-                "task_summary": summary[:120],
-                "success": True,
-                "result_digest": (msg.result or summary)[:200],
-            })
-            log.info("Supervisor: 追加执行轨迹 | from={} | task_id={} | total={}",
-                     caller, task_id, len(orch.execution_trace))
-
-        # 任务状态管理：按 task_id 精确闭环
+        if task_id is None:
+            return
         tasks = self._service()
         if tasks is None:
             return
         ids = self._ids(session_state)
-        if task_id is not None:
-            t = tasks.get(task_id, **ids)
-            if t is None or t.status != TaskStatus.IN_PROGRESS:
-                log.warning("Supervisor: 回传 task_id={} 无对应 in_progress 看板任务，跳过闭环 | agent={}",
-                            task_id, caller)
-                return
-            tasks.complete(t.id, **ids)
-            log.info("Supervisor: 看板任务 #{} 已完成（task_id 精确闭环）| agent={}", t.id, caller)
+        t = tasks.get(task_id, **ids)
+        if t is None or t.status != TaskStatus.IN_PROGRESS:
+            log.warning("lead: 回传 task_id={} 无对应 in_progress 看板任务，跳过闭环 | executor={}",
+                        task_id, executor)
             return
-
-        # 兜底：缺失 task_id（异常路径）→ 按 executor_agent 匹配本轮 in_progress 任务
-        turn_ids = set(orch.turn_task_ids) if orch is not None else set()
-        for t in tasks.list_all(status="in_progress", **ids):
-            if t.id in turn_ids and t.executor_agent == caller:
-                tasks.complete(t.id, **ids)
-                log.info("Supervisor: 看板任务 #{} 已完成（executor_agent 兜底）| agent={}", t.id, caller)
-                break
+        tasks.complete(t.id, **ids)
+        log.info("lead: 看板计划任务 #{} 已完成, execuotr： {}", t.id, executor)
 
     # ── prompt 渲染 ──
 
     def render_board(self, session_state) -> str:
-        """渲染任务看板文本：读 TurnPrompts.task_prompt（单一来源），计划模式附 goal 行。
+        """渲染任务看板文本：读 TurnPrompts.task_prompt（单一来源）。
 
-        审查前先 refresh：turn 过程中任务在完成、依赖在解锁，需最新就绪集。
+        每次 think 前刷新：turn 过程中任务在完成、依赖在解锁，需最新就绪集
+        （planner 登记的计划任务同样经此呈现，lead agent 据此自主决定执行方式）。
         """
         cm = getattr(session_state, "context_manager", None)
         if cm is None:
             return "（暂无任务看板）"
         cm.refresh_task_prompt(str(getattr(session_state, "request_id", "") or ""))
-        board = cm.prompts.task_prompt or "（暂无任务看板）"
-        plan = cm.orchestration.plan or {}
-        if plan.get("goal"):
-            return f"goal: {plan.get('goal')}\n{board}"
-        return board
+        return cm.prompts.task_prompt or "（暂无任务看板）"

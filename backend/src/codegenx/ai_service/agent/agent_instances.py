@@ -24,13 +24,13 @@ def _get_agent_classes() -> list[type]:
     """延迟 import 避免模块级循环依赖。"""
     if _AGENT_CLASSES:
         return _AGENT_CLASSES
-    from codegenx.ai_service.agent.agents.intention_agent import SupervisorAgent
+    from codegenx.ai_service.agent.agents.leader_agent import LeaderAgent
     from codegenx.ai_service.agent.agents.plan_agent import PlannerAgent
     from codegenx.ai_service.agent.agents.data_explore_agent import DateExploreAgent
     from codegenx.ai_service.agent.agents.csv_explore_agent import CsvExploreAgent
 
     _AGENT_CLASSES.extend([
-        SupervisorAgent,
+        LeaderAgent,
         PlannerAgent,
         DateExploreAgent,
         CsvExploreAgent,

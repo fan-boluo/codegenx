@@ -96,49 +96,34 @@ class BaseReActAgent(Agent):
 
 
     def _resolve_tool_catalog(self) -> list[dict]:
-        """按 config.json agents[].tools 白名单解析 function-calling 工具目录。
+        """按 config.json agents[].tools 解析 function-calling 工具目录。
 
-        白名单为空/未配置时不启用工具（supervisor/planner 等纯文本决策链路保持不变）；
+        - 未配置 tools（None）→ 全量开放：构建全部注册工具（lead agent 统一工具面，
+          含 dispatch_agent 编排工具与业务工具，excluded 已在注册时剔除）；
+        - 空列表 → 不启用工具（纯文本决策链路）；
+        - 非空白名单 → 仅构建白名单内工具（执行型 agent 最小授权）。
         解析失败（如独立调试场景无 SystemApp）时降级为无工具，不阻断 agent 构建。
         """
-        allowlist = self.agent_config.tools or []
-        if not allowlist:
-            return []
+        allowlist = self.agent_config.tools
         try:
+            if allowlist is None:
+                return get_tool_registry().build_tool()
+            if not allowlist:
+                return []
             return get_tool_registry().build_agent_tools(allowlist)
         except Exception as exc:
             log.warning("{} 工具目录解析失败，降级为无工具: {}", self.agent_name, exc)
             return []
 
-    def _resolve_final_target(self, msg: AgentMessage) -> str:
-        """最终答复目标（直答/回传路由，工具化执行型 agent 通用判据）。
-
-        - 派发消息 direct_reply=True（supervisor 单任务免汇总派发）→ 直答用户；
-        - 但本轮调用过工具且全部失败 → 降级回传调用方（supervisor 审查后重派或如实说明）；
-        - 其余情况回传调用方。
-        """
-        caller = msg.sender or "user"
-        if not msg.direct_reply:
-            return caller
-        if self._tool_seen and not self._tool_any_success:
-            log.warning("{}: 派发标记直答但本轮工具全部失败，降级回传 {}", self.agent_name, caller)
-            return caller
-        return "user"
-
     def _reply(self, msg: AgentMessage, target: str, result_text: str) -> AgentMessage:
-        """把入参消息改造为回传/直答跳（执行型 agent observation 的统一出口）。
+        """把入参消息改造为回传跳（执行型 agent observation 的统一出口）。
 
         - task 保留入参原值（追溯），result 承载结果文本；
-        - 回传调用方时原样保留 task_id（看板闭环握手）；直答用户时清除握手字段；
-        - 清除 direct_reply 派发标记（标记仅派发跳有效）。
+        - 回传调用方时原样保留 task_id（计划链路看板闭环握手）。
         """
         msg.sender = self.agent_name
         msg.recipient = target
         msg.result = result_text
-        if target == "user":
-            msg.task_id = None
-            msg.step_id = None
-        msg.direct_reply = False
         msg.success = True
         return msg
 
@@ -309,18 +294,16 @@ class BaseReActAgent(Agent):
         """执行 tool_calls 并返回 tool 消息列表（_success 记账字段已剔除）。
 
         返回 None 表示执行器未就绪（run 循环强制结束）。
-        子类可覆盖实现控制流工具的本地执行（如 SupervisorAgent 的决策工具：
-        dispatch_agent / request_plan 不走通用执行器，本地登记后由 observation 消费）。
+        所有工具（含 dispatch_agent 派发）统一经 ToolExecutor 执行——
+        声明 session_state 参数的工具自动注入会话状态。
         """
         if self.tool_executor is None:
             log.error("【{} THINK】返回了 tool_calls 但工具执行器未就绪", self.agent_name)
             return None
         tool_messages = await self.tool_executor.dispatch_tool_calls(tool_calls, session_state)
-        # _success 为内部记账字段（直答降级判据），回填对话前剔除，不进 LLM API
-        self._tool_seen = True
+        # _success 为执行器内部记账字段，回填对话前剔除，不进 LLM API
         for m in tool_messages:
-            if m.pop("_success", True):
-                self._tool_any_success = True
+            m.pop("_success", None)
         return tool_messages
 
     @staticmethod
@@ -382,14 +365,12 @@ class BaseReActAgent(Agent):
             sender=self.agent_name, recipient="",
             request_id=request_id, session_id=session_state.session_id,
         )
-        # 直答降级记账：本轮是否有工具调用、是否有任一成功（observation 直答判据用）
-        self._tool_seen = False
-        self._tool_any_success = False
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
             step += 1
             log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
-            log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name, self._messages[1:])
+            log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name,
+                    "\n".join(msg)  for msg in self._messages[1:])
             response = await self.think(self._messages)
             if not response:  # TODO reasoning_content 的解析
                 self._messages.append({"role": "assistant", "content": self.profile.retry_goal})
@@ -417,7 +398,6 @@ class BaseReActAgent(Agent):
 
             if tool_calls:
                 # 工具化分支：执行 tool_calls 并回填 tool 消息，继续 think（LLM 自主决定下一步）
-                # （决策工具由子类覆盖 _execute_tool_calls 本地执行）
                 tool_messages = await self._execute_tool_calls(tool_calls, session_state)
                 if tool_messages is None:
                     break
@@ -462,7 +442,6 @@ class BaseReActAgent(Agent):
             caller = str(agent_message.sender or "user")
             observation.sender = self.agent_name
             observation.recipient = caller
-            observation.direct_reply = False
             if caller == "user":
                 observation.result = "执行失败，请稍后重试"
                 observation.task_id = None
@@ -472,7 +451,7 @@ class BaseReActAgent(Agent):
                 observation.result = f"执行失败：{reason}" if reason else "执行失败，请稍后重试"
                 observation.task_id = agent_message.task_id  # 看板闭环握手
                 observation.step_id = agent_message.step_id
-                observation.success = False  # 消息级失败标记（入史/批摘要消费）
+                observation.success = False  # 消息级失败标记（入史/派发结果回填消费）
         log.info("【{} 】结束: {} | steps={} | ok={} | reason={}", self.agent_name, request_id, step, ok, reason)
         log.debug("+++++++++++++++++++【{}】 END +++++++++++++++++++ ", self.agent_name)
 

@@ -88,9 +88,8 @@ class RuntimeSessionState:
     stop_reason: str = ""
     worker_task: asyncio.Task | None = None  # 一个携程任务
 
-    # 说明：Supervisor 编排上下文已迁至 SessionContext.orchestration
-    # （turn 级，请求开始重置，方案《上下文工程设计方案2》§5），
-    # RuntimeSessionState 回归纯运行时调度职责。
+    # 说明：Supervisor 编排共享状态已收敛至任务看板（按 request 落盘），
+    # RuntimeSessionState 保持纯运行时调度职责。
 
 
     def touch(self) -> None:
