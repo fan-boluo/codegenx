@@ -212,8 +212,6 @@ class BaseReActAgent(Agent):
             return ""
         return msg.task or ""
 
-
-
     async def think(self, messages: list[dict[str, Any]]) -> dict[Any, Any]:
         """思考：调用 LLM 推理，返回 {content, tool_calls}（子类可覆盖定制提示词/工具策略）。"""
         llm_response = await resilient_invoke(
@@ -341,7 +339,7 @@ class BaseReActAgent(Agent):
         # 1. 准备 agent 上下文（inbox 已在 __init__ 气注，此处仅组装 prompt/工具）
         await self._prepare_agent(session_state)
         log.debug("+++++++++++++++++++【{}】 STATR +++++++++++++++++++ ",self.agent_name)
-        log.debug("接收到消息:{}", agent_message.model_dump())
+        log.debug("接收到消息:{}", agent_message.show())
         # 2.
         request_id = (agent_message.request_id if agent_message else "") or session_state.request_id
         task_text = self._extract_task_text(agent_message)
@@ -370,7 +368,7 @@ class BaseReActAgent(Agent):
             step += 1
             log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
             log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name,
-                    "\n".join(msg)  for msg in self._messages[1:])
+                    "\n".join([str(msg) for msg in self._messages[1:]]))
             response = await self.think(self._messages)
             if not response:  # TODO reasoning_content 的解析
                 self._messages.append({"role": "assistant", "content": self.profile.retry_goal})

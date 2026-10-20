@@ -119,3 +119,8 @@ class AgentMessage(BaseModel):
     # ── 状态与低频扩展 ──
     success: bool | None = None    # 发送方执行成败
     metadata: dict[str, Any] = {}  # 低频扩展；禁止承载上述一等字段语义
+
+    def show(self):
+        return f"{self.sender} ->{self.recipient}\n" \
+                f"task: {self.task_id}: {self.task}\n" \
+                f"metadata: {self.metadata}\n"

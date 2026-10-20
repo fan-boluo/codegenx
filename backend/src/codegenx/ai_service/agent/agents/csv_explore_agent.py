@@ -18,6 +18,7 @@ from codegenx.ai_service.agent.action import ActOutput
 from codegenx.ai_service.agent.agents.agent import AgentMessage
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
+from codegenx.ai_service.utils.agent_utils import collect_csv_info
 from shared import log
 from shared.constants import get_code_dir
 
@@ -73,34 +74,10 @@ class CsvExploreAgent(BaseReActAgent):
 
     async def _prepare_agent(self, session_state):
         """ 先收集 csv 元信息，再 build prompt（顺序与 data_explore 一致） """
-        self._csv_info = await self._collect_csv_info(session_state)
+        self._csv_info = await collect_csv_info(session_state.user_id,session_state.app_id,MAX_CSV_FILES_IN_PROMPT)
         await super()._prepare_agent(session_state)
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
 
-    @staticmethod
-    async def _collect_csv_info(session_state: RuntimeSessionState) -> str:
-        """扫描当前用户项目 code_dir 下所有 csv
-        """
-        code_dir = get_code_dir(session_state.user_id, session_state.app_id)
-        if not code_dir.exists():
-            return "（当前项目 code 目录不存在）"
-
-        csv_files = sorted(code_dir.glob("*.csv"))[:MAX_CSV_FILES_IN_PROMPT]
-        if not csv_files:
-            return f"（{code_dir} 下暂无 csv 文件）"
-
-        parts: list[str] = [f"用户目录下前{MAX_CSV_FILES_IN_PROMPT}个文件："]
-        for fp in csv_files:
-            try:
-                size = fp.stat().st_size
-                size_mb = size / 1024 / 1024
-                parts.append(
-                    f"### 文件: {fp.name} ({size_mb:.2f}MB)\n"
-                    )
-            except Exception as exc:
-                log.warning("csv 文件元信息失败 {}: {}", fp.name, exc)
-                parts.append(f"### 文件: {fp.name}（大小获取失败: {exc}）")
-        return "\n\n".join(parts)
 
     async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:
         """观察最终答复：工具化循环结束后 LLM 的自由文本即结论，直接回传调用方。
