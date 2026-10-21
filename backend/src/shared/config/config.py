@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     app_port: int = 8456
     app_base_path: str = "/api"
 
+    postgres_host: str = "127.0.0.1"
+    postgres_port: int = 5432
+    postgres_password: str = "password"
+
+
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_user: str = "root"

@@ -30,9 +30,11 @@ from codegenx.ai_service.agent.agents.agent import AgentMessage
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.agent.agents.supervisor_board import TaskBoardCoordinator
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
+from codegenx.ai_service.compact import estimate_tokens
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.utils.agent_utils import collect_info
+from codegenx.ai_service.utils.config import config
 from shared.constants import get_code_dir
 from shared.utils.log_util import log
 
@@ -71,8 +73,10 @@ class LeaderAgent(BaseReActAgent):
         expand_prompt=(
             "可用的智能体如下：\n{{agents_list_desc}}\n\n"
             "任务看板：\n{{board_desc}}\n\n"
-            "（历史用户请求、历史轮次的子智能体执行结果与最终答复见对话历史消息；"
-            "本轮子智能体的执行结果以工具结果形式出现在对话中）"
+            "相关长期记忆：\n{{memory_prompt}}\n\n"
+            # "历史会话摘要（更早轮次的压缩记忆）：\n{{session_summary}}\n\n"
+            # "（历史用户请求、历史轮次的子智能体执行结果与最终答复见对话历史消息；"
+            # "本轮子智能体的执行结果以工具结果形式出现在对话中）"
         ),
         examples="",
         out_schema="",
@@ -84,6 +88,9 @@ class LeaderAgent(BaseReActAgent):
         self.board = TaskBoardCoordinator()
         # run 级状态（实例即建即弃，不落会话状态）
         self._session_state: RuntimeSessionState | None = None
+        # 记忆/会话摘要注入文本（_prepare_agent 预取，_prepare_prompt_params 消费）
+        self._memory_prompt: str = ""
+        self._session_summary: str = ""
 
     # ── prompt 构建与输入组装 ──
     @staticmethod
@@ -98,18 +105,35 @@ class LeaderAgent(BaseReActAgent):
         return "\n".join(lines) or "（暂无可用子智能体）"
 
     async def _prepare_agent(self, session_state: RuntimeSessionState) -> None:
-        """stash 会话状态供 _prepare_prompt_params（render_board）使用后走基类组装。"""
+        """stash 会话状态 + 预取记忆与会话摘要（expand 变量注入）后走基类组装。"""
         self._session_state = session_state
+        # 以当前用户请求为 query 检索长期记忆；会话摘要由 compact_after_turn 后台产出
+        query = str(getattr(session_state.request, "message", "") or "")
+        app = get_app()
+        self._memory_prompt = await app.memory.load(
+            query,
+            user_id=session_state.user_id,
+            app_id=session_state.app_id,
+            session_id=session_state.session_id,
+        )
+        # 会话摘要为同步文件读取（SessionSummaryService.load 非 async），不能 await
+        self._session_summary = app.summary.load(
+            user_id=session_state.user_id,
+            app_id=session_state.app_id,
+            session_id=session_state.session_id,
+        )
         await super()._prepare_agent(session_state)
         log.debug(self._system_prompt)
 
     def _prepare_prompt_params(self) -> dict:
-        """统一 prompt 变量：智能体清单（含 planner）+ 任务看板（新请求通常为空看板）。"""
+        """统一 prompt 变量：智能体清单（含 planner）+ 任务看板 + 记忆/摘要注入。"""
         return {
             "available_file_path":get_code_dir(self._session_state.user_id,self._session_state.app_id),
             "available_db":self._session_state.db_name,
             "agents_list_desc": self.agents_list_desc(),
             "board_desc": self.board.render_board(self._session_state),
+            "memory_prompt": self._memory_prompt or "（暂无相关长期记忆）",
+            # "session_summary": self._session_summary or "（暂无历史会话摘要）",
         }
 
     def _build_history_messages(self, session_state) -> list[dict]:
@@ -118,15 +142,40 @@ class LeaderAgent(BaseReActAgent):
         去除末条（本轮用户请求原文，已作为当前输入，避免重复）；
         子智能体执行历史（add_agent_result）与历史轮次回答回归历史消息承载；
         只保留 role/content 供 LLM 对话使用，附带字段（agent/task/success）丢弃。
+        超出 token 预算从最旧截断，更早轮次由会话摘要（session_summary）兜底。
         """
         cm = getattr(session_state, "context_manager", None)
         if cm is None or not cm.chat_messages:
             return []
-        return [
+        history = [
             {"role": m["role"], "content": m["content"]}
             for m in cm.chat_messages[:-1]
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
+        return self._apply_history_budget(history)
+
+    @staticmethod
+    def _apply_history_budget(history: list[dict]) -> list[dict]:
+        """会话历史 token 预算：超限从最旧截断（单次遍历，保留预算内最新消息）。
+
+        历史仅 user/assistant 文本消息（无 tool 消息），microcompact 对其无效，
+        直接做最旧截断；预算阈值经 config.compact.leader_history_budget_tokens 配置。
+        """
+        budget = config.compact.leader_history_budget_tokens
+        if estimate_tokens(history) <= budget:
+            return history
+        kept: list[dict] = []
+        total = 0
+        for m in reversed(history):
+            cost = estimate_tokens([m])
+            if total + cost > budget and kept:
+                break
+            kept.append(m)
+            total += cost
+        kept.reverse()
+        log.info("leader 历史超预算截断：{} 条 -> {} 条（budget={} tokens）",
+                 len(history), len(kept), budget)
+        return kept
 
     # ── observation：终答跳（派发已在工具执行内完成，无派发跳组装） ──
 

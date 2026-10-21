@@ -55,6 +55,11 @@ from codegenx.ai_service.compact.compact import (
     MIN_TEXT_MESSAGES,
 )
 
+from codegenx.ai_service.compact.budget import (
+    BudgetReport,
+    enforce_budget_inplace,
+)
+
 __all__ = [
     # thresholds
     "AUTOCOMPACT_THRESHOLD",
@@ -79,4 +84,7 @@ __all__ = [
     "CompactionService",
     "MAX_TOKENS_AFTER",
     "MIN_TEXT_MESSAGES",
+    # budget（统一预算分配器，排期③）
+    "BudgetReport",
+    "enforce_budget_inplace",
 ]

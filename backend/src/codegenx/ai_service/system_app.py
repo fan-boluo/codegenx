@@ -306,6 +306,10 @@ async def stop_app(app: SystemApp | None = None) -> None:
         from db.mysql.session import shutdown_mysql_engine
 
         await shutdown_mysql_engine()
+    with suppress(Exception):
+        from db.postgres.postgres_client import shutdown_postgres_engine
+
+        await shutdown_postgres_engine()
     app._started = False
     log.info("SystemApp shutdown completed")
 

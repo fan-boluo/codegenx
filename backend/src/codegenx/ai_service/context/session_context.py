@@ -197,6 +197,35 @@ class SessionContext:
             )
             log.debug("session summary 后台提取已触发")
 
+    async def ensure_summary_before_unload(self) -> None:
+        """swap-out/空闲回收前保证会话摘要跟上已入库消息（上下文工程排期②）。
+
+        强制触发（绕过增长阈值）：回收/卸载后内存列表消失，未摘要内容只能
+        等下次会话重摘；此处先补一轮保证摘要连续。
+
+        fire-and-forget：后台任务按 seq 水位从 chat_message 表读增量独立运行，
+        清理锁内不做 DB 读与 LLM 调用（避免阻塞全池）；无新消息时后台任务
+        自然空转退出，不产生 LLM 开销。
+        """
+        from codegenx.ai_service.system_app import get_app
+
+        if not self.chat_messages:
+            return
+        summary = getattr(get_app(), "summary", None)
+        if summary is None:
+            return
+        summary.fire_extract(
+            self.summary_state,
+            self.chat_messages,
+            user_id=self.user_id,
+            app_id=self.app_id,
+            session_id=self.session_id,
+        )
+        log.info(
+            "会话 {} 卸载前强制摘要已触发（列表 {} 条）",
+            self.session_id, len(self.chat_messages),
+        )
+
     async def force_compact(self) -> None:
         """强制压缩聊天历史（供 recovery 策略调用）。
 

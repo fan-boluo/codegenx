@@ -23,7 +23,6 @@ backend/src/codegenx/ai_service/
 │       ├── agent.py              # AgentMessage 扁平协议
 │       ├── base_react_agent.py   # ReAct 循环 + 原生 tool_calls + _reply 回传出口 + 失败兜底
 │       ├── intention_agent.py    # SupervisorAgent（编排入口）
-│       ├── supervisor_decision.py# SupervisorDecisionEngine（单一 profile 模板）
 │       ├── supervisor_board.py   # TaskBoardCoordinator（看板协调）
 │       └── data_explore_agent.py / csv_explore_agent.py / planner ...
 ├── context/session_context.py    # chat_messages 会话历史真相源
@@ -71,7 +70,7 @@ backend/src/codegenx/ai_service/
 
 ## 4. Supervisor 编排
 
-三类拆分：**SupervisorAgent**（编排流程）/ **SupervisorDecisionEngine**（单一模板）/ **TaskBoardCoordinator**（看板确定性操作）。
+三类拆分：**SupervisorAgent**（编排流程）/ **TaskBoardCoordinator**（看板确定性操作）。
 `profile` 必须为类属性（`register()` 是 classmethod 读 `cls.profile`）。
 
 ### 4.1 决策协议（P2 工具化）

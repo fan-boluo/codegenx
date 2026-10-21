@@ -349,6 +349,10 @@ class SessionPool(BaseComponent):
                     # 长任务执行期间（LLM 多轮编排可远超 idle 阈值）不能误杀，
                     # 留待任务结束后的下一轮 cleanup 再回收
                     if self._is_quiescent(session):
+                        # 回收前保证摘要覆盖当前列表（fire-and-forget，后台任务持快照独立落盘）
+                        cm = getattr(session, "context_manager", None)
+                        if cm is not None and getattr(cm, "chat_messages", None):
+                            await cm.ensure_summary_before_unload()
                         sessions_to_remove.append(session_id)
                         continue
                     log.info(
@@ -367,6 +371,8 @@ class SessionPool(BaseComponent):
                 ):
                     cm = getattr(session, "context_manager", None)
                     if cm is not None and cm.chat_messages:
+                        # 卸载前保证摘要（fire-and-forget，后台任务持快照独立落盘）
+                        await cm.ensure_summary_before_unload()
                         cm.chat_messages = []
                     session.swapped_out = True
                     swapped_sessions.append(session_id)

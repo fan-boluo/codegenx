@@ -9,14 +9,22 @@
   fire_extract()     → 非阻塞后台 Task 做摘要，写 session 目录下的摘要文件
   load()             → 同步读取当前摘要（CompactionEngine 压缩前调用，
                         作为 Path A 快速通道的上下文恢复来源）
+
+水位线：摘要 meta 文件 SUMMARY_META.json 记录 last_seq（chat_message.seq，
+会话内单调递增、不可变），摘要输入经 ChatMessageStore.read_since 按 seq
+增量读取——不再依赖内存 chat_messages 列表 index（压缩重建列表会让 index
+漂移）。先写 SUMMARY.md 后写水位（安全序，失败只会重复摘要、不会漏摘要）；
+单写者 = 摘要后台任务。旧版 index 语义 meta（无 version）一律视为 0 重摘。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import traceback
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 
 from shared import log
@@ -34,6 +42,9 @@ MIN_TOKENS_TO_INIT = 6000           # 上下文达到该规模后开始跟踪
 MIN_TOKENS_BETWEEN_UPDATES = 150    # 新增 token 超过该值才允许再次提取
 TOOL_CALLS_BETWEEN_UPDATES = 5      # 或新增工具调用超过该值
 
+# 单次摘要提取最多喂入的消息条数（水位增量超限时从最老开始截断，剩余下轮补摘）
+MAX_EXTRACT_MESSAGES = config.compact.summary_extract_max_messages or 200
+
 
 def _count_tool_calls_since(messages: list[dict], since_idx: int) -> int:
     """统计 since_idx 之后 assistant 消息里的 tool_call 数量。"""
@@ -47,6 +58,32 @@ def _count_tool_calls_since(messages: list[dict], since_idx: int) -> int:
 def get_session_summary_path(user_id: str, app_id: str, session_id: str) -> Path:
     """会话摘要文件：.data/{userId}/{appId}/session/{session_id}/SUMMARY.md"""
     return get_session_dir(user_id, app_id) / session_id / "SUMMARY.md"
+
+
+def get_session_summary_meta_path(user_id: str, app_id: str, session_id: str) -> Path:
+    """会话摘要水位 meta：.data/{userId}/{appId}/session/{session_id}/SUMMARY_META.json
+
+    水位 last_seq = chat_message.seq（会话内单调递增，与消息行绑定，不随内存
+    列表增删漂移）；version=2 标识 seq 语义，旧版 index 语义读取时回退 0。
+    """
+    return get_session_dir(user_id, app_id) / session_id / "SUMMARY_META.json"
+
+
+def load_summary_seq(user_id: str, app_id: str, session_id: str) -> int:
+    """读取摘要消费水位（chat_message.seq）；文件缺失/损坏/旧版语义回退 0。
+
+    回退 0 = 全量重摘（幂等安全）；宁可重复也不可漏摘。
+    """
+    path = get_session_summary_meta_path(user_id, app_id, session_id)
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if int(data.get("version") or 0) < 2:
+            return 0
+        return max(0, int(data.get("last_seq") or 0))
+    except (OSError, ValueError, TypeError):
+        return 0
 
 
 # ── 会话摘要模板与提取提示词（原 memory/prompts.py 的 session 部分） ─────────
@@ -97,9 +134,9 @@ def build_summary_extraction_prompt(
 
 
 def _format_messages_for_extraction(messages: list[dict]) -> str:
-    """取最近 40 条消息格式化为提取 prompt 输入。"""
+    """格式化为提取 prompt 输入（调用方已传水位后的精确增量切片，此处不再截取）。"""
     parts: list[str] = []
-    for msg in messages[-40:]:
+    for msg in messages:
         role = msg.get("role", "?")
         content = msg.get("content", "")
         if isinstance(content, list):
@@ -196,15 +233,20 @@ class SessionSummaryService(BaseComponent):
         app_id: str,
         session_id: str,
     ) -> None:
-        """调度非阻塞后台摘要任务（快照消息列表，主对话可继续变更）。"""
+        """调度非阻塞后台摘要任务。
+
+        messages 仅用于阈值状态记账（should_extract 的 token/工具调用统计）；
+        摘要输入由后台任务按 seq 水位从 chat_message 表读取，主对话可继续变更。
+        """
         if state.extracting:
             return
         state.extracting = True
         state.extract_msg_idx = len(messages)
         state.tokens_at_last_extract = rough_tokens(messages)
-        path = get_session_summary_path(user_id, app_id, session_id)
         state.extract_task = asyncio.create_task(
-            self._extract(state, list(messages), path)
+            self._extract(
+                state, user_id=user_id, app_id=app_id, session_id=session_id
+            )
         )
 
     def load(self, *, user_id: str, app_id: str, session_id: str) -> str:
@@ -219,18 +261,68 @@ class SessionSummaryService(BaseComponent):
 
     # ── 内部提取 ──────────────────────────────────────────────────────────────
 
-    async def _extract(self, state: SummaryState, messages: list[dict], path: Path) -> None:
-        """后台任务：摘要 messages → 覆盖写 SUMMARY.md；失败非致命。
+    async def _extract(
+        self,
+        state: SummaryState,
+        *,
+        user_id: str,
+        app_id: str,
+        session_id: str,
+    ) -> None:
+        """后台任务：按 seq 水位读增量 → 覆盖写 SUMMARY.md → 推进水位；失败非致命。
+
+        增量 = 表内 seq > 水位的新消息，截到「assistant 收尾」的完整前缀
+        （未收尾的半轮留给下次），单次上限 MAX_EXTRACT_MESSAGES，超出部分
+        下轮补摘；水位只推进到实际喂入的最后一条 seq。
+
+        原子序（安全方向）：先写 SUMMARY.md 成功，再写水位 meta——meta 落后
+        于摘要只会导致下轮重复摘要（幂等无害）；反之水位超前会漏摘要。
 
         异常闸（LLM调用设计方案.md §5.4）：catch 通用层异常并按 LLMErrorClass
-        记因后转「无效结果」，兜底 = 本次跳过（旧摘要保留），等下次阈值再触发。
+        记因后转「无效结果」，兜底 = 本次跳过（旧摘要与水位均保留），等下次阈值再触发。
         """
+        path = get_session_summary_path(user_id, app_id, session_id)
         try:
+            from codegenx.ai_service.chat_message import get_chat_message_store
+
+            watermark = load_summary_seq(user_id, app_id, session_id)
+            records = await get_chat_message_store().read_since(
+                session_id, after_seq=watermark, limit=MAX_EXTRACT_MESSAGES
+            )
+            # 截到 assistant 收尾：本轮未完成的半轮（如停止/异常）留待下次
+            consumed: list[tuple[int, dict]] = []
+            for i, rec in enumerate(records):
+                if rec[1].get("role") == "assistant":
+                    consumed = records[: i + 1]
+            if not consumed:
+                return
+            fed = [msg for _, msg in consumed]
             current_notes = self._load_from_path(path)
-            summary = await self._summarize(messages, current_notes, str(path))
+            summary = await self._summarize(fed, current_notes, str(path))
+            if summary is None:
+                # 校验闸：空输出 = 无效结果，旧摘要与水位均保留，等下次阈值触发
+                return
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(summary, encoding="utf-8")
-            log.debug("session summary 压缩完成:{}", path)
+            # 摘要写盘成功 → 推进水位到实际喂入的最后一条 seq（单写者=本后台任务）
+            new_seq = int(consumed[-1][0])
+            meta_path = get_session_summary_meta_path(user_id, app_id, session_id)
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "last_seq": new_seq,
+                        "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            log.debug(
+                "session summary 压缩完成:{} 水位 {} → {}",
+                path, watermark, new_seq,
+            )
         except Exception as exc:
             err_class = classify_llm_error(exc)
             log.error("session summary 提取异常（{}）", err_class.value)
@@ -253,8 +345,8 @@ class SessionSummaryService(BaseComponent):
         messages: list[dict],
         current_notes: str,
         notes_path: str,
-    ) -> str:
-        """调用大模型更新结构化会话摘要；空输出回退到现有笔记。"""
+    ) -> str | None:
+        """调用大模型更新结构化会话摘要；空输出返回 None（无效结果，水位不推进）。"""
         system_prompt = build_summary_extraction_prompt(
             messages=messages,
             current_notes=current_notes,
@@ -273,12 +365,17 @@ class SessionSummaryService(BaseComponent):
             max_tokens=4096,
         )
 
-        if not updated_notes or not updated_notes.get("content","").strip():
-            # 校验闸（句法层）：空输出 = 无效结果 → 兜底保留旧笔记（异步可重算，等下次阈值触发）
+        if not isinstance(updated_notes, dict):
+            # 校验闸（句法层）：非 dict 返回 = 无效结果 → 返回 None（旧笔记与水位保留）
+            log.warning("[summary] 摘要返回结构异常（{}），保留旧笔记兜底", type(updated_notes).__name__)
+            return None
+        content = str(updated_notes.get("content") or "").strip()
+        if not content:
+            # 校验闸（句法层）：空输出 = 无效结果 → 返回 None（旧笔记与水位保留，等下次阈值触发）
             log.warning("[summary] 摘要输出为空，保留旧笔记兜底")
-            return current_notes if current_notes else ""
+            return None
 
-        return updated_notes.strip()
+        return content
 
 
 def initialize_summary(system_app) -> SessionSummaryService:

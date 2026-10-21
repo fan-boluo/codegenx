@@ -15,6 +15,11 @@ from shared import log
 from codegenx.ai_service.agent.agents.agent import Agent, AgentContext, AgentMessage
 
 from codegenx.ai_service.agent.action import Action, ActOutput
+from codegenx.ai_service.compact.budget import (
+    MEMORY_EVICTED_PLACEHOLDER,
+    SUMMARY_EVICTED_PLACEHOLDER,
+    enforce_budget_inplace,
+)
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 
 
@@ -139,18 +144,80 @@ class BaseReActAgent(Agent):
         if self.tools:
             # 配置了工具的 agent 必须拿到执行器，失败直接暴露（fail fast，不静默吞掉）
             self.tool_executor = get_app().tools_executor
-        self.agent_context = AgentContext(
-            session_id=session_state.session_id,
-            app_id=str(session_state.app_id or ""),
-            user_id=session_state.user_id,
-            agent_name=self.agent_name,
-        )
         params = self._prepare_prompt_params()
         self._system_prompt = self.profile.build_default_system_prompt(**params)
 
     def _prepare_prompt_params(self) -> dict:
         """ 在build prompt之前，子类各自准备 """
         return {}
+
+    # ------------------------------------------------------------------ context budget
+
+    def _enforce_context_budget(self) -> None:
+        """统一预算分配器：每次调 LLM 前执行总量管控（上下文工程排期③）。
+
+        总预算 = agent context_max_tokens × compact.contextBudgetRatio；
+        驱逐优先级（docs/上下文工程设计.md §1.1）：
+          工具结果 → 中段历史（budget.py 就地降级为占位符）
+          → 记忆注入 → 会话摘要（重建 system_prompt 承载）；
+        system 固定区 + 当前任务输入永不驱逐。驱逐均为占位符降级，
+        原文经工具重调用 / chat_messages 快照可回捞。
+        """
+        window = int(self.agent_config.context_max_tokens or 8000)
+        budget = int(window * config.compact.context_budget_ratio)
+        report = enforce_budget_inplace(
+            self._messages,
+            budget=budget,
+            protect_last_n_tool_results=config.compact.protect_last_n_results,
+        )
+        # 仍超预算：按优先级驱逐 system 内可驱逐分区（重建 system_prompt），驱逐后复量
+        if not report.ok and self._rebuild_system_prompt(evict_memory=True):
+            log.info("【{}】上下文预算：记忆注入区已驱逐（复量 {} -> 预算 {}）",
+                     self.agent_name, report.tokens_after, budget)
+            report = enforce_budget_inplace(
+                self._messages,
+                budget=budget,
+                protect_last_n_tool_results=config.compact.protect_last_n_results,
+            )
+        if not report.ok and self._rebuild_system_prompt(evict_memory=True, evict_summary=True):
+            log.info("【{}】上下文预算：会话摘要区已驱逐（复量 {} -> 预算 {}）",
+                     self.agent_name, report.tokens_after, budget)
+            report = enforce_budget_inplace(
+                self._messages,
+                budget=budget,
+                protect_last_n_tool_results=config.compact.protect_last_n_results,
+            )
+        if report.evicted_tools or report.evicted_histories or report.tokens_before != report.tokens_after:
+            log.info(
+                "【{}】上下文预算执行: {} -> {} tokens（budget={}）| 驱逐 tool={} history={}",
+                self.agent_name, report.tokens_before, report.tokens_after,
+                budget, report.evicted_tools, report.evicted_histories,
+            )
+
+    def _rebuild_system_prompt(
+        self, *, evict_memory: bool = False, evict_summary: bool = False,
+    ) -> bool:
+        """驱逐 system 内可驱逐分区后重建 system_prompt（expand 变量占位替换）。
+
+        profile.expand_prompt 不含对应变量的 agent 返回 False（不可驱逐，
+        预算执行止步于消息级降级）。重建复用 _prepare_prompt_params 的最新值
+        （如看板渲染），可驱逐变量固定替换为占位文案。
+        """
+        expand = getattr(self.profile, "expand_prompt", "") or ""
+        if evict_memory and "{{memory_prompt}}" not in expand:
+            return False
+        if evict_summary and "{{session_summary}}" not in expand:
+            return False
+        params = self._prepare_prompt_params()
+        if evict_memory:
+            params["memory_prompt"] = MEMORY_EVICTED_PLACEHOLDER
+        if evict_summary:
+            params["session_summary"] = SUMMARY_EVICTED_PLACEHOLDER
+        self._system_prompt = self.profile.build_default_system_prompt(**params)
+        if self._messages:
+            self._messages[0] = {"role": "system", "content": self._system_prompt}
+        return True
+
     # ------------------------------------------------------------------ message I/O
 
     async def receive(self, msg:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage | None:
@@ -365,6 +432,8 @@ class BaseReActAgent(Agent):
         )
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
+            # 统一预算分配器：每次调 LLM 前总量管控（超预算按优先级驱逐，排期③）
+            self._enforce_context_budget()
             step += 1
             log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
             log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name,

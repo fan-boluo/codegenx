@@ -361,6 +361,21 @@ class CompactConfig(Base):
     model_name: str | None = Field(default=None)
 
     protect_last_n_results: int = Field(default=5)
+    # Leader 会话历史注入 token 预算：超出从最旧截断，更早轮次由会话摘要兜底承载
+    leader_history_budget_tokens: int = Field(
+        default=2500,
+        validation_alias=AliasChoices("leaderHistoryBudgetTokens", "leader_history_budget_tokens"),
+    )
+    # 单次摘要提取最多喂入的消息条数（水位增量超限时取最近 N 条，水位只推进到实际喂入范围）
+    summary_extract_max_messages: int = Field(
+        default=200,
+        validation_alias=AliasChoices("summaryExtractMaxMessages", "summary_extract_max_messages"),
+    )
+    # 统一预算分配器总预算比例：总预算 = context_max_tokens × 该比例（预留输出 max_tokens 与安全余量）
+    context_budget_ratio: float = Field(
+        default=0.85,
+        validation_alias=AliasChoices("contextBudgetRatio", "context_budget_ratio"),
+    )
 
 class ModelsConfig(Base):
     name: str = Field(default="qwen3.8-flash")
@@ -407,7 +422,6 @@ class SessionConfig(Base):
 
 class MultiAgentsConfig(Base):
     """多Agent参数。"""
-    turn_max: int = Field(default=20)  # 单请求（turn）允许的最大跨 agent 路由轮次（防止死循环）
     max_parallel: int = Field(default=3)  # 批量派发并行执行上限（同批子任务最大并发数）
     enabled: bool = Field(default=True)  # 是否启用多agent自动模式，默认是，单agent模式后续再定
     replan_max: int = Field(default=2)  # Critic 驳回后局部重规划上限（第二期启用）
