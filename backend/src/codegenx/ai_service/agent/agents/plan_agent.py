@@ -3,8 +3,10 @@ import json as _json
 from pydantic import BaseModel
 from typing import Any
 from codegenx.ai_service.agent.action import Action, ActOutput
+from codegenx.ai_service.schema.ai_schema import UserAIRequest
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.agent.agents.supervisor_board import TaskBoardCoordinator
+from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.agent.agents.agent import AgentMessage
@@ -80,41 +82,22 @@ class PlannerAgent(BaseReActAgent):
 }""",
     )
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, context: CommonContext | None = None):
+        super().__init__(context=context)
         # 注意：这里是实例而非类，act 是实例方法
         self.actions = [PlanAction()]
         # 看板协调器：计划产出后由 planner 自行落板（不再回流 supervisor 侧消费）
         self.board = TaskBoardCoordinator()
         # run 级会话状态（_prepare_agent 存入，observation 落板时使用）
-        self._session_state = None
+        self._request = None
 
-    # def _prepare_prompt_params(self) -> dict:
-    #     # 智能体清单仅作系统能力参考（拆解任务不超出能力边界）；
-    #     # 计划不指派执行者——每个任务怎么执行由 supervisor 决定
-    #     selected = []
-    #     for spec in get_app().agents.all_specs():
-    #         if spec.role in ["planner", "intent_recognition", "supervisor"]:
-    #             continue
-    #         else:
-    #             selected.append(spec)
-    #     return {
-    #         "agents_list_desc": "\n".join([spec.name + "-" + spec.desc for spec in selected]),
-    #     }
-
-    async def _prepare_agent(self, session_state):
+    async def _prepare_agent(self, request: UserAIRequest):
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
-        await super()._prepare_agent(session_state)
+        await super()._prepare_agent(request)
         # 落板所需会话状态（observation 阶段 register_plan 使用）
-        self._session_state = session_state
+        self._request = request
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
-        tools = self.agent_config.tools or []
-        self.tools = await get_app().tool_registry.build_tools_with_name(tools)
 
-        self.skill = None
-        self.memory = None
-        # 组合
-        self.prompt = None
 
     async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:
         """观察 PlanAction 结果，决定重试还是登记看板后返回调用方。
@@ -132,7 +115,7 @@ class PlannerAgent(BaseReActAgent):
         if not act_output.success:
             # ── 规划失败：让 LLM 重试（最多 max_steps 次） ──
             log.warning("Planner observation: 规划失败，让 LLM 重试：{}", act_output.message)
-            self._messages.append({
+            self._context.chat_messages.append({
                 "role": "user",
                 "content": (
                     f"上一次生成的任务规划无效，请重新输出正确的 JSON。\n"
@@ -145,7 +128,7 @@ class PlannerAgent(BaseReActAgent):
 
         # ── 规划成功：planner 自行登记任务看板，回传登记摘要 ──
         plan_dict = act_output.output  # dict: {goal, steps}
-        summary = self.board.register_plan(self._session_state, plan_dict)
+        summary = self.board.register_plan(self._request, plan_dict)
         msg.sender = self.agent_name
         msg.recipient = caller
         msg.task_id = None

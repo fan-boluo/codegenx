@@ -240,7 +240,7 @@ class ChatService(BaseComponent):
 
             # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
             # （复用 on_session_start 已有的快照重载逻辑，docs/SystemApp架构设计.md §7）
-            await self._restore_swapped_session(session_state)
+            await self._restore_session_history(session_state)
 
             # 用户发送的消息入库
             user_dict = {"role": "user", "content": request.message}
@@ -256,21 +256,25 @@ class ChatService(BaseComponent):
             await self._enqueue_session_request(session_state, request)
             log.debug("{} 已加入 session pending_requests", request.request_id)
 
-    async def _restore_swapped_session(self, session_state: RuntimeSessionState) -> None:
-        # 这一步是每轮都会执行的，目前，不管是新建session还是复用
-        if not getattr(session_state, "swapped_out", False):
-            return
-        session_state.swapped_out = False
-        cm = session_state.context_manager
-        if cm is not None and not cm.chat_messages:
-            from codegenx.ai_service.system_app import get_app
+    async def _restore_session_history(self, session_state: RuntimeSessionState) -> None:
+        """每轮请求入口恢复会话历史：swap-out 复用与空闲回收后新建两种路径统一处理。
 
-            cm.chat_messages = await get_app().session_io.get_turn_chat_message_snapshot(
-                user_id=session_state.user_id,
-                app_id=session_state.app_id,
-                session_id=session_state.session_id,
-            ) or []
-            log.info("swapped-out session {} 已从快照恢复（{} 条消息）",
+        内存 chat_messages 为空即按 turn 快照回填（新建会话同样适用：上一轮 session
+        可能已被空闲回收、对象已从池中移除，仅剩快照文件）。
+        """
+        cm = session_state.context_manager
+        if cm is None or cm.chat_messages:
+            return
+        from codegenx.ai_service.system_app import get_app
+
+        snapshot = await get_app().session_io.get_turn_chat_message_snapshot(
+            user_id=session_state.user_id,
+            app_id=session_state.app_id,
+            session_id=session_state.session_id,
+        ) or []
+        if snapshot:
+            cm.chat_messages = snapshot
+            log.info("session {} 已从快照恢复（{} 条消息）",
                      session_state.session_id, len(cm.chat_messages))
 
     async def _wait_for_request_cleanup(self, session_id: str, request_id: str) -> None:
@@ -360,7 +364,7 @@ class ChatService(BaseComponent):
                 if session_state.worker_task is current_task:
                     session_state.processing = False
                     session_state.worker_task = None
-                log.info("{},{}", session_state.session_id, "finished")
+                log.info("{},worker 空闲退出（会话与历史保留在池中）", session_state.session_id)
 
     async def _close_session_state(
             self, session_state: RuntimeSessionState, *, end_reason: str

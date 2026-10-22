@@ -23,129 +23,127 @@ from shared import log
 
 if TYPE_CHECKING:
     from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
+    from codegenx.ai_service.context.common_context import CommonContext
+
+
 
 CONTINUATION_MESSAGE: str = "Please continue from where you left off."
 
-class LLMRecovery:
-    """LLM 调用
+async def invoke_stream_with_revovery(
+    agent_config:AgentConfig,
+    tools:list[dict],
+    messages: list[dict[str, Any]],
+    session_state: "RuntimeSessionState",
+    agent_context: "CommonContext",
+) -> dict[str, Any]:
+    """Invoke the LLM with error recovery (s11).
+
+    agent_context：调用方上下文（leader=SessionContext / 子智能体=SubContext）。
+    上下文超长恢复统一走 context 多态压缩（force_compact）——只压调用方
+    自己的对话列表，子智能体不会误压会话真相源。
     """
+    agent_temperature = agent_config.temperature
+    continuation_attempts = 0
+    compact_attempts = 0
+    accumulated_content = ""
+    # 本地追踪 continuation 注入的消息，避免污染 context.chat_messages，因为是属于错误重试的消息
+    continuation_messages: list[dict[str, Any]] = []
 
-    # ------------------------------------------------------------------ public entry
+    while True:
+        try:
+            if session_state.stop_signal.is_set():
+                raise TurnStoppedError(str(session_state.stop_reason or "user-stop"))
+            round_response: dict[str, Any] = {
+                "content": "",
+                "tool_calls": [],
+                "finish_reason": None,
+            }
 
-    async def invoke(
-        self,
-            agent_config:AgentConfig,
-            tools:list[dict],
-        messages: list[dict[str, Any]],
-        turn_state: ActivateTurn,
-        session_state: "RuntimeSessionState",
-    ) -> dict[str, Any]:
-        """Invoke the LLM with error recovery (s11)."""
-        context = session_state.context_manager
-        agent_temperature = agent_config.temperature
-        continuation_attempts = 0
-        compact_attempts = 0
-        accumulated_content = ""
-        # 本地追踪 continuation 注入的消息，避免污染 context.chat_messages，因为是属于错误重试的消息
-        continuation_messages: list[dict[str, Any]] = []
-
-        while True:
-            try:
+            # 重试/降级/熔断由韧性层负责（组件解析的模型链）
+            async for chunk in resilient_invoke_stream(
+                messages,
+                chain=agent_config.resolved_model_name_chain,
+                label="agent",
+                tools=tools,
+                timeout=agent_config.llm_stream_timeout_seconds,
+                temperature=agent_temperature,
+            ):
                 if session_state.stop_signal.is_set():
                     raise TurnStoppedError(str(session_state.stop_reason or "user-stop"))
-                round_response: dict[str, Any] = {
-                    "content": "",
-                    "tool_calls": [],
-                    "finish_reason": None,
-                }
-
-                # 重试/降级/熔断由韧性层负责（组件解析的模型链）
-                async for chunk in resilient_invoke_stream(
-                    messages,
-                    chain=agent_config.resolved_model_name_chain,
-                    label="agent",
-                    tools=tools,
-                    timeout=agent_config.llm_stream_timeout_seconds,
-                    temperature=agent_temperature,
-                ):
-                    if session_state.stop_signal.is_set():
-                        raise TurnStoppedError(str(session_state.stop_reason or "user-stop"))
-                    if chunk["type"] == "content":
-                        round_response["content"] += chunk["data"]
-                        await get_app().message_bus.publish_runtime_event(
-                            session_state,
-                            AgentEvent(
-                                event_type=AgentEventType.LLM_RESPONSE_CHUNK,
-                                data=chunk["data"],
-                                state=AgentState.RUNNING,
-                            ),
-                        )
-                    elif chunk["type"] == "tool_calls":
-                        round_response["tool_calls"] = chunk["data"]
-                    elif chunk["type"] == "response_info":
-                        info = chunk.get("data") or {}
-                        round_response["finish_reason"] = info.get("finish_reason")
-                        # BUG-5 接线：真实 usage / 实际服务模型随末尾 response_info 回传
-                        round_response["usage"] = info.get("usage")
-                        round_response["model"] = info.get("model")
-
-                # Strategy 1: output truncated — inject continuation message and retry
-                finish_reason = str(round_response.get("finish_reason") or "").lower()
-                if finish_reason in {"length", "max_tokens"}:
-                    if continuation_attempts < agent_config.max_continuation_attempts:
-                        continuation_attempts += 1
-                        accumulated_content += round_response["content"]
-                        log.warning(
-                            "[Recovery] Output truncated, injecting continuation "
-                            "(attempt {}/{})",
-                            continuation_attempts,
-                            agent_config.max_continuation_attempts,
-                        )
-                        # 不在 context.chat_messages 中写入中间消息，在本地构建
-                        continuation_messages.append({"role": "assistant", "content": round_response["content"]})
-                        continuation_messages.append({"role": "user", "content": CONTINUATION_MESSAGE})
-                        # 重新组装 messages：原始 + 本地累积的 continuation 消息
-                        messages = await context.assemble()
-                        messages.extend(continuation_messages)
-                        continue
-                    log.error(
-                        "[Recovery] Continuation exhausted ({} attempts), "
-                        "returning partial response",
-                        continuation_attempts,
+                if chunk["type"] == "content":
+                    round_response["content"] += chunk["data"]
+                    await get_app().message_bus.publish_runtime_event(
+                        session_state.publish_context,
+                        event_type=AgentEventType.LLM_RESPONSE_CHUNK,
+                            data=chunk["data"],
+                            state=AgentState.RUNNING,
                     )
+                elif chunk["type"] == "tool_calls":
+                    round_response["tool_calls"] = chunk["data"]
+                elif chunk["type"] == "response_info":
+                    info = chunk.get("data") or {}
+                    round_response["finish_reason"] = info.get("finish_reason")
+                    # BUG-5 接线：真实 usage / 实际服务模型随末尾 response_info 回传
+                    round_response["usage"] = info.get("usage")
+                    round_response["model"] = info.get("model")
 
-                round_response["content"] = accumulated_content + round_response["content"]
-                return round_response
+            # Strategy 1: output truncated — inject continuation message and retry
+            finish_reason = str(round_response.get("finish_reason") or "").lower()
+            if finish_reason in {"length", "max_tokens"}:
+                if continuation_attempts < agent_config.max_continuation_attempts:
+                    continuation_attempts += 1
+                    accumulated_content += round_response["content"]
+                    log.warning(
+                        "[Recovery] Output truncated, injecting continuation "
+                        "(attempt {}/{})",
+                        continuation_attempts,
+                        agent_config.max_continuation_attempts,
+                    )
+                    # 不在 context.chat_messages 中写入中间消息，在本地构建
+                    continuation_messages.append({"role": "assistant", "content": round_response["content"]})
+                    continuation_messages.append({"role": "user", "content": CONTINUATION_MESSAGE})
+                    # 重新组装 messages：原始 + 本地累积的 continuation 消息
+                    messages = await agent_context.assemble()
+                    messages.extend(continuation_messages)
+                    continue
+                log.error(
+                    "[Recovery] Continuation exhausted ({} attempts), "
+                    "returning partial response",
+                    continuation_attempts,
+                )
 
-            except (TurnStoppedError, asyncio.CancelledError):
+            round_response["content"] = accumulated_content + round_response["content"]
+            return round_response
+
+        except (TurnStoppedError, asyncio.CancelledError):
+            raise
+
+        except Exception as exc:
+            # 按 SDK 类型化异常分类；瞬态错误的重试已在韧性层完成（含首 chunk 前窗口），
+            # 这里只保留业务语义恢复：上下文超长 → 压缩历史后重试
+            err_class = classify_llm_error(exc)
+
+            # Strategy 2: context too long — compact and retry
+            if err_class is LLMErrorClass.CONTEXT_OVERFLOW:
+                if compact_attempts < agent_config.max_compact_attempts:
+                    compact_attempts += 1
+                    log.warning(
+                        "[Recovery] Context too long, compacting history "
+                        "(attempt {}/{})",
+                        compact_attempts,
+                        agent_config.max_compact_attempts,
+                    )
+                    # 多态压缩：leader 压会话真相源（Path A 带水位），子智能体压自己（Path B）
+                    await agent_context.compact()
+                    messages = await agent_context.assemble()
+                    # 重新注入 continuation 消息（如有）
+                    if continuation_messages:
+                        messages.extend(continuation_messages)
+                    continue
                 raise
 
-            except Exception as exc:
-                # 按 SDK 类型化异常分类；瞬态错误的重试已在韧性层完成（含首 chunk 前窗口），
-                # 这里只保留业务语义恢复：上下文超长 → 压缩历史后重试
-                err_class = classify_llm_error(exc)
+            raise
 
-                # Strategy 2: context too long — compact and retry
-                if err_class is LLMErrorClass.CONTEXT_OVERFLOW:
-                    if compact_attempts < agent_config.max_compact_attempts:
-                        compact_attempts += 1
-                        log.warning(
-                            "[Recovery] Context too long, compacting history "
-                            "(attempt {}/{})",
-                            compact_attempts,
-                            agent_config.max_compact_attempts,
-                        )
-                        await context.force_compact()
-                        messages = await context.assemble()
-                        # 重新注入 continuation 消息（如有）
-                        if continuation_messages:
-                            messages.extend(continuation_messages)
-                        continue
-                    raise
-
-                raise
-
-    # ------------------------------------------------------------------ helpers
-    # 说明：原 _record_recovery 会写 turn_state.llm_recovery_count / last_recovery_kind，
-    # 随单 agent 链路退役（ActivateTurn 字段删除）已移除；恢复次数由监控层
-    # （TelemetryRecord 同名字段）自行统计，本类不再回写 turn 状态。
+# 说明：原 _record_recovery 会写 turn_state.llm_recovery_count / last_recovery_kind，
+# 随单 agent 链路退役（ActivateTurn 字段删除）已移除；恢复次数由监控层
+# （TelemetryRecord 同名字段）自行统计，本类不再回写 turn 状态。

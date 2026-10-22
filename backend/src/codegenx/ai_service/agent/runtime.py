@@ -11,7 +11,7 @@ from codegenx.ai_service.agent.runtime_schema import (
     RuntimeSessionState,
     TurnStoppedError, ActivateTurn,
 )
-from codegenx.ai_service.llm.llm_recovery import LLMRecovery
+from codegenx.ai_service.llm.llm_recovery import invoke_stream_with_revovery
 from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
 from codegenx.ai_service.utils.config import AgentConfig, config
 from codegenx.ai_service.system_app import get_app
@@ -38,8 +38,7 @@ class AgentRuntime:
         model = (self.agent_config.resolved_model_name or "").strip() \
             or self.config.get_default_model()
         self.model_chain: list[str] = [model]
-        # LLM 业务恢复协作器（continuation/压缩重试），组合替代原 Mixin 继承
-        self._llm_recovery = LLMRecovery()
+
         self.message_bus = get_app().message_bus
         self.tool_registry = get_app().tool_registry
         self.tool_executor = get_app().tools_executor
@@ -65,7 +64,7 @@ class AgentRuntime:
             if context_manager is None:
                 raise RuntimeError("context_manager is not initialized — on_session_start hook may not have run")
             context_manager.add_user_message(user_message)
-            await context_manager.build_system_prompt(user_message)
+            # await context_manager.build_system_prompt(user_message)
 
             await self.message_bus.publish_runtime_event(
                 session_state.publish_context,event_type=AgentEventType.ON_TURN_START,
@@ -89,14 +88,14 @@ class AgentRuntime:
                 finally:
                     activate_turn.active_steps.pop()
                     activate_turn.active_step_id = ""
-                    async for data in context_manager.compact_after_step():
+                    async for data in context_manager.compact():
                         activate_turn.last_step_compacted = True
                         await self.message_bus.publish_runtime_event(session_state.publish_context, event_type=AgentEventType.COMPACT_EVENT,data=data,state=AgentState.RUNNING)
                 if not activate_turn.requires_followup:
                     break
             log.debug("{},{},{}",request_id, activate_turn.step_counter, " 执行完一轮了")
             try:
-                await context_manager.compact_after_turn()
+                await context_manager.session_summary_extract()
             except Exception as exc:
                 log.debug(traceback.format_exc())
                 log.exception("compact_after_turn 执行异常（非致命）")
@@ -192,8 +191,8 @@ class AgentRuntime:
         )
         log.debug("PreLLMCALL {},{},{}",session_state.request_id, turn_state.step_counter,turn_state.active_step_id)
 
-        llm_response = await self._llm_recovery.invoke(
-            self.agent_config,self.tools,messages, turn_state, session_state
+        llm_response = await invoke_stream_with_revovery(
+            self.agent_config,self.tools,messages, session_state
         )
         log.debug(llm_response)
         completion_tokens = self._estimate_completion_tokens(llm_response)

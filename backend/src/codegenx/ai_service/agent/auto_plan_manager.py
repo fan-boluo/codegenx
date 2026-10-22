@@ -69,8 +69,12 @@ class AutoPlanManager:
                 log.error("lead agent 未注册或无 cls: name=leader")
                 await self._reply_and_finish(session_state, "执行失败：找不到智能体 leader")
                 return
-            agent = spec.cls()
-            next_msg = await agent.run(msg, session_state)
+            # 实例必须每请求新建、禁止缓存复用；context=会话真相源（SessionContext）
+            cm = session_state.context_manager
+            if cm is not None:
+                cm.db_name = session_state.db_name  # 同步数据库名到 context
+            agent = spec.cls(context=cm)
+            next_msg = await agent.run(msg, session_state, is_stream=True)
 
             # 防御性兜底：正常路径 lead 必返终答跳；空跳/非 user 跳按终答收尾，避免静默丢答复
             if next_msg is None or not getattr(next_msg, "recipient", None):
@@ -83,7 +87,16 @@ class AutoPlanManager:
             final_text = self._extract_final_text(next_msg)
             log.info("═══════════════ TURN COMPLETE ═══════════════ | request={} | final_len={}",
                      request_id, len(final_text))
-            await self._reply_and_finish(session_state, final_text)
+            # 终答已由流式 chunk 下发、且已由 leader 回写会话历史，此处只落库 +
+            # 发布完成事件：SSE 消费端以 REQUEST_COMPLETED 为唯一终止条件，
+            # 缺失则连接悬挂到客户端读超时（不重复 add_assistant_message 避免入史两份）
+            await AutoPlanManager._persist_assistant_message(session_state, final_text)
+            activate_turn.state = AgentState.COMPLETED
+            await _message_bus().publish_runtime_event(
+                session_state.publish_context,
+                event_type=AgentEventType.REQUEST_COMPLETED,
+                state=AgentState.COMPLETED,
+            )
 
         except TurnStoppedError as exc:
             traceback.print_exc()
@@ -125,7 +138,7 @@ class AutoPlanManager:
             activate_turn.finished_at = time.time()
             # turn 边界：触发后台会话摘要提取（非阻塞；失败不影响本轮收尾）
             try:
-                await session_state.context_manager.compact_after_turn()
+                await session_state.context_manager.session_summary_extract()
             except Exception:
                 log.exception("compact_after_turn 执行异常（非致命）")
             # 注：子智能体消息全部内联为 lead 的 tool result，本层无跨 agent

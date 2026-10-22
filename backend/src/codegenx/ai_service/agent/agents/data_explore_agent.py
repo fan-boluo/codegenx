@@ -6,11 +6,10 @@ from typing import TYPE_CHECKING, Any
 from codegenx.ai_service.agent.action import ActOutput
 from codegenx.ai_service.agent.agents.agent import AgentMessage
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
+from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
+from codegenx.ai_service.schema.ai_schema import UserAIRequest
 from shared import log
-
-if TYPE_CHECKING:
-    from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
 
 
 # prompt 中注入的表数量上限，防止大库塞爆上下文
@@ -74,25 +73,23 @@ class DateExploreAgent(BaseReActAgent):
         out_schema="最终答复直接用自然语言给出：先给结论，再列关键数据依据。不要输出 JSON，不要描述你的执行过程。",
     )
 
-    def __init__(self):
-        super().__init__()
-        self._db_info = ""  # _prepare_agent 中填充
+    def __init__(self, context: CommonContext | None = None):
+        super().__init__(context=context)
 
-    def _prepare_prompt_params(self) -> dict:
+    async def _prepare_prompt_params(self,request: UserAIRequest) -> dict:
         return {
             "type": "mysql",
-            "database_info": self._db_info,
+            "database_info": await self._query_available_db_info(request)
         }
 
-    async def _prepare_agent(self, session_state):
+    async def _prepare_agent(self, request: UserAIRequest):
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
         # db 元信息查询是 async，须在 super()（内部 build prompt）之前完成
-        self._db_info = await self._query_available_db_info(session_state)
-        await super()._prepare_agent(session_state)
+        await super()._prepare_agent(request)
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
 
     @staticmethod
-    async def _query_available_db_info(session_state: RuntimeSessionState) -> str:
+    async def _query_available_db_info(request: UserAIRequest) -> str:
         """
         测试阶段为方便直接给结果
         """
@@ -129,14 +126,14 @@ CREATE TABLE users (
 ) COMMENT '用户信息表';
         """
     @staticmethod
-    async def _query_available_db_info_bak(session_state: RuntimeSessionState) -> str:
+    async def _query_available_db_info_bak(request: UserAIRequest) -> str:
         """按 app 绑定的数据库实时查询 information_schema，拼出 database + 各表建表语句文本。
 
         绑定关系来源：app 表 dbName → gateway 注入请求 → session_state.db_name。
         元信息不冗余存储，以 information_schema 为单一事实源（与工具层同一查询通道）。
         """
         # TODO 这种查询所有信息的太冗余了，只给出一些表来先，后续换成根据提示词从向量数据库查询可能涉及的表
-        db_name = session_state.db_name
+        db_name = request.db_name
         if not db_name:
             return "（当前应用未绑定数据库，无法执行 SQL 分析）"
 

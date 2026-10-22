@@ -366,7 +366,6 @@ class SessionPool(BaseComponent):
                 if (
                     self.swap_idle_seconds > 0
                     and idle_duration > self.swap_idle_seconds
-                    and not getattr(session, "swapped_out", False)
                     and self._is_quiescent(session)
                 ):
                     cm = getattr(session, "context_manager", None)
@@ -374,8 +373,8 @@ class SessionPool(BaseComponent):
                         # 卸载前保证摘要（fire-and-forget，后台任务持快照独立落盘）
                         await cm.ensure_summary_before_unload()
                         cm.chat_messages = []
-                    session.swapped_out = True
-                    swapped_sessions.append(session_id)
+                        # 已卸载状态由 chat_messages 为空体现，无需额外标记位
+                        swapped_sessions.append(session_id)
 
             for session_id in sessions_to_remove:
                 await self._close_session_unsafe(session_id)

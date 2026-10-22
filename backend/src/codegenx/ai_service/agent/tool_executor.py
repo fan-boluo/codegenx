@@ -46,11 +46,11 @@ PARALLEL_TOOL_NAMES = {"dispatch_agent"}
 
 
 def _resolve_safe_paths(session_state: Any | None) -> list[Path]:
-    """从会话状态解析 safe_paths（RuntimeSessionState.safe_paths 经 context_manager 推导）。"""
-    candidate = getattr(session_state, "safe_paths", None) if session_state is not None else None
-    if not candidate:
+    """从会话状态解析 safe_paths"""
+    context = getattr(session_state, "context_manager", None) if session_state is not None else None
+    if not context:
         return []
-    return [Path(path).resolve() for path in candidate if str(path).strip()]
+    return [Path(path).resolve() for path in context.metadata.safety_path]
 
 
 def _is_safe_path(target: Path, safe_paths: list[Path]) -> bool:

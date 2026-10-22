@@ -57,7 +57,7 @@ class RuntimeSessionState:
     （get_app().session_io / get_app().tasks），ids 一律作调用参数。
     """
     session_id: str
-    request: UserAIRequest | None
+    request: UserAIRequest
     context_manager: SessionContext | None = None  # 整个会话的上下文管理（由 on_session_start hook 初始化）
     # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体，现行为不变）
     agent_name: str = ""
@@ -80,9 +80,6 @@ class RuntimeSessionState:
     state: AgentState = AgentState.IDLE
     processing: bool = False
     closed: bool = False
-    # P3 swap-out：闲置卸载标记——chat_messages 已清空（快照在 turn_end 落盘），
-    # 下次请求到来时由 runtime 从快照按需恢复
-    swapped_out: bool = False
     close_signal: asyncio.Event = field(default_factory=asyncio.Event)  # 用于 event 通知替代忙等轮询
     stop_signal: asyncio.Event = field(default_factory=asyncio.Event)
     stop_reason: str = ""
@@ -136,10 +133,4 @@ class RuntimeSessionState:
             "request_id": self.request.request_id,
             "round_counter": self.activate_turn.round_counter
         }
-
-    @property
-    def safe_paths(self) -> list|None:
-        if self.context_manager:
-            return self.context_manager.get_safe_path()
-        return None
 

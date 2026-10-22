@@ -17,14 +17,11 @@ from typing import TYPE_CHECKING, Any
 from codegenx.ai_service.agent.action import ActOutput
 from codegenx.ai_service.agent.agents.agent import AgentMessage
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
+from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
+from codegenx.ai_service.schema.ai_schema import UserAIRequest
 from codegenx.ai_service.utils.agent_utils import collect_csv_info
 from shared import log
-from shared.constants import get_code_dir
-
-if TYPE_CHECKING:
-    from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
-
 
 # 单个 csv 文件读入元信息的最大字节数（超过则只读头部）
 MAX_CSV_BYTES_FOR_META = 1 * 1024 * 1024  # 1MB
@@ -65,17 +62,17 @@ class CsvExploreAgent(BaseReActAgent):
         out_schema="最终答复直接用自然语言给出：先给结论，再列关键数据依据。不要输出 JSON，不要描述你的执行过程。",
     )
 
-    def __init__(self):
-        super().__init__()
-        self._csv_info = ""  # _prepare_agent 中填充
+    def __init__(self, context: CommonContext | None = None):
+        super().__init__(context=context)
 
-    def _prepare_prompt_params(self) -> dict:
-        return {"csv_info": self._csv_info}
+    async def _prepare_prompt_params(self,request) -> dict:
+        return {
+            "csv_info": await collect_csv_info(request.user_id,request.app_id,MAX_CSV_FILES_IN_PROMPT)}
 
-    async def _prepare_agent(self, session_state):
+    async def _prepare_agent(self, request:UserAIRequest):
         """ 先收集 csv 元信息，再 build prompt（顺序与 data_explore 一致） """
-        self._csv_info = await collect_csv_info(session_state.user_id,session_state.app_id,MAX_CSV_FILES_IN_PROMPT)
-        await super()._prepare_agent(session_state)
+
+        await super()._prepare_agent(request)
         log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
 
 
@@ -100,25 +97,21 @@ class CsvExploreAgent(BaseReActAgent):
 
 
 if __name__ == "__main__":
-    from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
     import asyncio
-    def _make_session_state() -> RuntimeSessionState:
-        """构造一个最小可用的 RuntimeSessionState（只需 session_id + request）。"""
-        from codegenx.ai_service.schema.ai_schema import UserAIRequest
-
-        request = UserAIRequest(
-            appId="test-app",
-            userId="test-user",
-            message="分析 sales.csv 的销售情况",
-            sessionId="test-session",
-            traceId="t1",
-            requestId="r1",
-        )
-        return RuntimeSessionState(session_id="test-session", request=request)
+    from codegenx.ai_service.context.sub_context import SubContext
+    request = UserAIRequest(
+        appId="test-app",
+        userId="test-user",
+        message="分析 sales.csv 的销售情况",
+        sessionId="test-session",
+        traceId="t1",
+        requestId="r1",
+    )
 
     async def test():
+
         agent = CsvExploreAgent()
         agent.resolve_agent_config()
-        await agent._prepare_agent(session_state=_make_session_state())
+        await agent._prepare_agent(request)
 
     asyncio.run(test())

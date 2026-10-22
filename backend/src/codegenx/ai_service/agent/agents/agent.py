@@ -3,12 +3,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
-from codegenx.ai_service.agent.agent_schema import AgentState
-from pydantic import BaseModel
 
+from codegenx.ai_service.agent.action import ActOutput
+from pydantic import BaseModel
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
-from codegenx.ai_service.compact.session_summary import SummaryState
-from codegenx.ai_service.context.context_service import TurnPrompts
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 
 
@@ -49,7 +47,7 @@ class Agent(ABC):
         """Perform actions."""
 
     @abstractmethod
-    async def think(self, messages: list[dict[str, Any]]) -> dict[Any, Any]:
+    async def think(self, messages: list[dict[str, Any]],is_stream:bool,session_state:RuntimeSessionState) -> dict[Any, Any]:
         """Think and reason about the current task goal."""
 
     @abstractmethod
@@ -74,23 +72,7 @@ class Agent(ABC):
 
         从类属性 id/role/name/desc + cls 本身构建 AgentSpec 并注册。
         """
-        
 
-
-@dataclass
-class AgentContext:
-    session_id: str = ""
-    app_id: str = ""
-    user_id: str = ""
-    db_name: str | None = None
-    agent_name: str = ""
-    system_prompt: str = ""
-    # 聊天对话
-    chat_messages: list[dict[str, Any]] = field(default_factory=list)
-    # 每轮组装产物
-    prompts: TurnPrompts = field(default_factory=TurnPrompts)
-    # 会话摘要阈值状态
-    summary_state: SummaryState = field(default_factory=SummaryState)
 
 class AgentMessage(BaseModel):
     """Agent 间消息协议。

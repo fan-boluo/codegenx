@@ -29,21 +29,6 @@ from codegenx.ai_service.prompt.runtime_prompt import DEFAULT_PROMPT_TEMPLATE
 from shared import log
 
 
-# ── 每轮组装产物（会话级可变状态，随 SessionContext 生灭）────────────────────
-
-
-@dataclass
-class TurnPrompts:
-    """每轮组装产物（原 ContextAssembler 的每轮可变字段）。"""
-
-    memory_prompt: str = ""
-    skill_prompt: str = ""
-    task_prompt: str = ""
-    session_summary_prompt: str = ""
-    workspace_metadata: dict = field(default_factory=dict)
-    # 系统提醒附加段（如任务看板更新提醒，原 ContextAssembler.extra）
-    extra: str = ""
-
 
 # ── 无状态组装服务 ───────────────────────────────────────────────────────────
 
@@ -189,104 +174,6 @@ class ContextService(BaseComponent):
             return None
         content = "<system-reminder>\n" + "\n".join(parts) + "\n</system-reminder>"
         return content
-
-    def render_turn_context(self, prompts: TurnPrompts, persona: str = "") -> str:
-        """渲染本轮 system prompt（迁自 prepare_turn_context，只读传入产物）。
-
-        P4 §10.3：persona 来自 AgentSpec（智能体差异进数据，不进代码分支）。
-        """
-        parts: list[str] = []
-        base_prompt = self.build_base_prompt(prompts.workspace_metadata, persona=persona)
-        if base_prompt:
-            parts.append(base_prompt)
-        if prompts.memory_prompt:
-            parts.append(prompts.memory_prompt)
-        if prompts.workspace_metadata:
-            metadata = prompts.workspace_metadata
-            workspace_prompt = "## 项目工作区元数据\n"
-            workspace_prompt += f"- 代码根目录：{metadata['code_dir']}\n"
-            workspace_prompt += f"- 安全路径列表：{', '.join(metadata['safe_paths'])}\n"
-            workspace_prompt += f"- 允许读写的目录：{', '.join(metadata['allowed_rw_dirs'])}\n"
-            workspace_prompt += f"- 操作系统类型：{metadata['os_name']}\n"
-            if metadata.get("db_name"):
-                workspace_prompt += f"- **当前项目关联数据库**：`{metadata['db_name']}` —— 使用 MySQL 数据工具时 db_name 参数填这个值\n"
-            csv_dirs = metadata.get("csv_data_dirs", [])
-            if csv_dirs:
-                workspace_prompt += f"- CSV 数据文件目录：{', '.join(csv_dirs)}\n"
-            workspace_prompt += "- 项目目录结构：\n" + metadata["project_skeleton"] + "\n"
-            workspace_prompt += "- 元数据生成时间：" + str(metadata["timestamp"])
-            parts.append(workspace_prompt)
-        if prompts.skill_prompt:
-            parts.append(f"# 以下是你可以使用的技能：\n {prompts.skill_prompt}")
-        if prompts.session_summary_prompt:
-            parts.append(f"# 以下是当前会话的摘要信息：\n {prompts.session_summary_prompt}")
-        if prompts.task_prompt:
-            parts.append(f"# 以下是任务看板：\n {prompts.task_prompt}")
-        if prompts.extra:
-            parts.append(self.build_extra(prompts.extra))
-        return "\n".join(parts)
-
-    # ------------------------------------------------------------------ assemble
-
-    @staticmethod
-    def normalize_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """
-        将对话标准化，完成后长这样：
-        [
-    {  "role": "system",      "content": "你是助手"    },
-    {  "role": "user",        "content": "123"    },
-    {  "role": "assistant",    "content": "我在",   "tool_calls": [{"id": "1"}]    },
-    {  "role": "tool",        "content": "晴天",    "tool_call_id": "1",    "name": "get_weather"    }
-]
-        """
-        normalized: list[dict[str, Any]] = []
-        for message in messages or []:
-            if not isinstance(message, dict):
-                continue
-
-            role = str(message.get("role", "")).strip()
-            if role not in {"system", "user", "assistant", "tool"}:
-                continue
-
-            payload = {
-                "role": role,
-                "content": str(message.get("content", "") or ""),
-            }
-            if role == "assistant" and isinstance(message.get("tool_calls"), list):
-                payload["tool_calls"] = message.get("tool_calls")
-            if role == "assistant" and message.get("agent"):
-                # 透传子 agent 回传标记（多 agent 链路附带字段，供历史视图过滤）
-                payload["agent"] = str(message["agent"])
-            if role == "tool":
-                payload["tool_call_id"] = str(message.get("tool_call_id", "") or "")
-                payload["name"] = str(message.get("name", "") or "")
-            normalized.append(payload)
-        return normalized
-
-    async def assemble(
-        self, system_prompt: str, chat_messages: list
-    ) -> list[dict[str, Any]]:
-        """将 system_prompt 和 turn 的聊天历史组合。"""
-        messages: list[dict[str, Any]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.extend(self.normalize_history(chat_messages))
-        return messages
-
-
-# ── Hook 监听器：上下文组装接入事件总线（docs/Hook设计.md §4.2）─────────────
-
-
-@on(HookEvent.BEFORE_BUILD, name="inject_dynamic_prompts")
-async def inject_dynamic_prompts(ctx: "HookContext", call_next) -> Any:
-    """before_build 默认洋葱层（透传）。
-
-    动态 prompt（persona/memory_prompt/skill_prompt/task_prompt 等）仍由
-    SessionContext.build_system_prompt 组装进 TurnPrompts 后经 render_turn_context 完成；
-    此监听器保留挂载点：后续扩展可在 call_next 前后修改组装输入/产物，
-    或不调用 call_next 直接短路给出组装结果。
-    """
-    return await call_next()
 
 
 def initialize_context(system_app) -> ContextService:

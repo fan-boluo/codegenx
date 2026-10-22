@@ -20,6 +20,7 @@ get/list 工具显式管理（如亲自执行的计划任务完成后标记 comp
 """
 
 from codegenx.ai_service.agent.agents.agent import AgentMessage
+from codegenx.ai_service.schema.ai_schema import UserAIRequest
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.task.task_manager import TaskRecord, TaskStatus
 from shared import log
@@ -35,18 +36,18 @@ class TaskBoardCoordinator:
         return get_app().tasks
 
     @staticmethod
-    def _ids(session_state) -> dict:
+    def _ids(request) -> dict:
         # request_id 一起下传：任务看板按 request 单文件隔离，task_id 为 request 内局部 id
         return {
-            "user_id": session_state.user_id,
-            "app_id": str(session_state.app_id or ""),
-            "session_id": session_state.session_id,
-            "request_id": str(getattr(session_state, "request_id", "") or ""),
+            "user_id": request.user_id,
+            "app_id": str(request.app_id or ""),
+            "session_id": request.session_id,
+            "request_id": str(getattr(request, "request_id", "") or ""),
         }
 
     # ── 计划登记（planner 侧调用）──
 
-    def register_plan(self, session_state, plan_dict: dict) -> dict | None:
+    def register_plan(self, request:UserAIRequest, plan_dict: dict) -> dict | None:
         """Planner 计划落板（planner observation 调用）。
 
         计划只做任务分解、不指派执行者（executor_agent 留空，由 lead agent
@@ -58,7 +59,7 @@ class TaskBoardCoordinator:
         tasks = self._service()
         if tasks is None or not (isinstance(plan_dict, dict) and plan_dict.get("steps")):
             return None
-        ids = self._ids(session_state)
+        ids = self._ids(request)
         step_task_map: dict = {}   # step_id → task_id 依赖换算
         record_ids: list = []
         for s in sorted(plan_dict.get("steps", []), key=lambda x: x.get("step_id", 0)):
@@ -82,18 +83,18 @@ class TaskBoardCoordinator:
             "ready": ready,
         }
 
-    def has_planner_tasks(self, session_state) -> bool:
+    def has_planner_tasks(self, request) -> bool:
         """本 request 看板是否已有 planner 来源任务（防重复规划导致重复登记）。"""
         tasks = self._service()
         if tasks is None:
             return False
         return any(
-            t.source == "planner" for t in tasks.list_all(**self._ids(session_state))
+            t.source == "planner" for t in tasks.list_all(**self._ids(request))
         )
 
     # ── 计划任务认领（lead 派发时复用） ──
 
-    def pick_ready_planner_task(self, session_state, subject: str) -> TaskRecord | None:
+    def pick_ready_planner_task(self, request, subject: str) -> TaskRecord | None:
         """查找相同 subject 的「pending 就绪」计划任务（source=planner）
         → 供 dispatch_agent 复用派发（不新建重复任务）。
 
@@ -105,19 +106,19 @@ class TaskBoardCoordinator:
         target = self._norm_subject(subject)
         if not target:
             return None
-        for t in tasks.list_all(**self._ids(session_state)):
+        for t in tasks.list_all(**self._ids(request)):
             if (t.source == "planner" and t.status is TaskStatus.PENDING
                     and self._norm_subject(t.subject) == target and tasks.is_ready(t)):
                 return t
         return None
 
-    def claim_board_task(self, session_state, task_id: int, agent: str) -> None:
+    def claim_board_task(self, request:UserAIRequest, task_id: int, agent: str) -> None:
         """计划任务认领：写入本次派发的执行者并标记 in_progress
         （task_id 沿用看板任务，回传后 consume_child_result 闭环解锁下游）。"""
         tasks = self._service()
         if tasks is not None:
             tasks.update(task_id, status="in_progress", executor_agent=agent,
-                         **self._ids(session_state))
+                         **self._ids(request))
         log.info("lead: 认领看板计划任务 #{} → {}（in_progress）", task_id, agent)
 
     @staticmethod
@@ -127,7 +128,7 @@ class TaskBoardCoordinator:
 
     # ── 结果闭环 ──
 
-    def complete_task(self, task_id: str,executor:str, session_state) -> None:
+    def complete_task(self, task_id: str,executor:str, request:UserAIRequest) -> None:
         """子智能体回传 → 看板计划任务标记 completed（自动解锁下游 depends_on）。
 
         task_id 严格匹配（计划链路派发时 claim 的任务）：普通派发不登记看板、
@@ -138,7 +139,7 @@ class TaskBoardCoordinator:
         tasks = self._service()
         if tasks is None:
             return
-        ids = self._ids(session_state)
+        ids = self._ids(request)
         t = tasks.get(task_id, **ids)
         if t is None or t.status != TaskStatus.IN_PROGRESS:
             log.warning("lead: 回传 task_id={} 无对应 in_progress 看板任务，跳过闭环 | executor={}",

@@ -7,12 +7,16 @@ from typing import Any, List
 from codegenx.ai_service.agent.agent_schema import AgentState,AgentEventType
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, raise_if_stop_signal
 from codegenx.ai_service.llm.async_client import get_llm
+from codegenx.ai_service.llm.llm_recovery import invoke_stream_with_revovery
 from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
+from codegenx.ai_service.schema.ai_schema import UserAIRequest
 from codegenx.ai_service.utils.config import AgentConfig, config
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from shared import log
-from codegenx.ai_service.agent.agents.agent import Agent, AgentContext, AgentMessage
+from codegenx.ai_service.agent.agents.agent import Agent, AgentMessage
+from codegenx.ai_service.context.common_context import CommonContext
+from codegenx.ai_service.context.sub_context import SubContext
 
 from codegenx.ai_service.agent.action import Action, ActOutput
 from codegenx.ai_service.compact.budget import (
@@ -20,6 +24,7 @@ from codegenx.ai_service.compact.budget import (
     SUMMARY_EVICTED_PLACEHOLDER,
     enforce_budget_inplace,
 )
+from codegenx.ai_service.compact.thresholds import estimate_tokens
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 
 
@@ -31,7 +36,7 @@ class BaseReActAgent(Agent):
 
     def __init__(
             self,
-            system_app=None,
+            context: CommonContext | None = None,
     ):
         Agent.__init__(self)
         # agent_config 已由 resolve_agent_config() 类方法解析为类属性；
@@ -60,6 +65,9 @@ class BaseReActAgent(Agent):
         # 保留子类定义的 profile；仅未设置时兜底为空 PromptConfig
         if not getattr(self, "profile", None):
             self.profile: PromptConfig = PromptConfig()
+        # 上下文 init 绑定：leader 由入口传 SessionContext 真相源，
+        # 子智能体由 dispatch_agent 传 SubContext；缺省兜底空 SubContext（独立调试）
+        self._context = context or SubContext(agent_name=self.agent_name)
         log.info(f"初始化agent: {self.agent_name} 完成")
 
 
@@ -134,29 +142,32 @@ class BaseReActAgent(Agent):
 
     async def _prepare_agent(
         self,
-        session_state: RuntimeSessionState,
+        request: UserAIRequest,
     ) -> None:
-        """准备 agent 所需的上下文与收件箱（子类可覆盖扩展，需先调 super()）。"""
-        # self._ensure_inbox()
+        """准备 agent 所需的 system_prompt/tools"""
         # 工具目录与执行器：config.json agents[].tools 白名单非空才启用 function calling
         self.tools = self._resolve_tool_catalog()
         self.tool_executor = None
         if self.tools:
             # 配置了工具的 agent 必须拿到执行器，失败直接暴露（fail fast，不静默吞掉）
             self.tool_executor = get_app().tools_executor
-        params = self._prepare_prompt_params()
-        self._system_prompt = self.profile.build_default_system_prompt(**params)
+        self._prompt_params = await self._prepare_prompt_params(request)
+        # self._system_prompt = self.profile.build_default_system_prompt(**self._prompt_params)
+        # system 承载于 context.system_prompt（不进 chat_messages，payload 由 assemble 拼装）
+        # self._context.system_prompt = self._system_prompt
+        # 初始化chat_messages
+        self._context.init_chat_messages(request.message)
 
-    def _prepare_prompt_params(self) -> dict:
+    async def _prepare_prompt_params(self,request:UserAIRequest) -> dict:
         """ 在build prompt之前，子类各自准备 """
         return {}
 
     # ------------------------------------------------------------------ context budget
 
-    def _enforce_context_budget(self) -> None:
+    async def _enforce_context_budget(self, session_state: RuntimeSessionState) -> None:
         """统一预算分配器：每次调 LLM 前执行总量管控（上下文工程排期③）。
 
-        总预算 = agent context_max_tokens × compact.contextBudgetRatio；
+        总预算 = agent context_max_tokens × compact.contextBudgetRatio − system 占用；
         驱逐优先级（docs/上下文工程设计.md §1.1）：
           工具结果 → 中段历史（budget.py 就地降级为占位符）
           → 记忆注入 → 会话摘要（重建 system_prompt 承载）；
@@ -164,26 +175,29 @@ class BaseReActAgent(Agent):
         原文经工具重调用 / chat_messages 快照可回捞。
         """
         window = int(self.agent_config.context_max_tokens or 8000)
-        budget = int(window * config.compact.context_budget_ratio)
+        # system 不进 chat_messages，其 token 占用从预算中扣除
+        budget = int(window * config.compact.context_budget_ratio) - estimate_tokens(
+            [{"role": "system", "content": self._system_prompt or ""}])
+        messages = self._context.chat_messages
         report = enforce_budget_inplace(
-            self._messages,
+            messages,
             budget=budget,
             protect_last_n_tool_results=config.compact.protect_last_n_results,
         )
         # 仍超预算：按优先级驱逐 system 内可驱逐分区（重建 system_prompt），驱逐后复量
-        if not report.ok and self._rebuild_system_prompt(evict_memory=True):
+        if not report.ok and await self._rebuild_system_prompt(session_state, evict_memory=True):
             log.info("【{}】上下文预算：记忆注入区已驱逐（复量 {} -> 预算 {}）",
                      self.agent_name, report.tokens_after, budget)
             report = enforce_budget_inplace(
-                self._messages,
+                messages,
                 budget=budget,
                 protect_last_n_tool_results=config.compact.protect_last_n_results,
             )
-        if not report.ok and self._rebuild_system_prompt(evict_memory=True, evict_summary=True):
+        if not report.ok and await self._rebuild_system_prompt(session_state, evict_memory=True, evict_summary=True):
             log.info("【{}】上下文预算：会话摘要区已驱逐（复量 {} -> 预算 {}）",
                      self.agent_name, report.tokens_after, budget)
             report = enforce_budget_inplace(
-                self._messages,
+                messages,
                 budget=budget,
                 protect_last_n_tool_results=config.compact.protect_last_n_results,
             )
@@ -194,8 +208,8 @@ class BaseReActAgent(Agent):
                 budget, report.evicted_tools, report.evicted_histories,
             )
 
-    def _rebuild_system_prompt(
-        self, *, evict_memory: bool = False, evict_summary: bool = False,
+    async def _rebuild_system_prompt(
+        self, session_state: RuntimeSessionState, *, evict_memory: bool = False, evict_summary: bool = False,
     ) -> bool:
         """驱逐 system 内可驱逐分区后重建 system_prompt（expand 变量占位替换）。
 
@@ -208,89 +222,37 @@ class BaseReActAgent(Agent):
             return False
         if evict_summary and "{{session_summary}}" not in expand:
             return False
-        params = self._prepare_prompt_params()
+        params = await self._prepare_prompt_params(session_state)
         if evict_memory:
             params["memory_prompt"] = MEMORY_EVICTED_PLACEHOLDER
         if evict_summary:
             params["session_summary"] = SUMMARY_EVICTED_PLACEHOLDER
         self._system_prompt = self.profile.build_default_system_prompt(**params)
-        if self._messages:
-            self._messages[0] = {"role": "system", "content": self._system_prompt}
+        # system 承载于 context.system_prompt（不进 chat_messages）
+        self._context.system_prompt = self._system_prompt
         return True
 
-    # ------------------------------------------------------------------ message I/O
-
-    async def receive(self, msg:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage | None:
-        """接收来自其他 agent 或外部的消息，执行 run() 并转发下一跳。
-
-        注意：全局消息路由已收归 AutoPlanManager，此处仅为独立测试或手动调用保留。
-        """
-        log.info(
-            "agent 消息接收: {} <- {} | request_id={}",
-            self.agent_name, msg.sender, msg.request_id,
-        )
-        reply = await self.run(msg, session_state)
-        if reply:
-            if reply.recipient == "user":
-                get_app().message_bus.publish_runtime_event(
-                    session_state.publish_context,
-                    event_type=AgentEventType.REQUEST_COMPLETED,
-                    data={"content": reply.result},
-                    state=AgentState.COMPLETED,
-                )
-            else:
-                await self.send(reply, session_state)
-        return msg
-
-    async def send(
-        self,
-        msg:AgentMessage,
-            session_state:RuntimeSessionState,
-        **kwargs,
-    ) -> bool:
-        """向指定 name 的 agent 发送消息并触发其 receive → run 链路。
-
-        从 AgentRegistry 取 AgentSpec.cls() 实例化目标 agent，再调 receive。
-        """
-        receiver = msg.recipient
-        if not receiver:
-            raise ValueError(f"未设置接收方：{msg}")
-
-        spec = get_app().agents.get(receiver)
-        if spec is None or spec.cls is None:
-            raise ValueError(f"目标 agent 未注册或无 cls: {receiver}")
-
-        target_agent = spec.cls()
-        await target_agent.receive(msg, session_state, **kwargs)
-        log.info(
-            "agent 消息发送: {} -> {} | request_id={}",
-            msg.sender, msg.recipient, msg.request_id,
-        )
-        return True
 
     # ------------------------------------------------------------------ ReAct lifecycle
 
-    @staticmethod
-    def _extract_task_text(msg: AgentMessage | None) -> str:
-        """从接收消息提取任务文本。唯一来源为 receive()，无 session_state.request 兜底——
-        agent 不再"双源"取数，未收到消息即为空任务（verify 阶段判失败）。
-        """
-        if msg is None:
-            return ""
-        return msg.task or ""
-
-    async def think(self, messages: list[dict[str, Any]]) -> dict[Any, Any]:
+    async def think(self, messages: list[dict[str, Any]],is_stream:bool,session_state:RuntimeSessionState) -> dict[Any, Any]:
         """思考：调用 LLM 推理，返回 {content, tool_calls}（子类可覆盖定制提示词/工具策略）。"""
-        llm_response = await resilient_invoke(
-            messages=messages,
-            chain = [self.model_name],
-            label="agent",
-            tools=self.tools or None,
-            temperature=self.agent_config.temperature,
-            max_tokens=self.agent_config.max_tokens,
-        )
-        log.debug("{},llm_response:{}", self.agent_name, self._trim_response_for_log(llm_response))
+        if not is_stream:
+            llm_response = await resilient_invoke(
+                messages=messages,
+                chain = [self.model_name],
+                label="agent",
+                tools=self.tools or None,
+                temperature=self.agent_config.temperature,
+                max_tokens=self.agent_config.max_tokens,
+            )
 
+        else:
+            llm_response = await invoke_stream_with_revovery(
+                self.agent_config, self.tools, messages, session_state,
+                agent_context=self._context,
+            )
+        log.debug("{},llm_response:{}", self.agent_name, self._trim_response_for_log(llm_response))
         return llm_response
 
     @staticmethod
@@ -344,14 +306,6 @@ class BaseReActAgent(Agent):
             return False, f"{self.agent_name} observation 未指定下一跳 recipient"
         return True, ""
 
-    def _build_history_messages(self, session_state: RuntimeSessionState) -> list[dict[str, Any]]:
-        """注入会话历史消息（默认为空，子类按需覆盖）。
-
-        执行型 agent（data_explore/csv_explore）任务自包含，无需历史；
-        编排型 agent（Supervisor）覆盖此方法注入 context_manager.chat_messages
-        真相源，获得跨轮对话与子 agent 执行历史，用于意图理解与结果审查。
-        """
-        return []
 
     async def _execute_tool_calls(
         self, tool_calls: list[dict[str, Any]], session_state: RuntimeSessionState,
@@ -394,31 +348,33 @@ class BaseReActAgent(Agent):
             args = {}
         return {"id": str(tc.get("id") or ""), "name": name, "arguments": args}
 
-    async def run(self, agent_message:AgentMessage,session_state: RuntimeSessionState) -> AgentMessage:
+    async def run(self, agent_message:AgentMessage,
+                  session_state: RuntimeSessionState,
+                  is_stream:bool = False,
+                  ) -> AgentMessage:
         """ReAct 方式执行：think → act 循环 → verify。
 
         核心流程仅保留消息收发、LLM 推理与工具执行，全部过程记录到日志；
         监控、中间消息 publish、hook、记忆、存储、上下文管理等后续接入。
 
         参数:
-            session_state: 运行时会话状态，携带 request/session/user 等标识。
+            session_state: 运行时会话状态，携带 stop_signal/publish_context 等运行时控制
+                          （对话上下文已由 __init__ 绑定到 self._context）。
         """
-        # 1. 准备 agent 上下文（inbox 已在 __init__ 气注，此处仅组装 prompt/工具）
-        await self._prepare_agent(session_state)
+        # 1. 准备 system_prompt/tools/init_chat_message
+        await self._prepare_agent(session_state.request)
         log.debug("+++++++++++++++++++【{}】 STATR +++++++++++++++++++ ",self.agent_name)
         log.debug("接收到消息:{}", agent_message.show())
         # 2.
         request_id = (agent_message.request_id if agent_message else "") or session_state.request_id
-        task_text = self._extract_task_text(agent_message)
+        task_text = agent_message.task
         log.info("agent run 开始: {} | request_id={} | task_len={}", self.agent_name, request_id, len(task_text))
 
-        # 3. 组装本地对话消息（仅内存，不落库；提升为实例属性，便于 observation 追加 act 结果）
-        # 历史消息由 _build_history_messages 钩子注入（默认空；Supervisor 注入会话历史）
-        self._messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self._system_prompt},
-            *self._build_history_messages(session_state),
-            {"role": "user", "content": task_text},
-        ]
+        # 当前任务作为本轮输入追加进对话
+        # （leader：init_chat_messages 已剔除快照末条请求原文，此处统一补回，避免重复；
+        #   子智能体：SubContext 清空后追加派发任务文本）
+        if task_text:
+            self._context.chat_messages.append({"role": "user", "content": task_text})
 
         # 4. ReAct 循环：think →（有 tool_calls 则执行工具回填后继续 think）→
         #    无工具调用且内容非空时走 Action 链（兼容 supervisor 路由解析）+ observation 定跳
@@ -433,14 +389,24 @@ class BaseReActAgent(Agent):
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
             # 统一预算分配器：每次调 LLM 前总量管控（超预算按优先级驱逐，排期③）
-            self._enforce_context_budget()
+            # 压缩走 context 多态：leader=SessionContext（Path A 带摘要水位），
+            # 子智能体=SubContext（Path B LLM 摘要，只压自己不碰会话真相源）
+            # 历史消息标准化
+            await self._context.normalize_messages()
+            get_app().compaction.token_budget(self._prompt_params,self._system_prompt,self.tools,self._context.chat_messages)
+            # await self._context.micro_compact()
+            # async for data in self._context.compact():
+            #     await get_app().message_bus.publish_runtime_event(
+            #         session_state.publish_context,
+            #         event_type=AgentEventType.COMPACT_EVENT, data=data,
+            #         state=AgentState.RUNNING)
             step += 1
             log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
             log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name,
-                    "\n".join([str(msg) for msg in self._messages[1:]]))
-            response = await self.think(self._messages)
+                    "\n".join([str(msg) for msg in self._context.chat_messages]))
+            response = await self.think(await self._context.assemble(),is_stream,session_state)
             if not response:  # TODO reasoning_content 的解析
-                self._messages.append({"role": "assistant", "content": self.profile.retry_goal})
+                self._context.chat_messages.append({"role": "assistant", "content": self.profile.retry_goal})
                 continue
             final_text = str(response.get("content") or "")
             # tool_calls 归一化为扁平结构（兼容非流式嵌套格式与流式扁平格式）
@@ -461,20 +427,21 @@ class BaseReActAgent(Agent):
                     }
                     for tc in tool_calls
                 ]
-            self._messages.append(assistant_message)
+            # leader 的 context 即会话真相源：append 直接落 cm，无需另行回写
+            self._context.chat_messages.append(assistant_message)
 
             if tool_calls:
                 # 工具化分支：执行 tool_calls 并回填 tool 消息，继续 think（LLM 自主决定下一步）
                 tool_messages = await self._execute_tool_calls(tool_calls, session_state)
                 if tool_messages is None:
                     break
-                self._messages.extend(tool_messages)
+                self._context.chat_messages.extend(tool_messages)
                 log.info("【{} ACT】: 执行 {} 个工具并回填 tool 消息", self.agent_name, len(tool_calls))
                 continue
 
             if not final_text.strip():
                 # 空回复兜底
-                self._messages.append({
+                self._context.chat_messages.append({
                     "role": "user",
                     "content": "回复为空，请基于任务描述与现有信息给出答复。",
                 })
@@ -524,3 +491,52 @@ class BaseReActAgent(Agent):
 
         return observation
 
+        # ------------------------------------------------------------------ message I/O
+
+        async def receive(self, msg: AgentMessage, session_state: RuntimeSessionState) -> AgentMessage | None:
+            """接收来自其他 agent 或外部的消息，执行 run() 并转发下一跳。
+
+            注意：全局消息路由已收归 AutoPlanManager，此处仅为独立测试或手动调用保留。
+            """
+            log.info(
+                "agent 消息接收: {} <- {} | request_id={}",
+                self.agent_name, msg.sender, msg.request_id,
+            )
+            reply = await self.run(msg, session_state)
+            if reply:
+                if reply.recipient == "user":
+                    get_app().message_bus.publish_runtime_event(
+                        session_state.publish_context,
+                        event_type=AgentEventType.REQUEST_COMPLETED,
+                        data={"content": reply.result},
+                        state=AgentState.COMPLETED,
+                    )
+                else:
+                    await self.send(reply, session_state)
+            return msg
+
+        async def send(
+                self,
+                msg: AgentMessage,
+                session_state: RuntimeSessionState,
+                **kwargs,
+        ) -> bool:
+            """向指定 name 的 agent 发送消息并触发其 receive → run 链路。
+
+            从 AgentRegistry 取 AgentSpec.cls() 实例化目标 agent，再调 receive。
+            """
+            receiver = msg.recipient
+            if not receiver:
+                raise ValueError(f"未设置接收方：{msg}")
+
+            spec = get_app().agents.get(receiver)
+            if spec is None or spec.cls is None:
+                raise ValueError(f"目标 agent 未注册或无 cls: {receiver}")
+
+            target_agent = spec.cls()
+            await target_agent.receive(msg, session_state, **kwargs)
+            log.info(
+                "agent 消息发送: {} -> {} | request_id={}",
+                msg.sender, msg.recipient, msg.request_id,
+            )
+            return True

@@ -1,27 +1,91 @@
 """SessionContext —— 纯会话状态（P2 瘦身，docs/SystemApp架构设计.md §4.2）。
 
-只留真会话状态：ids、system_prompt、chat_messages、每轮组装产物（TurnPrompts）、
+只留真会话状态：ids、system_prompt、chat_messages、
 摘要阈值状态（SummaryState）。原成员对象（MemoryManager/TaskManager/
 SessionSummaryService/CompactionEngine/ContextAssembler/SkillLoader）全部服务化，
 经 get_app() 的全局服务委托完成；压缩熔断器由 CompactionService 服务级持有，
 会话不绑定。
 """
 from dataclasses import field, dataclass
-from typing import Any, Dict
-
+from typing import Any, Dict, AsyncGenerator
+import asyncio
 from codegenx.ai_service.agent.agent_schema import AgentEvent, AgentState, AgentEventType
-from codegenx.ai_service.context.context_service import TurnPrompts
-from codegenx.ai_service.compact.session_summary import SummaryState
+from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.compact import microcompact_messages, estimate_tokens
 from codegenx.ai_service.compact.large_output import persist_large_output
 from codegenx.ai_service.tools.base import ToolResult
+from codegenx.ai_service.utils.context_utils import rough_tokens, ensure_app_workdir
 from shared import log
 
+# ── 会话摘要阈值（原 SessionSummaryService 模块常量，属会话级判定，随谓词下沉）────
+MIN_TOKENS_TO_INIT = 6000           # 上下文达到该规模后开始跟踪
+MIN_TOKENS_BETWEEN_UPDATES = 150    # 新增 token 超过该值才允许再次提取
+MIN_MESSAGES_BETWEEN_UPDATES = 4    # 或新增内存消息（index 增量）超过该值
+
+
+class SummaryState:
+    """会话摘要阈值状态（原 SessionSummaryService 实例字段，迁入 SessionContext 持有）。
+
+    这是真·会话状态（非伪会话对象）：服务全局一份，此状态随会话生灭。
+    判定谓词落在本类：阈值状态与判断它的逻辑同处，服务只保留「执行」。
+
+    水位语义：extract_msg_idx 是内存 chat_messages 的 index 水位，表示
+    「前 extract_msg_idx 条已摘要过」。compact_after_turn 后台按内存快照
+    做增量摘要并推进水位；_session_memory_compact 压缩重建列表后水位失效，
+    由 _extract 检测（extract_msg_idx >= len(messages)）回退 0 全量重摘。
+    """
+
+    def __init__(self) -> None:
+        # 阈值状态
+        self.initialized = False
+        self.tokens_at_last_extract = 0
+        # 上次摘要消费到的内存 chat_messages 列表 index 水位（随会话生灭，不持久化）
+        self.extract_msg_idx = 0
+        # 并发保护：同一会话的提取任务不重叠
+        self.extracting = False
+        self.extract_task: asyncio.Task | None = None
+
+    def should_extract(self, messages: list[dict]) -> bool:
+        """是否应触发一次后台摘要提取（纯会话状态判定，无外部依赖）。"""
+        if self.extracting:
+            return False  # 永不重叠
+
+        current = rough_tokens(messages)
+
+        if not self.initialized:
+            if current < MIN_TOKENS_TO_INIT:
+                return False
+            self.initialized = True
+
+        growth = current - self.tokens_at_last_extract
+        if growth < MIN_TOKENS_BETWEEN_UPDATES:
+            return False
+
+        return (
+            len(messages) - self.extract_msg_idx >= MIN_MESSAGES_BETWEEN_UPDATES
+            or growth >= MIN_TOKENS_BETWEEN_UPDATES * 3
+        )
+
+    def note_trigger(self, tokens: int) -> None:
+        """记录本次触发的 token 记账基线。extract_msg_idx 由 _extract 完成后推进。"""
+        self.tokens_at_last_extract = int(tokens)
+
+
+class SessionMetadata:
+    safety_path:list[str]
+    metadata: dict[str, Any]
+
+    def set_safety_path(self, user_id:str,app_id:str) -> None:
+        self.safety_path = [str(ensure_app_workdir(user_id, app_id))]
 
 @dataclass
-class SessionContext:
+class SessionContext(CommonContext):
     """
-    负责一个session的上下文管理（纯状态，行为委托 SystemApp 服务）
+    负责一个session的上下文管理
+    提示词，组装
+    历史对话
+    token管控
+    压缩
     """
 
     # ── 身份（定位数据与目录）────────────────────────────────
@@ -30,79 +94,129 @@ class SessionContext:
     # 会话归属用户，决定 .data/{userId}/{appId} 两级路径
     user_id: str = ""
     db_name: str | None = None
-    # P4：会话归属智能体（§10.3 会话归属：RuntimeSessionState.agent_name 落到此处使用）
-    agent_name: str = ""
+    # P4：会话归属智能体
+    agent_name: str = "leader"
 
-    # ── 真会话状态 ───────────────────────────────────────────
+    # 系统提示词
     system_prompt: str = ""
     # 整个会话的聊天历史（唯一大对象）
     chat_messages: list[dict[str, Any]] = field(default_factory=list)
-    # 每轮组装产物（原 ContextAssembler 的可变字段）
-    prompts: TurnPrompts = field(default_factory=TurnPrompts)
-    # 会话摘要阈值状态（原 SessionSummaryService 实例字段）
+    metadata: SessionMetadata = field(default_factory=SessionMetadata)
+    # 会话摘要阈值状态
     summary_state: SummaryState = field(default_factory=SummaryState)
 
     def __post_init__(self) -> None:
+        # 元信息载入
+        self.metadata.set_safety_path(self.user_id, self.app_id)
         log.info("{} SessionContext 启动完毕", self.session_id)
 
-    # ------------------------------------------------------------------ 每轮组装
+# ----------------------------------------------------------------------
+# chat_message 初始化
+# ----------------------------------------------------------------------
+    def init_chat_messages(self,user_msg:str) -> None:
+        """turn 初始组装聊天上下文。
 
-    async def build_system_prompt(self, query:str, request_id: str = "") -> str:
-        """每个session要构建的：workspace 元数据 + 记忆 + skill + 任务看板 + 会话摘要。
+        chat_messages 来自 turn 结束后的快照，request 一进入即装载；
+        去除末条（本轮用户请求原文，已作为当前输入，避免重复）；
+        只保留 user/assistant 文本消息（role/content），供 LLM 对话使用；
+        同时恢复 SummaryState 水位 + 必要时注入 SUMMARY.md 合成对（会话恢复闭环）。
+        """
+        # 1. 基础过滤：去末条 + 保留 user/assistant 文本
+        self.chat_messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in self.chat_messages[:-1]
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
 
-        P4 §10.3：智能体差异（persona/skill 可见范围/记忆 read_types）由 AgentSpec
-        参数化——组件只读 spec 视图，无 per-agent 可变状态。
+        # 2. 恢复 SummaryState 水位（此时 chat_messages 已从快照装载完毕）
+        self._restore_summary_state()
+
+        # 3. 若 chat_messages 首部没有摘要合成对 → 尝试从 SUMMARY.md 注入
+        if not self._has_summary_injection_pair():
+            self._inject_summary_from_file()
+
+        log.debug(
+            "{} init_chat_messages: {} 条，水位 {}",
+            self.session_id, len(self.chat_messages), self.summary_state.extract_msg_idx,
+        )
+
+    def _restore_summary_state(self) -> None:
+        """从 summary_state.json 恢复 SummaryState 水位（compact 后会重置落盘）。
+        必须在 chat_messages 从快照装载后调用（水位防御依赖列表长度）。
         """
         from codegenx.ai_service.system_app import get_app
+        state_data = get_app().summary.load_state(
+            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
+        )
+        if state_data is None:
+            return
+        self.summary_state.extract_msg_idx = int(state_data.get("extract_msg_idx", 0))
+        self.summary_state.initialized = bool(state_data.get("initialized", False))
+        self.summary_state.tokens_at_last_extract = int(state_data.get("tokens_at_last_extract", 0))
+        # 水位防御：超出当前列表长度时回退 0（快照重建过，与落盘状态不一致）
+        if self.summary_state.extract_msg_idx > len(self.chat_messages):
+            self.summary_state.extract_msg_idx = 0
+            log.debug("{} SummaryState 水位超列表长度，回退 0", self.session_id)
 
+    def _has_summary_injection_pair(self) -> bool:
+        """chat_messages 首部是否已有 compact 摘要合成对（user 含 previous_session_summary 标记）。"""
+        if not self.chat_messages:
+            return False
+        first = self.chat_messages[0]
+        return (
+            first.get("role") == "user"
+            and "<previous_session_summary>" in str(first.get("content", ""))
+        )
+
+    def _inject_summary_from_file(self) -> None:
+        """读 SUMMARY.md → 按水位截掉已覆盖前缀 → prepend 合成对 → 重置水位落盘。
+
+        等价于 compact Path A 做的事，但走的是 SUMMARY.md 而不是内存摘要。
+        """
+        from codegenx.ai_service.system_app import get_app
         app = get_app()
-        service = app.context
-        if service is None:
-            raise RuntimeError("SystemApp.context 未装配：请在启动入口 init_app() 后使用")
+        summary = app.summary.load(
+            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
+        )
+        if not summary:
+            return
 
-        self.prompts.workspace_metadata = await service.build_workspace_metadata(
-            self.user_id, self.app_id, db_name=self.db_name
+        # 关键：chat_messages 前 extract_msg_idx 条的内容已被 SUMMARY.md 覆盖 → 截掉
+        watermark = self.summary_state.extract_msg_idx
+        if watermark > 0 and watermark < len(self.chat_messages):
+            self.chat_messages = self.chat_messages[watermark:]
+            log.debug(
+                "{} 摘要注入：按水位 {} 截掉已覆盖前缀，剩余 {} 条",
+                self.session_id, watermark, len(self.chat_messages),
+            )
+
+        user_msg, assistant_msg = app.summary.build_summary_injection_pair(summary)
+        self.chat_messages = [user_msg, assistant_msg] + self.chat_messages
+
+        # 合成对自身算"已摘要的 2 条" → 水位重置为 2，落盘，清摘要
+        self.summary_state.extract_msg_idx = 2
+        app.summary.save_state(
+            self.summary_state,
+            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
+        )
+        app.summary.clear(user_id=self.user_id, app_id=self.app_id, session_id=self.session_id)
+
+        log.info(
+            "{} 注入 SUMMARY.md 合成对（截 {} 条已覆盖前缀 → {} 条）",
+            self.session_id, watermark, len(self.chat_messages),
         )
 
-        self.prompts.memory_prompt = await app.memory.load(
-            query, user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
-        )
-        self.prompts.skill_prompt = app.skill_manager.build_prompt()
-        self.prompts.task_prompt = app.tasks.get_board(
-            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id, request_id=request_id
-        )
-
-        self.prompts.session_summary_prompt = app.summary.load(
-            user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
-        )
-        self.system_prompt = service.render_turn_context(
-            self.prompts, persona=""
-        )
-        log.debug("system prompt init success")
-        return self.system_prompt
-
-    def get_safe_path(self) -> list|None:
-        if self.prompts.workspace_metadata:
-            code_dir = self.prompts.workspace_metadata.get("safe_paths",[])
-            rm_dirs =  self.prompts.workspace_metadata.get("allowed_rw_dirs",[])
-
-            return code_dir + rm_dirs
-        return []
-
-
-    def refresh_task_prompt(self, request_id: str = "") -> None:
-        """从 TaskBoardService 拉取当前请求看板并重渲染进 prompts.task_prompt（方案 §4.2）。
+    def get_task_bord(self, request_id: str = "") -> str:
+        """从 TaskBoardService 拉取当前请求看板并重渲染进
 
         看板按 request 单文件隔离，仅渲染当前请求的任务（历史请求任务不进 prompt）。
-        TurnPrompts.task_prompt 是看板文本视图唯一载体；渲染由无状态服务完成。
-        刷新时机：请求开始（Supervisor 首次 think 前）与每次审查 think 前
-        （turn 过程中任务在完成、依赖在解锁，需最新就绪集）。
+        渲染由无状态服务完成。
         """
         from codegenx.ai_service.system_app import get_app
         tasks = getattr(get_app(), "tasks", None)
         if tasks is None:
-            return
-        self.prompts.task_prompt = tasks.get_board(
+            return ""
+        return tasks.get_board(
             user_id=self.user_id, app_id=self.app_id, session_id=self.session_id, request_id=request_id
         )
 
@@ -112,20 +226,20 @@ class SessionContext:
         if isinstance(message,str):
             self.chat_messages.append({"role":"user","content":message})
 
-    def add_agent_result(self, agent_name: str, task: str, result: str, success: bool = True) -> None:
-        """子 agent 回传写入会话历史（多 agent 链路，方案《上下文工程设计方案2》§6.1）。
-
-        - role/content 保证 LLM 与 normalize_history 兼容；
-        - agent/task/success 为独立附带字段（normalize_history 透传 agent），
-          供 Supervisor 历史视图过滤，不做字符串前缀解析。
-        """
-        self.chat_messages.append({
-            "role": "assistant",
-            "content": f"[{agent_name}] {result}",
-            "agent": agent_name,
-            "task": task,
-            "success": success,
-        })
+    # def add_agent_result(self, agent_name: str, task: str, result: str, success: bool = True) -> None:
+    #     """子 agent 回传写入会话历史（多 agent 链路，方案《上下文工程设计方案2》§6.1）。
+    #
+    #     - role/content 保证 LLM 与 normalize_history 兼容；
+    #     - agent/task/success 为独立附带字段（normalize_history 透传 agent），
+    #       供 Supervisor 历史视图过滤，不做字符串前缀解析。
+    #     """
+    #     self.chat_messages.append({
+    #         "role": "assistant",
+    #         "content": f"[{agent_name}] {result}",
+    #         "agent": agent_name,
+    #         "task": task,
+    #         "success": success,
+    #     })
 
     def add_assistant_message(self, message):
         if isinstance(message,dict):
@@ -139,30 +253,26 @@ class SessionContext:
         if isinstance(message,str):
             self.chat_messages.append({"role": "tool", "content": message})
 
-    async def assemble(self)-> list[dict[str, Any]]:
-        """将system_prompt和turn的聊天历史组合（组装逻辑在无状态 ContextService）。"""
-        from codegenx.ai_service.system_app import get_app
-
-        service = get_app().context
-        if service is None:
-            raise RuntimeError("SystemApp.context 未装配")
-        return await service.assemble(self.system_prompt,self.chat_messages)
-
-    async def micro_compact(self):
-        log.debug("micro compact 前,{}", estimate_tokens(self.chat_messages))
-        self.chat_messages = microcompact_messages(self.chat_messages)
-        log.debug("micro compact 后,{}",estimate_tokens(self.chat_messages))
-
     async def persist_large_output(self,tool_call:Dict[str, Any], output:ToolResult) -> str:
 
         data =  output.data or ""
         log.debug("大的输出持久化：{}",len(data))
         return persist_large_output(tool_call=tool_call, output=data,user_id=self.user_id,app_id=self.app_id,session_id=self.session_id)
 
-    # ------------------------------------------------------------------ 压缩
+# ------------------------------------------------------------------
+# 压缩
+# ------------------------------------------------------------------
 
-    async def compact_after_step(self):
-        """每个 step 后：仅做 token 检查 + full compaction，不触发 session summary extraction。"""
+    async def compact(self) -> AsyncGenerator[dict[str, Any], None]:
+        """每个 step 后 / llm 运行中，供 recovery 策略调用：
+        仅做 token 检查 + full compaction，不触发 session summary extraction。
+
+        compact 重建 chat_messages 后：
+          - Path A（session_memory）：SUMMARY.md 内容已以合成对形式融进 chat_messages，
+            旧摘要文件需清理（否则下次 compact 又会套娃合成）；SummaryState 重置落盘。
+          - Path B / 兜底截断：chat_messages 被重建但不走 SUMMARY.md，
+            SummaryState 水位失效 → 回退 0 重置，落盘。
+        """
         from codegenx.ai_service.system_app import get_app
 
         app = get_app()
@@ -171,24 +281,53 @@ class SessionContext:
             summary_loader=lambda: app.summary.load(
                 user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
             ),
+            summary_watermark=self.summary_state.extract_msg_idx,
         )
 
         if result is not None:
-            log.debug("进行step的压缩了")
+            log.debug("进行step的压缩了 path={}", result.path_used)
+            # 压缩后 chat_messages 已重建 → SummaryState 水位必失效，统一重置
+            if result.path_used == "session_memory":
+                # Path A：合成对 = [user, assistant] 2 条，水位跳过它们
+                self.summary_state.extract_msg_idx = 2
+                self.summary_state.initialized = True
+                log.debug("Path A：水位重置为 2")
+            else:
+                # Path B / 兜底截断：列表被重建但不走 SUMMARY.md，水位回退 0
+                self.summary_state.extract_msg_idx = 0
+            # PathA 已经被使用了，SUMMARY.md 内容已融进合成对 → 清理旧文件，避免下次 compact 套娃
+            # PathB 已经是新的chat_message了，不管有没有摘要已经对不上了，清理旧文件 
+            app.summary.clear(
+                user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
+            )
+            # 重置基线 token 计数
+            self.summary_state.tokens_at_last_extract = estimate_tokens(self.chat_messages)
+            # 重置后立即落盘，保证会话恢复时状态一致
+            app.summary.save_state(
+                self.summary_state,
+                user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
+            )
+
             yield {
                     "path_used": result.path_used,
                     "tokens_before": result.tokens_before,
                     "tokens_after":  result.tokens_after,
                     "messages_removed": result.messages_removed,
                 }
+        else:
+            log.info("compact: compaction skipped (not needed)")
 
-    async def compact_after_turn(self):
-        """整个 turn 结束后：异步触发会话摘要后台提取（非阻塞任务，属于上下文工程的压缩边界）。"""
+    async def session_summary_extract(self):
+        """整个 turn 结束后：阈值门控下触发会话摘要后台提取（非阻塞，属压缩边界）。
+
+        判定谓词在 SummaryState（会话级状态自查）；摘要输入按内存 chat_messages
+        快照切片（extract_msg_idx 为内存 index 水位），不依赖 DB。
+        """
         from codegenx.ai_service.system_app import get_app
 
-        summary = get_app().summary
-        if summary.should_extract(self.summary_state, self.chat_messages):
-            summary.fire_extract(
+        app = get_app()
+        if self.summary_state.should_extract(self.chat_messages):
+            app.summary.fire_extract(
                 self.summary_state,
                 self.chat_messages,
                 user_id=self.user_id,
@@ -196,22 +335,24 @@ class SessionContext:
                 session_id=self.session_id,
             )
             log.debug("session summary 后台提取已触发")
+        else:
+            log.debug("session summary 未触发提取阈值")
 
     async def ensure_summary_before_unload(self) -> None:
-        """swap-out/空闲回收前保证会话摘要跟上已入库消息（上下文工程排期②）。
+        """swap-out/空闲回收前保证会话摘要跟上内存消息（上下文工程排期②）。
 
         强制触发（绕过增长阈值）：回收/卸载后内存列表消失，未摘要内容只能
         等下次会话重摘；此处先补一轮保证摘要连续。
 
-        fire-and-forget：后台任务按 seq 水位从 chat_message 表读增量独立运行，
-        清理锁内不做 DB 读与 LLM 调用（避免阻塞全池）；无新消息时后台任务
-        自然空转退出，不产生 LLM 开销。
+        fire-and-forget：后台任务按内存快照切片独立运行；清理锁内不做 IO
+        与 LLM 调用（避免阻塞全池）；无新消息时后台任务自然空转退出。
         """
         from codegenx.ai_service.system_app import get_app
 
         if not self.chat_messages:
             return
-        summary = getattr(get_app(), "summary", None)
+        app = get_app()
+        summary = getattr(app, "summary", None)
         if summary is None:
             return
         summary.fire_extract(
@@ -226,37 +367,13 @@ class SessionContext:
             self.session_id, len(self.chat_messages),
         )
 
-    async def force_compact(self) -> None:
-        """强制压缩聊天历史（供 recovery 策略调用）。
-
-        直接调用 CompactionService.compact_if_needed，无论 token 是否超阈值都尝试压缩。
-        压缩后的 messages 直接替换 self.chat_messages。
+# ----------------------------------------------------------------
+# 前端接口
+# ----------------------------------------------------------------
+    # TODO
+    def token_status(self) -> dict:
         """
-        from codegenx.ai_service.system_app import get_app
-
-        app = get_app()
-        self.chat_messages, result = await app.compaction.compact_if_needed(
-            self.chat_messages,
-            summary_loader=lambda: app.summary.load(
-                user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
-            ),
-        )
-        if result is not None:
-            log.info(
-                "force_compact: path={}, tokens_before={}, tokens_after={}, removed={}",
-                result.path_used,
-                result.tokens_before,
-                result.tokens_after,
-                result.messages_removed,
-            )
-        else:
-            log.info("force_compact: compaction skipped (not needed)")
-
-    # TODO 上下文还需要做的事情：token计算
-    def token_status(self, messages: list[dict]) -> dict:
-        """
-        Return context window status dict (for status endpoint / UI gauge).
-        Delegates to compact.calculate_warning_state().
+        返回上下文窗口token使用情况字典，用于前端展示
         """
         from codegenx.ai_service.compact import calculate_warning_state
-        return calculate_warning_state(messages)
+        return calculate_warning_state(self.chat_messages)

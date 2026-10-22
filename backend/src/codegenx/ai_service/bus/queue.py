@@ -113,7 +113,7 @@ class MessageBus(BaseComponent):
 
     async def publish_runtime_event(
         self,
-            publish_context:dict,
+        publish_context:dict,
         event_type: AgentEventType,
         state: AgentState,
         data=None,

@@ -130,6 +130,7 @@ if __name__ == "__main__":
     db_name="prj_ec"
     # user_message = "hello"
     # user_message = "2022年卖出了多少件产品,在数据库查一下"
+    # user_message = "目前有多少用户，在数据库查一下"
     # user_message2 = "2022年订单金额Top3的用户是哪几位？金额分别多少"
     # user_message = "一共多少用户？一共多少产品"
     # user_message = "2023年订单位于 order_2023.csv，2022年订单位于数据库，对比2022和2023订单数量"

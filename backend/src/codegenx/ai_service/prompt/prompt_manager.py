@@ -35,6 +35,22 @@ _DEFAULT_SYSTEM_TEMPLATE = """\
 {{ expand_prompt }}
 {% endif %}\
 
+
+{% if memory_prompt %}\
+相关记忆：
+{{ memory_prompt }} 
+{% endif %}\
+
+{% if taskbord_prompt %}\
+ 任务看板：
+{{ taskbord_prompt }} 
+{% endif %}\
+
+{% if skill_prompt %}\
+可用技能：
+{{ skill_prompt }} 
+{% endif %}\
+
 *** 重要提醒 ***
 请用简体中文进行回答.
 当前时间是:{{ now_time }}
@@ -58,6 +74,7 @@ _DEFAULT_SYSTEM_TEMPLATE = """\
 {% endif %}\
 
 {% if out_schema %} {{ out_schema }} {% endif %}\
+
 """  # noqa
 
 
@@ -72,11 +89,14 @@ class PromptConfig(BaseModel):
     retry_goal: str = ""
     retry_constraints: List[str] = Field(default_factory=list)
     constraints: List[str] = Field(default_factory=list)
-    resource_prompt: str = ""
+    resource_prompt: str = ""  # 项目信息
     expand_prompt: str = ""
     now_time: str = ""
     examples: str = ""
     out_schema: str = ""
+    memory_prompt:str = "",
+    taskbord_prompt:str = ""
+    skill_prompt:str = ""
 
     def build_default_system_prompt(self,**kwargs) -> str:
         """使用 Jinja2 渲染 _DEFAULT_SYSTEM_TEMPLATE 并返回组装后的 system prompt。
@@ -113,5 +133,8 @@ class PromptConfig(BaseModel):
             now_time=now_time,
             examples=resolved["examples"],
             out_schema=resolved["out_schema"],
+            memory_prompt=resolved["memory_prompt"],
+            taskbord_prompt=resolved["taskbord_prompt"],
+            skill_prompt=resolved["skill_prompt"],
             **kwargs,
         )

@@ -107,15 +107,14 @@ def _keep_last_n_messages(
 
 
 def _session_memory_compact(
-    messages: list[dict], session_summary: str
+    messages: list[dict], session_summary: str, *, watermark: int = 0
 ) -> CompactResult:
     """
     Fast-path compaction using an already-extracted session summary.
 
-    Keeps the most recent messages that fit in MAX_TOKENS_AFTER, ensuring at
-    least MIN_TEXT_MESSAGES text-bearing messages are kept.
-    Prepends a synthetic (user, assistant) pair that restores context from the
-    summary (mirrors buildFastPathMessages() in sessionMemoryCompact.ts).
+    按水位拼接：前 watermark 条已由 SUMMARY.md 覆盖，直接以合成对替代；
+    未摘要段（watermark 之后）在预算内从尾部保留，避免与摘要范围重叠/留缝。
+    watermark=0（无水位）时退化为全量尾部保留。
     """
     tokens_before = estimate_tokens(messages)
     # Build the prior-context pair first so we can subtract its cost from the tail budget
@@ -132,7 +131,10 @@ def _session_memory_compact(
     }
     synthetic_tokens = estimate_tokens([user_context, assistant_ack])
     tail_budget = max(MIN_TOKENS_AFTER, MAX_TOKENS_AFTER - synthetic_tokens)
-    kept = _keep_last_n_messages(messages, max_tokens=tail_budget)
+    # 水位失效防御：超出列表长度按 0 处理（全量）
+    if watermark >= len(messages):
+        watermark = 0
+    kept = _keep_last_n_messages(messages[watermark:], max_tokens=tail_budget)
     # 最多保留 N-2 条消息，避免压缩后消息数反而增加
     max_tail = max(MIN_TEXT_MESSAGES, len(messages) - 2)
     if len(kept) > max_tail:
@@ -260,13 +262,21 @@ class CompactionService(BaseComponent):
     def model_chain(self) -> list[str]:
         return list(self._model_chain)
 
-    # ------------------------------------------------------------------ public
+# ------------------------预算分配------------------------------------------
+    async def token_budget(self,system_prompt,chat_messages:dict,):
+        """
+        此方法作为整个上下文预算压缩的总策略
+        Returns:
 
+        """
+
+# ------------------------压缩------------------------------------------
     async def compact_if_needed(
         self,
         messages: list[dict],
         *,
         summary_loader: Any = None,          # Callable[[], str] | None
+        summary_watermark: int = 0,          # 摘要覆盖到的内存 index 水位
     ) -> tuple[list[dict], CompactResult | None]:
         """
         Run the full compaction pipeline if the threshold is exceeded.
@@ -280,7 +290,7 @@ class CompactionService(BaseComponent):
             return messages, None
 
         tokens_before = estimate_tokens(messages)
-        result = await self._run_compaction(messages, summary_loader=summary_loader)
+        result = await self._run_compaction(messages, summary_loader=summary_loader, summary_watermark=summary_watermark)
         if result is None or result.tokens_after >= result.tokens_before:
             # 统一失败出口：调用失败/空摘要（result=None）与压缩无效同等对待，
             # 保守截断兜底（压缩无效是业务结果，不属模型故障、不计熔断）
@@ -324,6 +334,7 @@ class CompactionService(BaseComponent):
         messages: list[dict],
         *,
         summary_loader: Any = None,
+        summary_watermark: int = 0,
     ) -> CompactResult | None:
         # Path A — session memory fast path（不经 LLM；读取失败仅降级尝试 Path B）
         if summary_loader is not None:
@@ -331,7 +342,7 @@ class CompactionService(BaseComponent):
                 summary = summary_loader()
                 if summary and summary.strip():
                     log.info("Compaction: using session-memory fast-path.")
-                    return _session_memory_compact(messages, summary)
+                    return _session_memory_compact(messages, summary, watermark=summary_watermark)
             except Exception as exc:
                 log.warning("Session-memory fast-path failed: {}; trying LLM.", exc)
 
