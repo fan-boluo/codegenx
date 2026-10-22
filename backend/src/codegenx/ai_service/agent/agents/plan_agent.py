@@ -96,7 +96,6 @@ class PlannerAgent(BaseReActAgent):
         await super()._prepare_agent(request)
         # 落板所需会话状态（observation 阶段 register_plan 使用）
         self._request = request
-        log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
 
 
     async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:

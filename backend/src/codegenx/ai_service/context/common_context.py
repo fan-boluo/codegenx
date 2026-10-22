@@ -40,9 +40,13 @@ class CommonContext(ABC):
         self.chat_messages = microcompact_messages(self.chat_messages)
         log.debug("micro compact 后,{}", estimate_tokens(self.chat_messages))
 
-    async def compact(self) -> AsyncGenerator[dict[str, Any], None]:
-        """step 级压缩；未触发时不产出事件。"""
+    async def compact(self, token_budget: int | None = None) -> AsyncGenerator[dict[str, Any], None]:
+        """step 级压缩；token_budget 由统一预算器给出，未触发时不产出事件。"""
         ...
+
+    def get_board(self, request_id: str = "") -> str:
+        """当前请求看板渲染文本；子智能体无看板，缺省为空。"""
+        return ""
 
     async def normalize_messages(self):
         self.chat_messages = self.drop_orphan_tool_pairs(self.normalize_history(self.chat_messages))

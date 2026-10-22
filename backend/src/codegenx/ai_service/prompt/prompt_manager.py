@@ -98,43 +98,45 @@ class PromptConfig(BaseModel):
     taskbord_prompt:str = ""
     skill_prompt:str = ""
 
-    def build_default_system_prompt(self,**kwargs) -> str:
-        """使用 Jinja2 渲染 _DEFAULT_SYSTEM_TEMPLATE 并返回组装后的 system prompt。
+    def resolve_fields(self, params: dict | None = None) -> dict:
+        """预渲染各字段中嵌入的 {{...}} 变量，返回最终字段值。
 
-        kwargs 由子类 _prepare_prompt_params() 提供，用于预渲染 PromptConfig
-        字段中嵌入的 {{...}} 变量（如 goal 中的 {{type}}、resource_prompt 中的
-        {{database_info}}），然后再传入主模板渲染。
+        供预算层按分区裁剪（resource_prompt / memory_prompt / ...），之后再
+        经 render() 做主模板渲染。params 由子类 _prepare_prompt_params() 提供。
         """
-        # 1) 预渲染 PromptConfig 字符串字段中的嵌套 {{...}} 变量
-        if kwargs:
-            resolved = {}
-            for field_name in self.__class__.model_fields:
-                value = getattr(self, field_name)
-                if isinstance(value, str) and "{{" in value:
-                    value = Template(value).render(**kwargs)
-                resolved[field_name] = value
-        else:
-            resolved = {f: getattr(self, f) for f in self.__class__.model_fields}
+        params = params or {}
+        resolved = {}
+        for field_name in self.__class__.model_fields:
+            value = getattr(self, field_name)
+            if isinstance(value, str) and "{{" in value and params:
+                value = Template(value).render(**params)
+            resolved[field_name] = value
+        return resolved
 
+    def render(self, resolved: dict) -> str:
+        """用已解析的字段值渲染主模板（不再二次解析嵌套变量）。"""
         now_time = resolved.get("now_time") or datetime.datetime.now().strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         template = Template(_DEFAULT_SYSTEM_TEMPLATE)
         return template.render(
-            role=resolved["role"],
-            name=resolved["name"],
-            goal=resolved["goal"],
-            is_retry_chat=resolved["is_retry_chat"],
-            retry_goal=resolved["retry_goal"],
-            retry_constraints=resolved["retry_constraints"],
-            constraints=resolved["constraints"],
-            resource_prompt=resolved["resource_prompt"],
-            expand_prompt=resolved["expand_prompt"],
+            role=resolved.get("role", ""),
+            name=resolved.get("name", ""),
+            goal=resolved.get("goal", ""),
+            is_retry_chat=resolved.get("is_retry_chat", False),
+            retry_goal=resolved.get("retry_goal", ""),
+            retry_constraints=resolved.get("retry_constraints", []),
+            constraints=resolved.get("constraints", []),
+            resource_prompt=resolved.get("resource_prompt", ""),
+            expand_prompt=resolved.get("expand_prompt", ""),
             now_time=now_time,
-            examples=resolved["examples"],
-            out_schema=resolved["out_schema"],
-            memory_prompt=resolved["memory_prompt"],
-            taskbord_prompt=resolved["taskbord_prompt"],
-            skill_prompt=resolved["skill_prompt"],
-            **kwargs,
+            examples=resolved.get("examples", ""),
+            out_schema=resolved.get("out_schema", ""),
+            memory_prompt=resolved.get("memory_prompt", ""),
+            taskbord_prompt=resolved.get("taskbord_prompt", ""),
+            skill_prompt=resolved.get("skill_prompt", ""),
         )
+
+    def build_default_system_prompt(self, **kwargs) -> str:
+        """兼容入口：解析嵌套变量后渲染主模板。"""
+        return self.render(self.resolve_fields(kwargs))

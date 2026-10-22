@@ -25,7 +25,7 @@ Failure handling（统一出口）
 from __future__ import annotations
 
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from codegenx.ai_service.llm.errors import classify_llm_error
@@ -60,6 +60,27 @@ class CompactResult:
     messages_removed: int = 0
     tokens_before:    int = 0
     tokens_after:     int = 0
+
+
+@dataclass
+class ContextBudgetResult:
+    """一次 LLM 调用的上下文预算结果（token_budget 统一出口）。"""
+
+    system_prompt: str
+    tools: list[dict]
+    messages: list[dict]            # 已含 system 的最终 payload
+    total_budget: int = 0
+    tools_tokens_before: int = 0
+    tools_tokens_after: int = 0
+    system_tokens: int = 0
+    message_budget: int = 0
+    tokens_before: int = 0
+    tokens_after: int = 0
+    evicted_tools: int = 0
+    evicted_histories: int = 0
+    sections: list = field(default_factory=list)   # list[SectionReport]
+    compact_path: str = ""
+    truncated: bool = False
 
 
 # ── Path A — session-memory fast path ─────────────────────────────────────────
@@ -263,12 +284,202 @@ class CompactionService(BaseComponent):
         return list(self._model_chain)
 
 # ------------------------预算分配------------------------------------------
-    async def token_budget(self,system_prompt,chat_messages:dict,):
-        """
-        此方法作为整个上下文预算压缩的总策略
-        Returns:
+    async def token_budget(
+        self,
+        *,
+        profile: Any,
+        prompt_params: dict[str, Any] | None,
+        tools: list[dict] | None,
+        context: Any,
+        context_max_tokens: int = 0,
+    ) -> ContextBudgetResult:
+        """上下文预算的唯一编排入口（每次调 LLM 前执行一次）。
 
+        总预算 B = agent.context_max_tokens × compact.context_budget_ratio。
+        超限按驱逐级联处理，每级执行前判断超限，达标即停：
+          1. 处理历史消息：micro_compact 工具结果压缩 → 仍超则 compact 消息摘要
+             （context.compact：leader Path A 水位 / 子 agent Path B）
+          2. 历史消息驱逐（enforce_budget_inplace：工具结果 → 中段历史占位降级，
+             保护最近 N 条工具结果）
+          3. system 分区驱逐（skill → memory → resource → expand → board → examples
+             → tool_schema，逐个驱逐、逐个复量；skill/memory 可用工具捞回；
+             tool_schema 只截描述不删工具——agent 靠调用工具完成任务，不到必要不降级）
+          4. 保尾硬截断
+
+        真相源策略（摘要闭环）：
+          - 第 1/2 级就地修改 context.chat_messages（占位替换不改列表长度，
+            摘要水位 extract_msg_idx 保持有效；compact 重建时水位重置 Path A=2 / Path B=0）；
+          - 第 4 级只截 payload 视图、不动真相源——被截内容仍可被 turn 末摘要提取，闭环不破；
+          - system 分区只影响 system_prompt、tool_schema 只影响 tools 目录，
+            摘要不覆盖二者，天然无冲突。
+          - 当前任务（最后一条 user）永不驱逐。
         """
+        from codegenx.ai_service.compact.budget import (
+            SECTION_EVICTION_ORDER,
+            SectionReport,
+            compress_tool_catalog,
+            enforce_budget_inplace,
+            schema_tokens,
+            section_evicted_placeholder,
+        )
+
+        agent_name = str(getattr(context, "agent_name", "") or "agent")
+        window = int(context_max_tokens or config.get_agent().context_max_tokens or 8000)
+        total_budget = max(0, int(window * float(config.compact.context_budget_ratio)))
+
+        # 标准化真相源（与旧 run() 每 step normalize 行为一致）
+        await context.normalize_messages()
+        msg_tokens_before = estimate_tokens(context.chat_messages)
+
+        # system_prompt 预估 token
+        resolved = profile.resolve_fields(prompt_params or {})
+        system_prompt = profile.render(resolved)
+        system_tokens = estimate_tokens([{"role": "system", "content": system_prompt}])
+
+        # tools schema 预估（原样保留；瘦身排在 SECTION_EVICTION_ORDER 最后，不到必要不降级）
+        tool_budget = max(0, int(total_budget * float(config.compact.tool_budget_ratio)))
+        compressed_tools = list(tools or [])
+        tools_before = tools_after = schema_tokens(compressed_tools)
+
+        # 分区解析 + 首次渲染，记录各分区驱逐前 token（tool_schema 记原目录 tokens）
+        section_before: dict[str, int] = {}
+        for name in SECTION_EVICTION_ORDER:
+            if name == "tool_schema":
+                if tools_before > 0:
+                    section_before[name] = tools_before
+                continue
+            value = resolved.get(name)
+            if isinstance(value, str) and value:
+                section_before[name] = estimate_tokens([{"content": value}])
+
+        def _exceeded() -> bool:
+            return tools_after + system_tokens + estimate_tokens(context.chat_messages) > total_budget
+
+        def _msg_budget() -> int:
+            return max(0, total_budget - tools_after - system_tokens)
+
+        evicted_tools = 0
+        evicted_histories = 0
+        compact_path = ""
+        truncated = False
+
+        def _enforce(protect_last_n: int) -> None:
+            nonlocal evicted_tools, evicted_histories
+            rep = enforce_budget_inplace(
+                context.chat_messages,
+                budget=_msg_budget(),
+                protect_last_n_tool_results=protect_last_n,
+            )
+            evicted_tools += rep.evicted_tools
+            evicted_histories += rep.evicted_histories
+
+        # ── 驱逐级联：先处理历史消息，仍超依次历史驱逐、分区驱逐，最后硬截断 ──
+        payload_messages = context.chat_messages
+        if _exceeded():
+            # 1. 处理历史消息：先压缩工具结果，仍超再做消息摘要（重建真相源并重置水位）
+            await context.micro_compact()
+        if _exceeded() and _msg_budget() >= MIN_TOKENS_AFTER:
+            async for data in context.compact(token_budget=_msg_budget()):
+                compact_path = str((data or {}).get("path_used") or "compact")
+                log.info("【预算】{} 触发上下文压缩 path={} {}→{}",
+                            agent_name, compact_path,
+                            (data or {}).get("tokens_before"), (data or {}).get("tokens_after"))
+
+        # 2. 仍超：历史消息驱逐（真相源占位降级；原文可经重新调用/快照回捞）
+        if _exceeded():
+            _enforce(int(config.compact.protect_last_n_results))
+
+        # 3. 仍超：硬截断 payload 视图，不动真相源（保摘要闭环）
+        if _exceeded():
+            view = _keep_last_n_messages(
+                context.chat_messages,
+                min_keep=MIN_TEXT_MESSAGES,
+                max_tokens=max(MIN_TOKENS_AFTER, _msg_budget()),
+            )
+            payload_messages = context.drop_orphan_tool_pairs(view)
+            truncated = True
+            log.warning("【预算】{} 降级为保尾硬截断（仅 payload 视图）：{} → {} tokens（budget={}）",
+                        agent_name, estimate_tokens(context.chat_messages),
+                        estimate_tokens(payload_messages), _msg_budget())
+
+        # 4. 仍超：system 分区驱逐（逐个驱逐、逐个复量；skill/memory 可工具回捞）
+        if _exceeded():
+            for name in SECTION_EVICTION_ORDER:
+                if not _exceeded():
+                    break
+                if section_before.get(name, 0) <= 0:
+                    continue
+                if name == "tool_schema":
+                    # tools schema 瘦身（级联最后一环：截描述不删工具，释放计入 tools_after）
+                    compressed_tools, _, tools_after = compress_tool_catalog(
+                        compressed_tools,
+                        budget=tool_budget,
+                        description_max_chars=int(config.compact.tool_description_max_chars),
+                    )
+                    log.info("【预算】{} tool_schema 瘦身: {}→{} tokens（budget={}）",
+                                agent_name, section_before[name], tools_after, tool_budget)
+                    continue
+                # 清空分区但原位留占位提示，让模型感知信息被临时移出、可尝试工具捞回
+                resolved[name] = section_evicted_placeholder(name)
+                system_prompt = profile.render(resolved)
+                system_tokens = estimate_tokens([{"role": "system", "content": system_prompt}])
+                log.info("【预算】{} 分区驱逐: {}（{} tokens → 占位提示）",
+                            agent_name, name, section_before[name])
+
+        
+        msg_tokens_after = estimate_tokens(payload_messages)
+        messages = ([{"role": "system", "content": system_prompt}] + list(payload_messages)
+                    if system_prompt else list(payload_messages))
+
+        # ── 日志：总账 + 逐分区结果（用户可见，每 step 一条）──────────────
+        section_reports: list[SectionReport] = []
+        for name in SECTION_EVICTION_ORDER:
+            if name == "tool_schema":
+                continue  # tools 瘦身在总账 tools=X→Y 单独体现，不计入 system 分区
+            before = section_before.get(name, 0)
+            final_val = resolved.get(name)
+            after = estimate_tokens([{"content": final_val}]) if isinstance(final_val, str) and final_val else 0
+            section_reports.append(SectionReport(
+                name=name, before=before, after=after,
+                evicted=before > 0 and final_val == section_evicted_placeholder(name),
+            ))
+        section_tokens = sum(r.after for r in section_reports)
+        log.info(
+            "【预算】{} 总预算={} tools={}→{} system={}(固定{}+分区{}) 消息={}→{}"
+            " 驱逐[工具={} 历史={}] compact={} 截断={}",
+            agent_name, total_budget, tools_before, tools_after, system_tokens,
+            max(0, system_tokens - section_tokens), section_tokens,
+            msg_tokens_before, msg_tokens_after,
+            evicted_tools, evicted_histories,
+            compact_path or "none", truncated,
+        )
+        log.info(
+            "【预算】{} 分区: {}",
+            agent_name,
+            " | ".join(
+                f"{r.name} {r.after}/{r.before}" + ("(驱逐)" if r.evicted else "")
+                for r in section_reports
+            ),
+        )
+        log.debug("【预算】{} system_prompt:\n{}", agent_name, system_prompt)
+
+        return ContextBudgetResult(
+            system_prompt=system_prompt,
+            tools=compressed_tools,
+            messages=messages,
+            total_budget=total_budget,
+            tools_tokens_before=tools_before,
+            tools_tokens_after=tools_after,
+            system_tokens=system_tokens,
+            message_budget=_msg_budget(),
+            tokens_before=msg_tokens_before,
+            tokens_after=msg_tokens_after,
+            evicted_tools=evicted_tools,
+            evicted_histories=evicted_histories,
+            sections=section_reports,
+            compact_path=compact_path,
+            truncated=truncated,
+        )
 
 # ------------------------压缩------------------------------------------
     async def compact_if_needed(
@@ -277,6 +488,7 @@ class CompactionService(BaseComponent):
         *,
         summary_loader: Any = None,          # Callable[[], str] | None
         summary_watermark: int = 0,          # 摘要覆盖到的内存 index 水位
+        threshold: int | None = None,        # 统一预算器给出的消息预算
     ) -> tuple[list[dict], CompactResult | None]:
         """
         Run the full compaction pipeline if the threshold is exceeded.
@@ -286,7 +498,7 @@ class CompactionService(BaseComponent):
         """
         from codegenx.ai_service.compact.thresholds import should_auto_compact
 
-        if not should_auto_compact(messages):
+        if not should_auto_compact(messages, threshold=threshold):
             return messages, None
 
         tokens_before = estimate_tokens(messages)

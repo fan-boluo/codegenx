@@ -220,6 +220,10 @@ class SessionContext(CommonContext):
             user_id=self.user_id, app_id=self.app_id, session_id=self.session_id, request_id=request_id
         )
 
+    def get_board(self, request_id: str = "") -> str:
+        """预算层统一入口：会话看板渲染（与 get_task_bord 同源）。"""
+        return self.get_task_bord(request_id)
+
     def add_user_message(self,message):
         if isinstance(message,dict):
             self.chat_messages.append(message)
@@ -263,7 +267,7 @@ class SessionContext(CommonContext):
 # 压缩
 # ------------------------------------------------------------------
 
-    async def compact(self) -> AsyncGenerator[dict[str, Any], None]:
+    async def compact(self, token_budget: int | None = None) -> AsyncGenerator[dict[str, Any], None]:
         """每个 step 后 / llm 运行中，供 recovery 策略调用：
         仅做 token 检查 + full compaction，不触发 session summary extraction。
 
@@ -282,6 +286,7 @@ class SessionContext(CommonContext):
                 user_id=self.user_id, app_id=self.app_id, session_id=self.session_id
             ),
             summary_watermark=self.summary_state.extract_msg_idx,
+            threshold=token_budget,
         )
 
         if result is not None:

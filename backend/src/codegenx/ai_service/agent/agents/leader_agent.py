@@ -28,9 +28,6 @@ from typing import Any
 from codegenx.ai_service.agent.action import ActOutput
 from codegenx.ai_service.agent.agents.agent import AgentMessage
 from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
-from codegenx.ai_service.agent.agents.supervisor_board import TaskBoardCoordinator
-from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState
-from codegenx.ai_service.compact import estimate_tokens
 from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from codegenx.ai_service.system_app import get_app
@@ -98,7 +95,6 @@ class LeaderAgent(BaseReActAgent):
     async def _prepare_agent(self, request: UserAIRequest) -> None:
         """预取记忆与摘要（expand 变量注入）后走基类组装；会话状态全程显式传参，实例不留 run 级字段。"""
         await super()._prepare_agent(request)
-        log.debug(self._system_prompt)
 
     async def _prepare_prompt_params(self,request) -> dict:
         """统一 prompt 变量：智能体清单（含 planner）+ 任务看板 + 记忆/摘要注入。"""

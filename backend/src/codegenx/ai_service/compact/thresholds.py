@@ -48,16 +48,17 @@ AUTOCOMPACT_THRESHOLD = EFFECTIVE_CONTEXT_WINDOW - AUTOCOMPACT_BUFFER_TOKENS
 
 # ── Threshold queries ──────────────────────────────────────────────────────────
 
-def should_auto_compact(messages: list[dict]) -> bool:
+def should_auto_compact(messages: list[dict], *, threshold: int | None = None) -> bool:
     """
     True when the context is above the auto-compact trigger threshold.
-    Mirrors shouldAutoCompact() (token check only; recursion guards are in
-    engine.py via query_source checks).
-    """
 
+    threshold 由统一预算器按 agent 窗口算出（token_budget 的消息预算）；
+    缺省沿用全局默认窗口阈值，兼容旧调用方。
+    """
     estimate_token = estimate_tokens(messages)
-    log.debug("estimate_token: {} AUTOCOMPACT_THRESHOLD:{}",estimate_token, AUTOCOMPACT_THRESHOLD)
-    return  estimate_token >= AUTOCOMPACT_THRESHOLD
+    limit = AUTOCOMPACT_THRESHOLD if threshold is None else max(0, int(threshold))
+    log.debug("estimate_token: {} AUTOCOMPACT_THRESHOLD:{}", estimate_token, limit)
+    return estimate_token >= limit
 
 
 def calculate_warning_state(messages: list[dict]) -> dict:

@@ -18,11 +18,13 @@ class SubContext(CommonContext):
         self.chat_messages.clear()
         self.chat_messages.append({"role": "user", "content": user_msg})
 
-    async def compact(self) -> AsyncGenerator[dict[str, Any], None]:
+    async def compact(self, token_budget: int | None = None) -> AsyncGenerator[dict[str, Any], None]:
         """step 级压缩（默认 Path B：LLM 摘要，无会话水位）；未触发时不产出事件。"""
         from codegenx.ai_service.system_app import get_app
 
-        compacted, result = await get_app().compaction.compact_if_needed(self.chat_messages)
+        compacted, result = await get_app().compaction.compact_if_needed(
+            self.chat_messages, threshold=token_budget,
+        )
         self.chat_messages = compacted
         if result is not None:
             yield {

@@ -84,9 +84,8 @@ class DateExploreAgent(BaseReActAgent):
 
     async def _prepare_agent(self, request: UserAIRequest):
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
-        # db 元信息查询是 async，须在 super()（内部 build prompt）之前完成
+        # db 元信息查询是 async，须在 super() 之前完成
         await super()._prepare_agent(request)
-        log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
 
     @staticmethod
     async def _query_available_db_info(request: UserAIRequest) -> str:

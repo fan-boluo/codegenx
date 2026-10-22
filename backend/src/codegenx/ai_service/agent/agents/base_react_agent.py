@@ -10,7 +10,7 @@ from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import invoke_stream_with_revovery
 from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.schema.ai_schema import UserAIRequest
-from codegenx.ai_service.utils.config import AgentConfig, config
+from codegenx.ai_service.utils.config import AgentConfig
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from shared import log
@@ -19,12 +19,6 @@ from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.context.sub_context import SubContext
 
 from codegenx.ai_service.agent.action import Action, ActOutput
-from codegenx.ai_service.compact.budget import (
-    MEMORY_EVICTED_PLACEHOLDER,
-    SUMMARY_EVICTED_PLACEHOLDER,
-    enforce_budget_inplace,
-)
-from codegenx.ai_service.compact.thresholds import estimate_tokens
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 
 
@@ -144,7 +138,11 @@ class BaseReActAgent(Agent):
         self,
         request: UserAIRequest,
     ) -> None:
-        """准备 agent 所需的 system_prompt/tools"""
+        """准备 agent 所需的备料：tools + prompt 参数 + 本轮消息列表。
+
+        system prompt 不在这里构建：每次调 LLM 前由
+        CompactionService.token_budget 统一做分区预算后再渲染。
+        """
         # 工具目录与执行器：config.json agents[].tools 白名单非空才启用 function calling
         self.tools = self._resolve_tool_catalog()
         self.tool_executor = None
@@ -152,9 +150,6 @@ class BaseReActAgent(Agent):
             # 配置了工具的 agent 必须拿到执行器，失败直接暴露（fail fast，不静默吞掉）
             self.tool_executor = get_app().tools_executor
         self._prompt_params = await self._prepare_prompt_params(request)
-        # self._system_prompt = self.profile.build_default_system_prompt(**self._prompt_params)
-        # system 承载于 context.system_prompt（不进 chat_messages，payload 由 assemble 拼装）
-        # self._context.system_prompt = self._system_prompt
         # 初始化chat_messages
         self._context.init_chat_messages(request.message)
 
@@ -162,76 +157,12 @@ class BaseReActAgent(Agent):
         """ 在build prompt之前，子类各自准备 """
         return {}
 
-    # ------------------------------------------------------------------ context budget
-
-    async def _enforce_context_budget(self, session_state: RuntimeSessionState) -> None:
-        """统一预算分配器：每次调 LLM 前执行总量管控（上下文工程排期③）。
-
-        总预算 = agent context_max_tokens × compact.contextBudgetRatio − system 占用；
-        驱逐优先级（docs/上下文工程设计.md §1.1）：
-          工具结果 → 中段历史（budget.py 就地降级为占位符）
-          → 记忆注入 → 会话摘要（重建 system_prompt 承载）；
-        system 固定区 + 当前任务输入永不驱逐。驱逐均为占位符降级，
-        原文经工具重调用 / chat_messages 快照可回捞。
-        """
-        window = int(self.agent_config.context_max_tokens or 8000)
-        # system 不进 chat_messages，其 token 占用从预算中扣除
-        budget = int(window * config.compact.context_budget_ratio) - estimate_tokens(
-            [{"role": "system", "content": self._system_prompt or ""}])
-        messages = self._context.chat_messages
-        report = enforce_budget_inplace(
-            messages,
-            budget=budget,
-            protect_last_n_tool_results=config.compact.protect_last_n_results,
-        )
-        # 仍超预算：按优先级驱逐 system 内可驱逐分区（重建 system_prompt），驱逐后复量
-        if not report.ok and await self._rebuild_system_prompt(session_state, evict_memory=True):
-            log.info("【{}】上下文预算：记忆注入区已驱逐（复量 {} -> 预算 {}）",
-                     self.agent_name, report.tokens_after, budget)
-            report = enforce_budget_inplace(
-                messages,
-                budget=budget,
-                protect_last_n_tool_results=config.compact.protect_last_n_results,
-            )
-        if not report.ok and await self._rebuild_system_prompt(session_state, evict_memory=True, evict_summary=True):
-            log.info("【{}】上下文预算：会话摘要区已驱逐（复量 {} -> 预算 {}）",
-                     self.agent_name, report.tokens_after, budget)
-            report = enforce_budget_inplace(
-                messages,
-                budget=budget,
-                protect_last_n_tool_results=config.compact.protect_last_n_results,
-            )
-        if report.evicted_tools or report.evicted_histories or report.tokens_before != report.tokens_after:
-            log.info(
-                "【{}】上下文预算执行: {} -> {} tokens（budget={}）| 驱逐 tool={} history={}",
-                self.agent_name, report.tokens_before, report.tokens_after,
-                budget, report.evicted_tools, report.evicted_histories,
-            )
-
-    async def _rebuild_system_prompt(
-        self, session_state: RuntimeSessionState, *, evict_memory: bool = False, evict_summary: bool = False,
-    ) -> bool:
-        """驱逐 system 内可驱逐分区后重建 system_prompt（expand 变量占位替换）。
-
-        profile.expand_prompt 不含对应变量的 agent 返回 False（不可驱逐，
-        预算执行止步于消息级降级）。重建复用 _prepare_prompt_params 的最新值
-        （如看板渲染），可驱逐变量固定替换为占位文案。
-        """
-        expand = getattr(self.profile, "expand_prompt", "") or ""
-        if evict_memory and "{{memory_prompt}}" not in expand:
-            return False
-        if evict_summary and "{{session_summary}}" not in expand:
-            return False
-        params = await self._prepare_prompt_params(session_state)
-        if evict_memory:
-            params["memory_prompt"] = MEMORY_EVICTED_PLACEHOLDER
-        if evict_summary:
-            params["session_summary"] = SUMMARY_EVICTED_PLACEHOLDER
-        self._system_prompt = self.profile.build_default_system_prompt(**params)
-        # system 承载于 context.system_prompt（不进 chat_messages）
-        self._context.system_prompt = self._system_prompt
-        return True
-
+    def _refresh_step_params(self, request_id: str) -> None:
+        """每 step 刷新易变分区（看板随工具调用变化），静态分区不重算。"""
+        if self._prompt_params is None:
+            return
+        if "board_desc" in self._prompt_params:
+            self._prompt_params["board_desc"] = self._context.get_board(request_id)
 
     # ------------------------------------------------------------------ ReAct lifecycle
 
@@ -361,7 +292,7 @@ class BaseReActAgent(Agent):
             session_state: 运行时会话状态，携带 stop_signal/publish_context 等运行时控制
                           （对话上下文已由 __init__ 绑定到 self._context）。
         """
-        # 1. 准备 system_prompt/tools/init_chat_message
+        # 1. 准备 tools / prompt 备料 / init_chat_message（system 由预算器每 step 渲染）
         await self._prepare_agent(session_state.request)
         log.debug("+++++++++++++++++++【{}】 STATR +++++++++++++++++++ ",self.agent_name)
         log.debug("接收到消息:{}", agent_message.show())
@@ -388,23 +319,24 @@ class BaseReActAgent(Agent):
         )
         while step < self.max_steps:
             raise_if_stop_signal(session_state)
-            # 统一预算分配器：每次调 LLM 前总量管控（超预算按优先级驱逐，排期③）
+            # 每次调 LLM 前统一预算：tools 瘦身 → system 分区 → 消息视图 → 压缩兜底
             # 压缩走 context 多态：leader=SessionContext（Path A 带摘要水位），
             # 子智能体=SubContext（Path B LLM 摘要，只压自己不碰会话真相源）
-            # 历史消息标准化
-            await self._context.normalize_messages()
-            get_app().compaction.token_budget(self._prompt_params,self._system_prompt,self.tools,self._context.chat_messages)
-            # await self._context.micro_compact()
-            # async for data in self._context.compact():
-            #     await get_app().message_bus.publish_runtime_event(
-            #         session_state.publish_context,
-            #         event_type=AgentEventType.COMPACT_EVENT, data=data,
-            #         state=AgentState.RUNNING)
+            self._refresh_step_params(request_id)
+            payload = await get_app().compaction.token_budget(
+                profile=self.profile,
+                prompt_params=self._prompt_params,
+                tools=self.tools,
+                context=self._context,
+                context_max_tokens=int(self.agent_config.context_max_tokens or 8000),
+            )
+            self.tools = payload.tools
+            self._context.system_prompt = payload.system_prompt
             step += 1
             log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
             log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name,
-                    "\n".join([str(msg) for msg in self._context.chat_messages]))
-            response = await self.think(await self._context.assemble(),is_stream,session_state)
+                    "\n".join([str(msg) for msg in payload.messages if msg.get("role") != "system"]))
+            response = await self.think(payload.messages,is_stream,session_state)
             if not response:  # TODO reasoning_content 的解析
                 self._context.chat_messages.append({"role": "assistant", "content": self.profile.retry_goal})
                 continue

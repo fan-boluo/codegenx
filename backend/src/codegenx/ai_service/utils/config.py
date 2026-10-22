@@ -376,6 +376,16 @@ class CompactConfig(Base):
         default=0.85,
         validation_alias=AliasChoices("contextBudgetRatio", "context_budget_ratio"),
     )
+    # tools schema 占总预算比例（函数调用契约，超限只截描述不删工具）
+    tool_budget_ratio: float = Field(
+        default=0.15,
+        validation_alias=AliasChoices("toolBudgetRatio", "tool_budget_ratio"),
+    )
+    # 单个工具描述的最大字符数（第一级瘦身）
+    tool_description_max_chars: int = Field(
+        default=240,
+        validation_alias=AliasChoices("toolDescriptionMaxChars", "tool_description_max_chars"),
+    )
 
 class ModelsConfig(Base):
     name: str = Field(default="qwen3.8-flash")

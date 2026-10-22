@@ -7,13 +7,18 @@
   驱逐不是删除，而是降级为占位符——工具结果可重新调用回捞、历史原文在
   chat_messages 快照与会话记录中可回捞。
 
+原语（CompactionService.token_budget 统一编排，驱逐级联）：
+  1. enforce_budget_inplace —— 消息占位降级（就地改真相源：工具结果 → 中段历史）
+  2. compress_tool_catalog + schema_tokens —— tools schema 瘦身（只截描述，不删工具；
+     以 tool_schema 分区排在 SECTION_EVICTION_ORDER 最后，不到必要不降级）
+  3. 消息摘要 / 分区驱逐 / 硬截断由 token_budget 编排兜底
+
 边界（单一职责）：
-  本模块只做消息级「就地降级」：ReAct 循环消息列表（context.chat_messages）内
-  tool/历史消息的占位符替换（列表长度不变，tool_call_id 配对完整保留）。
-  system 内部可驱逐分区（记忆/摘要）由 BaseReActAgent._rebuild_system_prompt
-  经 expand 变量占位替换重建承载，编排在 BaseReActAgent._enforce_context_budget。
+  本模块只提供纯函数原语，不持有会话状态；system 分区驱逐基于
+  PromptConfig.resolve_fields() 的结果，不解析任意 prompt 文本含义。
 """
 
+import json
 from dataclasses import dataclass
 
 from codegenx.ai_service.compact.thresholds import estimate_tokens
@@ -40,13 +45,26 @@ class BudgetReport:
         return self.tokens_after <= self.budget
 
 
+@dataclass
+class SectionReport:
+    """system 分区预算结果（token_budget 日志逐项输出）。"""
+
+    name: str
+    before: int
+    after: int
+    truncated: bool = False
+    evicted: bool = False
+
+
 def enforce_budget_inplace(
     messages: list[dict],
     *,
     budget: int,
     protect_last_n_tool_results: int = 5,
 ) -> BudgetReport:
-    """就地执行预算：超限按驱逐优先级降级消息内容，原列表原地修改并返回报告。
+    """
+    历史消息驱逐
+    就地执行预算：超限按驱逐优先级降级消息内容，原列表原地修改并返回报告。
 
     分区语义（工作列表形态，system 不在列表内、由 context.system_prompt 承载）：
       [*history]        —— 最后一条 user 之前的 user/assistant 文本消息（中段历史，
@@ -100,25 +118,108 @@ def enforce_budget_inplace(
     return report
 
 
-def _apply_history_budget(history: list[dict]) -> list[dict]:
-    """会话历史 token 预算：超限从最旧截断（单次遍历，保留预算内最新消息）。
+# ── system 分区驱逐 ───────────────────────────────────────────────────────────
 
-    历史仅 user/assistant 文本消息（无 tool 消息），microcompact 对其无效，
-    直接做最旧截断；预算阈值经 config.compact.leader_history_budget_tokens 配置。
+# 分区驱逐优先级：排在越前面越先被驱逐（skill/memory 可用工具重新捞回，最先走；
+# resource/expand/taskbord 等任务地基类信息后走；tool_schema 最后——工具描述是
+# function calling 契约，agent 靠调用工具完成任务，不到必要不修改）
+SECTION_EVICTION_ORDER = (
+    "skill_prompt",
+    "memory_prompt",
+    "resource_prompt",
+    "expand_prompt",
+    "taskbord_prompt",
+    "examples",
+    "tool_schema"
+)
+
+# 分区驱逐占位文案：清空分区时在原位留一句短提示，让模型感知该信息被临时移出、
+# 需要时可尝试经相应工具重新加载（占位要短，驱逐本身也要省 tokens）
+SECTION_LABELS = {
+    "skill_prompt": "技能说明",
+    "memory_prompt": "长期记忆",
+    "resource_prompt": "资源说明",
+    "expand_prompt": "扩展上下文",
+    "taskbord_prompt": "任务看板",
+    "examples": "示例",
+}
+
+
+def section_evicted_placeholder(name: str) -> str:
+    """分区驱逐后在原位留下的提示文案（含分区名，模型可感知）。"""
+    label = SECTION_LABELS.get(name, name)
+    return f"（{label}已因上下文预算临时移出，需要时可通过相应工具重新加载）"
+
+
+# ── tools schema 预算 ────────────────────────────────────────────────────────
+
+
+def schema_tokens(tools: list[dict]) -> int:
+    """tools schema 的 token 估算（function calling 参数不计入 messages）。"""
+    if not tools:
+        return 0
+    return estimate_tokens([{"content": json.dumps(tools, ensure_ascii=False)}])
+
+
+def _strip_param_descriptions(schema):
+    """递归移除 JSON Schema 里的 description（保留 name/type/enum/required）。"""
+    if isinstance(schema, dict):
+        return {
+            k: _strip_param_descriptions(v)
+            for k, v in schema.items()
+            if k != "description"
+        }
+    if isinstance(schema, list):
+        return [_strip_param_descriptions(item) for item in schema]
+    return schema
+
+
+def _truncate_descriptions(tools: list[dict], limit: int, *, strip_params: bool) -> list[dict]:
+    """复制并截断工具描述；工具本身与参数结构保持完整。"""
+    result: list[dict] = []
+    for tool in tools:
+        fn = dict(tool.get("function") or {})
+        desc = str(fn.get("description") or "")
+        if limit > 0 and len(desc) > limit:
+            fn["description"] = desc[:limit].rstrip() + "…"
+        if strip_params and isinstance(fn.get("parameters"), dict):
+            fn["parameters"] = _strip_param_descriptions(fn["parameters"])
+        result.append({**tool, "function": fn})
+    return result
+
+
+def compress_tool_catalog(
+    tools: list[dict],
+    *,
+    budget: int,
+    description_max_chars: int = 240,
+) -> tuple[list[dict], int, int]:
+    """tools schema 瘦身：先截描述，再剥离参数描述；工具一个不删。
+
+    返回（瘦身后目录, before tokens, after tokens）。schema 是 function
+    calling 契约，删工具会让模型能力静默退化，故只做描述层降级。
     """
-    from codegenx.ai_service.utils.config import config as cfg
-    budget = cfg.compact.leader_history_budget_tokens
-    if estimate_tokens(history) <= budget:
-        return history
-    kept: list[dict] = []
-    total = 0
-    for m in reversed(history):
-        cost = estimate_tokens([m])
-        if total + cost > budget and kept:
-            break
-        kept.append(m)
-        total += cost
-    kept.reverse()
-    log.info("leader 历史超预算截断：{} 条 -> {} 条（budget={} tokens）",
-             len(history), len(kept), budget)
-    return kept
+    if not tools:
+        return [], 0, 0
+    before = schema_tokens(tools)
+    if budget <= 0 or before <= budget:
+        return tools, before, before
+
+    # 第 1 级：截断工具描述
+    compressed = _truncate_descriptions(tools, description_max_chars, strip_params=False)
+    after = schema_tokens(compressed)
+    if after <= budget:
+        return compressed, before, after
+
+    # 第 2 级：剥离参数级 description
+    compressed = _truncate_descriptions(compressed, description_max_chars, strip_params=True)
+    after = schema_tokens(compressed)
+    if after <= budget:
+        return compressed, before, after
+
+    # 第 3 级：描述压到首句长度（仍不删工具）
+    compressed = _truncate_descriptions(compressed, 80, strip_params=True)
+    after = schema_tokens(compressed)
+    log.warning("tools schema 压缩后仍超预算：{} -> {} tokens（budget={}），保留全部工具",
+                before, after, budget)
+    return compressed, before, after

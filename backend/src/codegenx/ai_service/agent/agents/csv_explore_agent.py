@@ -73,7 +73,6 @@ class CsvExploreAgent(BaseReActAgent):
         """ 先收集 csv 元信息，再 build prompt（顺序与 data_explore 一致） """
 
         await super()._prepare_agent(request)
-        log.info(f"agent {self.agent_name} system_prompt: {self._system_prompt}")
 
 
     async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:

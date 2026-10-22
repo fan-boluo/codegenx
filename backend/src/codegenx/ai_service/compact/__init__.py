@@ -51,6 +51,7 @@ from codegenx.ai_service.compact.micro import (
 from codegenx.ai_service.compact.compact import (
     CompactResult,
     CompactionService,
+    ContextBudgetResult,
     MAX_TOKENS_AFTER,
     MIN_TEXT_MESSAGES,
 )
@@ -82,6 +83,7 @@ __all__ = [
     # full compaction
     "CompactResult",
     "CompactionService",
+    "ContextBudgetResult",
     "MAX_TOKENS_AFTER",
     "MIN_TEXT_MESSAGES",
     # budget（统一预算分配器，排期③）
