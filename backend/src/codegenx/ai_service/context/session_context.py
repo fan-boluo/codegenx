@@ -116,24 +116,29 @@ class SessionContext(CommonContext):
     def init_chat_messages(self,user_msg:str) -> None:
         """turn 初始组装聊天上下文。
 
-        chat_messages 来自 turn 结束后的快照，request 一进入即装载；
-        去除末条（本轮用户请求原文，已作为当前输入，避免重复）；
-        只保留 user/assistant 文本消息（role/content），供 LLM 对话使用；
-        同时恢复 SummaryState 水位 + 必要时注入 SUMMARY.md 合成对（会话恢复闭环）。
+        chat_messages 来自 turn 结束后的快照（或上轮内存列表），request 一进入即装载。
+
+        顺序约束（水位语义要求）：
+        1. 去末条：本轮用户请求已作为当前输入，run() 会以 task_text 补回；
+        2. 先消费水位再过滤 tool——水位是全量空间（含 tool）的 index：
+           有 SUMMARY.md → 按水位截掉已覆盖前缀、prepend 合成对（与 compact Path A
+           同语义：摘要替代原文）；无 SUMMARY.md → 不截、水位归 0（宁全量重摘不丢内容）；
+        3. 最后过滤 tool：只保留 user/assistant 文本消息（role/content），
+           跨轮蒸馏；tool 原文可经工具重调回捞，结论已在 assistant 文本与摘要中。
         """
-        # 1. 基础过滤：去末条 + 保留 user/assistant 文本
+        # 1. 去末条：本轮用户请求已作为当前输入
+        self.chat_messages = self.chat_messages[:-1]
+
+        # 2. 恢复水位 + 摘要替代已覆盖前缀（全量空间操作，必须在过滤前）
+        self._restore_summary_state()
+        self._inject_summary_from_file()
+
+        # 3. 过滤 tool：水位已消费完毕，进入过滤空间
         self.chat_messages = [
             {"role": m["role"], "content": m["content"]}
-            for m in self.chat_messages[:-1]
+            for m in self.chat_messages
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
-
-        # 2. 恢复 SummaryState 水位（此时 chat_messages 已从快照装载完毕）
-        self._restore_summary_state()
-
-        # 3. 若 chat_messages 首部没有摘要合成对 → 尝试从 SUMMARY.md 注入
-        if not self._has_summary_injection_pair():
-            self._inject_summary_from_file()
 
         log.debug(
             "{} init_chat_messages: {} 条，水位 {}",
@@ -142,7 +147,9 @@ class SessionContext(CommonContext):
 
     def _restore_summary_state(self) -> None:
         """从 summary_state.json 恢复 SummaryState 水位（compact 后会重置落盘）。
-        必须在 chat_messages 从快照装载后调用（水位防御依赖列表长度）。
+
+        水位是快照全量空间（含 tool）的 index，仅应在过滤 tool 前消费（见
+        init_chat_messages 顺序约束）；水位超列表由截断处 min() 兜底。
         """
         from codegenx.ai_service.system_app import get_app
         state_data = get_app().summary.load_state(
@@ -153,25 +160,13 @@ class SessionContext(CommonContext):
         self.summary_state.extract_msg_idx = int(state_data.get("extract_msg_idx", 0))
         self.summary_state.initialized = bool(state_data.get("initialized", False))
         self.summary_state.tokens_at_last_extract = int(state_data.get("tokens_at_last_extract", 0))
-        # 水位防御：超出当前列表长度时回退 0（快照重建过，与落盘状态不一致）
-        if self.summary_state.extract_msg_idx > len(self.chat_messages):
-            self.summary_state.extract_msg_idx = 0
-            log.debug("{} SummaryState 水位超列表长度，回退 0", self.session_id)
-
-    def _has_summary_injection_pair(self) -> bool:
-        """chat_messages 首部是否已有 compact 摘要合成对（user 含 previous_session_summary 标记）。"""
-        if not self.chat_messages:
-            return False
-        first = self.chat_messages[0]
-        return (
-            first.get("role") == "user"
-            and "<previous_session_summary>" in str(first.get("content", ""))
-        )
 
     def _inject_summary_from_file(self) -> None:
-        """读 SUMMARY.md → 按水位截掉已覆盖前缀 → prepend 合成对 → 重置水位落盘。
+        """SUMMARY.md 覆盖已摘要前缀：按水位截掉原文 → prepend 合成对 → 重置落盘。
 
-        等价于 compact Path A 做的事，但走的是 SUMMARY.md 而不是内存摘要。
+        与 compact Path A 同语义（摘要替代原文），只是发生在 turn 开始的恢复路径。
+        防御：无摘要时不截——水位>0 而摘要缺失属不一致状态（提取失败/被清理），
+        保留原文全量重摘，宁可冗余不可丢内容；水位归 0 后全量空间继续有效。
         """
         from codegenx.ai_service.system_app import get_app
         app = get_app()
@@ -179,12 +174,16 @@ class SessionContext(CommonContext):
             user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,
         )
         if not summary:
+            self.summary_state.extract_msg_idx = 0
+            self.summary_state.tokens_at_last_extract = estimate_tokens(self.chat_messages)
+            log.debug("{} 无 SUMMARY.md，不截前缀，水位归 0", self.session_id)
             return
 
-        # 关键：chat_messages 前 extract_msg_idx 条的内容已被 SUMMARY.md 覆盖 → 截掉
+        # 关键：chat_messages 前 extract_msg_idx 条的内容已被 SUMMARY.md 覆盖 → 截掉；
+        # 水位覆盖至末条（wm >= len）时截空，仅留合成对
         watermark = self.summary_state.extract_msg_idx
-        if watermark > 0 and watermark < len(self.chat_messages):
-            self.chat_messages = self.chat_messages[watermark:]
+        if watermark > 0:
+            self.chat_messages = self.chat_messages[min(watermark, len(self.chat_messages)):]
             log.debug(
                 "{} 摘要注入：按水位 {} 截掉已覆盖前缀，剩余 {} 条",
                 self.session_id, watermark, len(self.chat_messages),
@@ -193,8 +192,10 @@ class SessionContext(CommonContext):
         user_msg, assistant_msg = app.summary.build_summary_injection_pair(summary)
         self.chat_messages = [user_msg, assistant_msg] + self.chat_messages
 
-        # 合成对自身算"已摘要的 2 条" → 水位重置为 2，落盘，清摘要
+        # 合成对自身算"已摘要的 2 条" → 水位重置为 2；列表已大幅缩短，
+        # 提取基线按新列表重估（否则 growth 长时间为负，提取被延迟）
         self.summary_state.extract_msg_idx = 2
+        self.summary_state.tokens_at_last_extract = estimate_tokens(self.chat_messages)
         app.summary.save_state(
             self.summary_state,
             user_id=self.user_id, app_id=self.app_id, session_id=self.session_id,

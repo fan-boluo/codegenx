@@ -663,4 +663,6 @@ class ExecuteSqlTool(BaseTool):
         row_count = len(rows)
 
         output = f"查询结果（共 {row_count} 行）:\n" + _format_rows(rows)
-        return ToolResult(success=True, data=output, render=f"SQL 执行成功（{row_count} 行）")
+        # extras.rows_preview 供分析链路 hook 提取展示（前 10 行原始 dict，不进 LLM 上下文）
+        extras = {"rows_preview": rows[:10]} if rows else {}
+        return ToolResult(success=True, data=output, render=f"SQL 执行成功（{row_count} 行）", extras=extras)

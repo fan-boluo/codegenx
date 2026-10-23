@@ -298,6 +298,26 @@
                       <span class="tool-name">{{ item.toolResult.name }}</span>
                       <span v-if="item.toolResult.detail" class="tool-detail">{{ item.toolResult.detail }}</span>
                     </div>
+                    <!-- SQL 卡片：穿插在 AI 流式回复中，点击跳到分析链路对应步骤 -->
+                    <div
+                      v-else-if="item.type === 'sql-card' && item.sqlCard"
+                      class="sql-card-message"
+                      :class="{ 'sql-failed': !item.sqlCard.success }"
+                      @click="jumpToTraceStep(item.sqlCard.stepId)"
+                    >
+                      <span class="sql-card-icon">🗄️</span>
+                      <div class="sql-card-body">
+                        <div class="sql-card-title">
+                          SQL 查询
+                          <span v-if="item.sqlCard.success" class="sql-card-meta">
+                            {{ item.sqlCard.rowCount ?? 0 }} 行 · {{ item.sqlCard.durationMs ?? 0 }}ms
+                          </span>
+                          <span v-else class="sql-card-meta sql-card-meta-fail">执行失败</span>
+                        </div>
+                        <div class="sql-card-snippet">{{ item.sqlCard.snippet }}</div>
+                      </div>
+                      <span class="sql-card-jump">→</span>
+                    </div>
                   </template>
                 </template>
                 <template v-else>
@@ -357,11 +377,14 @@
           <p class="trace-empty-hint">发送分析请求后，AI 执行的 SQL、可视化和报告会实时展示在这里</p>
         </div>
         <div v-else class="trace-timeline">
-          <AnalysisStepCard
+          <div
             v-for="step in activeAnalysisTrace"
             :key="step.id"
-            :step="step"
-          />
+            :id="'trace-step-' + step.id"
+            class="trace-step-wrapper"
+          >
+            <AnalysisStepCard :step="step" />
+          </div>
         </div>
       </div>
 
@@ -511,10 +534,12 @@ interface AiStep {
 }
 
 interface ItemEntry {
-  type: 'text' | 'step' | 'tool'
+  type: 'text' | 'step' | 'tool' | 'sql-card'
   text?: string
   step?: AiStep
   toolResult?: { name: string; detail: string }
+  // sql-card：与分析链路 step.id 关联，点击可跳转定位
+  sqlCard?: { stepId: string; snippet: string; rowCount?: number; durationMs?: number; success: boolean }
 }
 
 interface TaskInfo {
@@ -565,6 +590,7 @@ interface AnalysisStep {
   sql?: string
   rowCount?: number
   durationMs?: number
+  rowsPreview?: Record<string, any>[]  // SQL 执行结果前 N 行（后端 extras.rows_preview）
   // chart 专属（echarts option）
   chartOption?: any
   chartType?: string
@@ -1577,6 +1603,37 @@ const updateLastRunningTraceStep = (type: AnalysisStep['type'], patch: Partial<A
   return null
 }
 
+// ---- SQL 卡片（穿插在 AI 消息 items 里）与分析链路（右栏 trace）联动 ----
+const SQL_SNIPPET_LEN = 80
+const appendSqlCardItem = (step: AnalysisStep) => {
+  // 追加到当前生成中的 AI 消息 items 末尾，按时间穿插在 text/step/tool 之间
+  const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
+  if (!targetMessage) return
+  if (!targetMessage.items) targetMessage.items = []
+  const sql = step.sql || ''
+  const snippet = sql.length > SQL_SNIPPET_LEN ? sql.slice(0, SQL_SNIPPET_LEN) + '…' : sql
+  targetMessage.items.push({
+    type: 'sql-card',
+    sqlCard: {
+      stepId: step.id,
+      snippet,
+      rowCount: step.rowCount,
+      durationMs: step.durationMs,
+      success: step.status === 'completed',
+    },
+  })
+  scrollToBottom()
+}
+
+// 点击 SQL 卡片 → 切到分析链路 Tab 并滚动定位到对应步骤卡片
+const jumpToTraceStep = async (stepId?: string) => {
+  if (!stepId) return
+  chatTab.value = 'trace'
+  await nextTick()
+  const el = document.getElementById(`trace-step-${stepId}`)
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 // 切右栏 Tab 时自动调宽（只在用户没手动拖过时生效）
 watch(chatTab, (tab) => {
   if (tab === 'trace' && chatWidth.value <= DEFAULT_CHAT_WIDTH + 5) {
@@ -1637,13 +1694,16 @@ const handleStreamEvent = (event: { event_type: string; data: any; state?: strin
     return
   }
   if (eventType === 'SQL_End') {
-    updateLastRunningTraceStep('sql', {
+    const step = updateLastRunningTraceStep('sql', {
       sql: eventData?.sql,
       rowCount: eventData?.row_count ?? eventData?.rowCount,
       durationMs: eventData?.duration_ms ?? eventData?.durationMs,
+      rowsPreview: eventData?.rows_preview || [],
       status: (eventData?.state === 'success') ? 'completed' : 'failed',
       error: eventData?.error || undefined,
     })
+    // 同步往当前 AI 消息的 items 推一张 SQL 卡片（点击可跳到分析链路对应步骤）
+    if (step) appendSqlCardItem(step)
     return
   }
   if (eventType === 'Chart_Start') {
@@ -2942,6 +3002,47 @@ onBeforeUnmount(() => {
 }
 .trace-container { padding: 8px; overflow-y: auto; }
 .trace-timeline { display: flex; flex-direction: column; gap: 0; }
+.trace-step-wrapper { scroll-margin-top: 8px; }
+
+/* ---- SQL 卡片（穿插在 AI 消息 items 里） ---- */
+.sql-card-message {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  background: #f6f9ff;
+  border: 1px solid #d6e4ff;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.sql-card-message:hover { background: #eaf1ff; border-color: #91caff; box-shadow: 0 2px 6px rgba(22, 119, 255, 0.1); }
+.sql-card-message.sql-failed { background: #fff1f0; border-color: #ffa39e; }
+.sql-card-message.sql-failed:hover { background: #ffe7e5; border-color: #ff7875; }
+
+.sql-card-icon { font-size: 18px; flex-shrink: 0; }
+.sql-card-body { flex: 1; min-width: 0; }
+.sql-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #262626;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.sql-card-meta { font-size: 11px; color: #1677ff; font-weight: 400; }
+.sql-card-meta-fail { color: #ff4d4f; }
+.sql-card-snippet {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  color: #595959;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sql-card-jump { color: #1677ff; font-size: 14px; flex-shrink: 0; }
 
 .trace-empty {
   display: flex;

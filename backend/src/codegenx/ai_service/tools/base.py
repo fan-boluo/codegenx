@@ -21,6 +21,7 @@ class ToolResult(BaseModel):
     data: str=""  # 返回给llm的数据
     message:str = ""  # 失败原因
     render:str= ""  # 展示用
+    extras: dict[str, Any] = {}  # 追踪/观测用附加数据（不进 LLM 上下文，由 hook 消费）
 
 
 class BaseTool(ABC):

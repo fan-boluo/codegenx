@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.tools.base import ToolResult
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, TurnStoppedError
-from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on
+from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on, hook_manager
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.utils.config import config
 from shared import log
@@ -226,9 +226,10 @@ class ToolExecutor(BaseComponent):
         """
         统一执行工具的逻辑。
 
-        安全检查已前置为 BEFORE_TOOL_CALL 监听器（safe_path_guard /
-        file_tool_param_guard 等），由 runtime 在调用本方法之前分发；
-        blocked 的调用根本不会走到这里。
+        runtime 已废弃，BEFORE_TOOL_CALL / AFTER_TOOL_CALL 钩子由本方法直接分发：
+        - BEFORE：serial + 可短路（safe_path_guard/file_tool_param_guard/sql_trace_start 等）；
+          blocked 时直接返回 ToolResult(success=False)，不再查找/执行工具
+        - AFTER：parallel + 异常隔离（monitor/sql_trace_end 等），仅观测上报，不影响 result
         """
         tool_name = tool_call.get("name")
         tool_input = dict(tool_call.get("arguments", {}) or {})
@@ -267,6 +268,16 @@ class ToolExecutor(BaseComponent):
                 tool_input.setdefault("db_name", db_name)
             tool_input.setdefault("app_id", app_id)
 
+        # BEFORE_TOOL_CALL 钩子（参数注入后触发，让守卫看到完整参数；不修改调用方原 tool_call）
+        # turn 取自 session_state.activate_turn（monitor/sql_trace 等监听器依赖 ctx.turn）
+        turn = getattr(session_state, "activate_turn", None) if session_state is not None else None
+        before_ctx = HookContext(event=HookEvent.BEFORE_TOOL_CALL, session=session_state, turn=turn)
+        before_ctx.data["tool_call"] = {**tool_call, "arguments": tool_input}
+        await hook_manager.dispatch(HookEvent.BEFORE_TOOL_CALL, before_ctx)
+        if before_ctx.action == "blocked":
+            log.info("工具 {} 被 BEFORE_TOOL_CALL 钩子阻断: {}", tool_name, before_ctx.message)
+            return ToolResult(success=False, message=before_ctx.message or "Tool blocked by hook")
+
         # 1. 查找工具
         tool = next((t for t in get_app().tool_registry.tools if t.name == tool_name), None)
         if not tool:
@@ -286,6 +297,12 @@ class ToolExecutor(BaseComponent):
             result = await func(**call_kwargs)
         else:
             result = func(**call_kwargs)
+
+        # AFTER_TOOL_CALL 钩子（parallel 容错分发，仅观测上报，不影响 result）
+        after_ctx = HookContext(event=HookEvent.AFTER_TOOL_CALL, session=session_state, turn=turn)
+        after_ctx.data["tool_call"] = {**tool_call, "arguments": tool_input}
+        after_ctx.data["result"] = result
+        await hook_manager.dispatch(HookEvent.AFTER_TOOL_CALL, after_ctx)
 
         return result
 

@@ -250,6 +250,8 @@ def initialize_components(app: SystemApp) -> None:
     # hook 注册表冻结：@on 监听器随组件模块的 import 链（模块加载即注册）收集完毕，
     # 此处统一校验/拓扑排序/冻结（docs/Hook设计.md §6）。
     # 注意：新增监听器模块必须位于组件依赖图或应用 import 链上，否则收集不到。
+    # 显式加载分析链路追踪监听器（不在组件依赖图内，需主动 import 触发 @on 注册）
+    from codegenx.ai_service.hook import analysis_trace  # noqa: F401
     from codegenx.ai_service.hook import hook_manager
 
     hook_manager.load_and_freeze()
