@@ -475,7 +475,7 @@ class MemoryScheduler(BaseComponent):
                 str(m.get("message_uid")) for _, m in consumed if m.get("message_uid")
             ]
             written_ids = await write_memories(
-                user_id, app_id, session_id, candidates, self._invoke_llm,
+                user_id, app_id, session_id, candidates,
                 source_msg_ids=source_uids or None, task_id=int(task["id"]),
                 source_agent=agent_name or None,
             )

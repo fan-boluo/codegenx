@@ -71,7 +71,6 @@ async def write_memories(
 
     单条失败跳过，不阻断整批。
     Args:
-        llm_invoke: 兼容 scheduler 签名保留，v2 写入链路不使用。
         source_msg_ids: 来源消息 message_uid 列表（P2-7 溯源，合规级联删除依赖）。
         task_id: 产生本批的 memory_task.id（P2-7 ③ 提炼批次反查）。
         source_agent: 产生记忆的智能体名（偏差①：写门控配套的来源元数据落库）。

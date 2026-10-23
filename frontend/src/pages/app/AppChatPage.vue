@@ -217,9 +217,21 @@
 
     <!-- Right Chat Panel -->
     <div class="right-chat-panel" :style="{ width: chatWidth + 'px' }">
-      <!-- Chat Header -->
+      <!-- Chat Header：标题即 Tab 切换（AI助手=对话 / 分析链路） -->
       <div class="chat-header">
-        <span class="chat-header-title">AI 对话</span>
+        <div class="chat-header-tabs">
+          <span
+            class="chat-header-tab"
+            :class="{ active: chatTab === 'chat' }"
+            @click="chatTab = 'chat'"
+          >AI助手</span>
+          <span class="chat-header-tab-divider">|</span>
+          <span
+            class="chat-header-tab"
+            :class="{ active: chatTab === 'trace' }"
+            @click="chatTab = 'trace'"
+          >分析链路</span>
+        </div>
         <div class="chat-header-actions">
           <a-tooltip title="新建会话">
             <a-button type="text" size="small" @click="createNewSession">
@@ -249,91 +261,111 @@
           </div>
         </a-spin>
       </div>
-      <div class="messages-container" ref="messagesContainer">
-        <div v-for="(messageItem, index) in messages" :key="index" class="message-item">
-          <div v-if="messageItem.type === 'user'" class="user-message">
-            <div class="message-bubble user-bubble">
-              {{ messageItem.content }}
+
+      <!-- 对话内容区 -->
+      <div v-show="chatTab === 'chat'" class="chat-content">
+        <div class="messages-container" ref="messagesContainer">
+          <div v-for="(messageItem, index) in messages" :key="index" class="message-item">
+            <div v-if="messageItem.type === 'user'" class="user-message">
+              <div class="message-bubble user-bubble">
+                {{ messageItem.content }}
+              </div>
+              <div class="message-avatar">
+                <a-avatar :size="28">
+                  {{ loginUserStore.loginUser.userName?.charAt(0) || 'U' }}
+                </a-avatar>
+              </div>
             </div>
-            <div class="message-avatar">
-              <a-avatar :size="28">
-                {{ loginUserStore.loginUser.userName?.charAt(0) || 'U' }}
-              </a-avatar>
-            </div>
-          </div>
-          <div v-else class="ai-message">
-            <div class="message-avatar">
-              <a-avatar :src="aiAvatar" :size="28" />
-            </div>
-            <div class="ai-content">
-              <template v-if="messageItem.items?.length">
-                <template v-for="(item, ii) in messageItem.items" :key="ii">
-                  <MarkdownRenderer v-if="item.type === 'text'" :content="item.text || ''" />
-                  <div v-else-if="item.type === 'step' && item.step" class="ai-step-inline" :class="'step-' + item.step.state">
-                    <span class="step-icon">
-                      <LoadingOutlined v-if="item.step.state === 'running'" spin />
-                      <CheckCircleOutlined v-else-if="item.step.state === 'completed'" />
-                      <CloseCircleOutlined v-else />
-                    </span>
-                    <span class="step-desc">{{ item.step.description }}</span>
-                    <span v-if="item.step.detail" class="step-detail">{{ item.step.detail }}</span>
-                  </div>
-                  <div v-else-if="item.type === 'tool' && item.toolResult" class="tool-result-inline">
-                    <span class="tool-icon"><CodeOutlined /></span>
-                    <span class="tool-name">{{ item.toolResult.name }}</span>
-                    <span v-if="item.toolResult.detail" class="tool-detail">{{ item.toolResult.detail }}</span>
+            <div v-else class="ai-message">
+              <div class="message-avatar">
+                <a-avatar :src="aiAvatar" :size="28" />
+              </div>
+              <div class="ai-content">
+                <template v-if="messageItem.items?.length">
+                  <template v-for="(item, ii) in messageItem.items" :key="ii">
+                    <MarkdownRenderer v-if="item.type === 'text'" :content="item.text || ''" />
+                    <div v-else-if="item.type === 'step' && item.step" class="ai-step-inline" :class="'step-' + item.step.state">
+                      <span class="step-icon">
+                        <LoadingOutlined v-if="item.step.state === 'running'" spin />
+                        <CheckCircleOutlined v-else-if="item.step.state === 'completed'" />
+                        <CloseCircleOutlined v-else />
+                      </span>
+                      <span class="step-desc">{{ item.step.description }}</span>
+                      <span v-if="item.step.detail" class="step-detail">{{ item.step.detail }}</span>
+                    </div>
+                    <div v-else-if="item.type === 'tool' && item.toolResult" class="tool-result-inline">
+                      <span class="tool-icon"><CodeOutlined /></span>
+                      <span class="tool-name">{{ item.toolResult.name }}</span>
+                      <span v-if="item.toolResult.detail" class="tool-detail">{{ item.toolResult.detail }}</span>
+                    </div>
+                  </template>
+                </template>
+                <template v-else>
+                  <MarkdownRenderer v-if="messageItem.content" :content="messageItem.content" />
+                  <div v-if="messageItem.steps?.length" class="ai-steps">
+                    <div v-for="(step, si) in messageItem.steps" :key="si" class="ai-step" :class="'step-' + step.state">
+                      <span class="step-icon">
+                        <LoadingOutlined v-if="step.state === 'running'" spin />
+                        <CheckCircleOutlined v-else-if="step.state === 'completed'" />
+                        <CloseCircleOutlined v-else />
+                      </span>
+                      <span class="step-desc">{{ step.description }}</span>
+                      <span v-if="step.detail" class="step-detail">{{ step.detail }}</span>
+                    </div>
                   </div>
                 </template>
-              </template>
-              <template v-else>
-                <MarkdownRenderer v-if="messageItem.content" :content="messageItem.content" />
-                <div v-if="messageItem.steps?.length" class="ai-steps">
-                  <div v-for="(step, si) in messageItem.steps" :key="si" class="ai-step" :class="'step-' + step.state">
-                    <span class="step-icon">
-                      <LoadingOutlined v-if="step.state === 'running'" spin />
-                      <CheckCircleOutlined v-else-if="step.state === 'completed'" />
-                      <CloseCircleOutlined v-else />
-                    </span>
-                    <span class="step-desc">{{ step.description }}</span>
-                    <span v-if="step.detail" class="step-detail">{{ step.detail }}</span>
-                  </div>
+                <div v-if="messageItem.loading" class="loading-indicator">
+                  <a-spin size="small" />
+                  <span>AI 正在思考...</span>
                 </div>
-              </template>
-              <div v-if="messageItem.loading" class="loading-indicator">
-                <a-spin size="small" />
-                <span>AI 正在思考...</span>
               </div>
             </div>
           </div>
         </div>
+
+        <a-alert
+          v-if="selectedElementInfo"
+          class="selected-element-alert"
+          type="info"
+          closable
+          @close="clearSelectedElement"
+        >
+          <template #message>
+            <div class="selected-element-info">
+              <div class="element-header">
+                <span class="element-tag">{{ selectedElementInfo.tagName.toLowerCase() }}</span>
+                <span v-if="selectedElementInfo.id" class="element-id">#{{ selectedElementInfo.id }}</span>
+                <span v-if="selectedElementInfo.className" class="element-class">.{{ selectedElementInfo.className.split(' ').join('.') }}</span>
+              </div>
+              <div class="element-details">
+                <div v-if="selectedElementInfo.textContent" class="element-item">
+                  内容: {{ selectedElementInfo.textContent.substring(0, 50) }}{{ selectedElementInfo.textContent.length > 50 ? '...' : '' }}
+                </div>
+                <div v-if="selectedElementInfo.pagePath" class="element-item">页面路径: {{ selectedElementInfo.pagePath }}</div>
+                <div class="element-item">选择器: <code class="element-selector-code">{{ selectedElementInfo.selector }}</code></div>
+              </div>
+            </div>
+          </template>
+        </a-alert>
       </div>
 
-      <a-alert
-        v-if="selectedElementInfo"
-        class="selected-element-alert"
-        type="info"
-        closable
-        @close="clearSelectedElement"
-      >
-        <template #message>
-          <div class="selected-element-info">
-            <div class="element-header">
-              <span class="element-tag">{{ selectedElementInfo.tagName.toLowerCase() }}</span>
-              <span v-if="selectedElementInfo.id" class="element-id">#{{ selectedElementInfo.id }}</span>
-              <span v-if="selectedElementInfo.className" class="element-class">.{{ selectedElementInfo.className.split(' ').join('.') }}</span>
-            </div>
-            <div class="element-details">
-              <div v-if="selectedElementInfo.textContent" class="element-item">
-                内容: {{ selectedElementInfo.textContent.substring(0, 50) }}{{ selectedElementInfo.textContent.length > 50 ? '...' : '' }}
-              </div>
-              <div v-if="selectedElementInfo.pagePath" class="element-item">页面路径: {{ selectedElementInfo.pagePath }}</div>
-              <div class="element-item">选择器: <code class="element-selector-code">{{ selectedElementInfo.selector }}</code></div>
-            </div>
-          </div>
-        </template>
-      </a-alert>
+      <!-- 分析链路内容区 -->
+      <div v-show="chatTab === 'trace'" class="trace-container">
+        <div v-if="!activeAnalysisTrace.length" class="trace-empty">
+          <div class="trace-empty-icon">🔍</div>
+          <p class="trace-empty-title">暂无分析链路</p>
+          <p class="trace-empty-hint">发送分析请求后，AI 执行的 SQL、可视化和报告会实时展示在这里</p>
+        </div>
+        <div v-else class="trace-timeline">
+          <AnalysisStepCard
+            v-for="step in activeAnalysisTrace"
+            :key="step.id"
+            :step="step"
+          />
+        </div>
+      </div>
 
-      <!-- Task Board -->
+      <!-- Task Board（跨 Tab 共享） -->
       <div v-if="appId && tasks.length" class="task-board" :class="{ collapsed: taskBoardCollapsed }">
         <div class="task-board-header" @click="taskBoardCollapsed = !taskBoardCollapsed">
           <span class="task-board-title">
@@ -365,6 +397,7 @@
         </div>
       </div>
 
+      <!-- 输入框（跨 Tab 共享） -->
       <div class="input-container" :style="{ height: inputHeight + 'px' }">
         <div class="resizer-horizontal input-resizer" @mousedown="onResizeStart('input', $event)" />
         <div class="input-wrapper">
@@ -433,11 +466,13 @@ import { getAppVoById } from '@/api/appController'
 import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
+import AnalysisStepCard from '@/components/AnalysisStepCard.vue'
 import aiAvatar from '@/assets/aiAvatar.png'
 import { API_BASE_URL } from '@/config/env'
 import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
-import { VueMonacoEditor, type MonacoEditor } from '@guolao/vue-monaco-editor'
+// 必须在 VueMonacoEditor 之前 import，确保 loader.config({ monaco }) 先执行
 import '@/config/monacoWorkers'
+import { VueMonacoEditor, type MonacoEditor } from '@guolao/vue-monaco-editor'
 
 import {
   CaretRightOutlined,
@@ -519,6 +554,26 @@ interface OutputLine {
   timestamp: number
 }
 
+// 分析链路步骤（右栏"分析链路"Tab 用，按 session 内存缓存，后端不保留）
+interface AnalysisStep {
+  id: string
+  type: 'sql' | 'chart' | 'report'
+  title: string
+  status: 'running' | 'completed' | 'failed'
+  timestamp: number
+  // sql 专属
+  sql?: string
+  rowCount?: number
+  durationMs?: number
+  // chart 专属（echarts option）
+  chartOption?: any
+  chartType?: string
+  // report 专属
+  markdown?: string
+  // 通用错误信息
+  error?: string
+}
+
 const MAX_OPEN_TABS = 5
 
 // 聊天页在 BasicLayout 工作区以多实例常驻（每个项目一个实例），appId/active 由父组件传入
@@ -531,6 +586,26 @@ const openedChatsStore = useOpenedChatsStore()
 const appInfo = ref<API.AppVO>({})
 const appId = ref<string>()
 const sessionId = ref('')
+
+// 分析链路：按 session 内存缓存（页面刷新后清空，后端不持久化）
+const analysisTraceMap = ref<Map<string, AnalysisStep[]>>(new Map())
+const activeAnalysisTrace = computed<AnalysisStep[]>(() => {
+  const sid = sessionId.value
+  if (!sid) return []
+  let arr = analysisTraceMap.value.get(sid)
+  if (!arr) {
+    arr = []
+    analysisTraceMap.value.set(sid, arr)
+  }
+  return arr
+})
+
+// 右栏 Tab 切换：对话 / 分析链路
+const chatTab = ref<'chat' | 'trace'>('chat')
+// 记录用户手动拖宽前的默认宽度，切到 trace 自动加宽、切回恢复
+const DEFAULT_CHAT_WIDTH = 320
+const TRACE_CHAT_WIDTH = 480
+let savedChatWidth = DEFAULT_CHAT_WIDTH
 
 const messages = ref<MessageItem[]>([])
 const userInput = ref('')
@@ -1473,6 +1548,50 @@ const refreshAfterGeneration = async () => {
   }
 }
 
+// ----------- 分析链路工具 -----------
+const genTraceStepId = () => `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+
+// 新增一个 running/completed 的分析步骤
+const addTraceStep = (partial: Partial<AnalysisStep> & { type: AnalysisStep['type']; title: string }) => {
+  const step: AnalysisStep = {
+    id: genTraceStepId(),
+    type: partial.type,
+    title: partial.title,
+    status: 'running',
+    timestamp: Date.now(),
+    ...partial,
+  } as AnalysisStep
+  activeAnalysisTrace.value.push(step)
+  return step
+}
+
+// 更新最后一个 running 的指定 type 步骤（sql/chart/report 执行完更新状态和内容）
+const updateLastRunningTraceStep = (type: AnalysisStep['type'], patch: Partial<AnalysisStep>) => {
+  const list = activeAnalysisTrace.value
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].type === type && list[i].status === 'running') {
+      list[i] = { ...list[i], ...patch, status: patch.status ?? 'completed' }
+      return list[i]
+    }
+  }
+  return null
+}
+
+// 切右栏 Tab 时自动调宽（只在用户没手动拖过时生效）
+watch(chatTab, (tab) => {
+  if (tab === 'trace' && chatWidth.value <= DEFAULT_CHAT_WIDTH + 5) {
+    savedChatWidth = chatWidth.value
+    chatWidth.value = TRACE_CHAT_WIDTH
+  } else if (tab === 'chat' && chatWidth.value === TRACE_CHAT_WIDTH) {
+    chatWidth.value = savedChatWidth || DEFAULT_CHAT_WIDTH
+  }
+})
+
+// session 切换时自动清空当前的 analysisTrace（切走再切回来页面已刷新则自然丢失）
+watch(sessionId, () => {
+  // analysisTraceMap 里按 sessionId 已做了隔离，此处无需清理 Map
+})
+
 const appendAiStep = (step: AiStep) => {
   const targetMessage = getMessageAt(activeGenerationMessageIndex.value ?? -1)
   if (!targetMessage) return
@@ -1511,6 +1630,50 @@ const failAllRunningToolSteps = () => {
 const handleStreamEvent = (event: { event_type: string; data: any; state?: string }) => {
   const eventType = event.event_type
   const eventData = event.data
+
+  // ---- 分析链路专用事件（推右栏 trace，不混入 messages）----
+  if (eventType === 'SQL_Start') {
+    addTraceStep({ type: 'sql', title: 'SQL 查询', sql: eventData?.sql || '', durationMs: undefined })
+    return
+  }
+  if (eventType === 'SQL_End') {
+    updateLastRunningTraceStep('sql', {
+      sql: eventData?.sql,
+      rowCount: eventData?.row_count ?? eventData?.rowCount,
+      durationMs: eventData?.duration_ms ?? eventData?.durationMs,
+      status: (eventData?.state === 'success') ? 'completed' : 'failed',
+      error: eventData?.error || undefined,
+    })
+    return
+  }
+  if (eventType === 'Chart_Start') {
+    addTraceStep({ type: 'chart', title: eventData?.title || '生成可视化', chartType: eventData?.chart_type || '' })
+    return
+  }
+  if (eventType === 'Chart_End') {
+    updateLastRunningTraceStep('chart', {
+      chartOption: eventData?.chart_option || eventData?.option,
+      chartType: eventData?.chart_type,
+      title: eventData?.title || '可视化',
+      status: (eventData?.state === 'success') ? 'completed' : 'failed',
+      error: eventData?.error || undefined,
+    })
+    return
+  }
+  if (eventType === 'Report_Start') {
+    addTraceStep({ type: 'report', title: eventData?.title || '生成分析报告', markdown: '' })
+    return
+  }
+  if (eventType === 'Report_End') {
+    updateLastRunningTraceStep('report', {
+      title: eventData?.title || '分析报告',
+      markdown: eventData?.markdown || eventData?.content,
+      status: (eventData?.state === 'success') ? 'completed' : 'failed',
+      error: eventData?.error || undefined,
+    })
+    return
+  }
+
   if (eventType === 'LLM_Response_Chunk') { applyMessageChunk(eventData); return }
   if (eventType === 'OnTurnStart') {
     appendAiStep({ eventType, description: '开始处理', detail: '', state: 'completed', timestamp: Date.now() })
@@ -2749,6 +2912,52 @@ onBeforeUnmount(() => {
     min-width: 260px;
   }
 }
+
+/* ---- 右栏头部 Tab（AI助手 | 分析链路）---- */
+.chat-header-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-header-tab {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted, #8c8c8c);
+  cursor: pointer;
+  transition: color 0.2s;
+  user-select: none;
+}
+.chat-header-tab:hover { color: var(--text-primary, #262626); }
+.chat-header-tab.active { color: var(--text-primary, #262626); font-weight: 600; }
+.chat-header-tab-divider { color: var(--border-color, #d9d9d9); user-select: none; }
+
+/* 对话/分析链路内容区：撑满头部与输入框之间的空间 */
+.chat-content,
+.trace-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.trace-container { padding: 8px; overflow-y: auto; }
+.trace-timeline { display: flex; flex-direction: column; gap: 0; }
+
+.trace-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: #8c8c8c;
+  text-align: center;
+}
+.trace-empty-icon { font-size: 36px; margin-bottom: 12px; }
+.trace-empty-title { font-size: 14px; font-weight: 500; margin: 0 0 4px; color: #595959; }
+.trace-empty-hint { font-size: 12px; margin: 0; line-height: 1.6; }
+
+/* 让 messages-container 占满对话内容区 */
+.messages-container { flex: 1; min-height: 0; overflow-y: auto; }
 
 @media (max-width: 768px) {
   #appChatPage.ide-layout {

@@ -67,8 +67,8 @@ def enforce_budget_inplace(
     就地执行预算：超限按驱逐优先级降级消息内容，原列表原地修改并返回报告。
 
     分区语义（工作列表形态，system 不在列表内、由 context.system_prompt 承载）：
-      [*history]        —— 最后一条 user 之前的 user/assistant 文本消息（中段历史，
-                           驱逐优先级 2，最旧优先）；
+      [*history]        —— 最后一条 user 之前的 assistant 文本消息（中段历史，
+                           驱逐优先级 2，最旧优先；user 提问承载任务上下文，永不驱逐）；
       [user(task)]      —— 最后一条 user = 当前任务输入，永不驱逐；
       [assistant/tool]  —— ReAct 循环区，tool 消息为工具结果（驱逐优先级 1，
                            保护最近 N 条不被驱逐）。
@@ -79,13 +79,14 @@ def enforce_budget_inplace(
     if tokens_before <= budget:
         return report
 
-    # 分区：最后一条 user 之前 = 中段历史；tool 消息全列表收集（均在循环区）
+    # 分区：最后一条 user 之前 = 中段历史（只降级 assistant 文本，user 提问永不驱逐）；
+    # tool 消息全列表收集（均在循环区）
     last_user_idx = max(
         (i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1
     )
     history_idx = [
         i for i in range(0, last_user_idx)
-        if messages[i].get("role") in ("user", "assistant") and messages[i].get("content")
+        if messages[i].get("role") == "assistant" and messages[i].get("content")
     ]
     tool_idx = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
 

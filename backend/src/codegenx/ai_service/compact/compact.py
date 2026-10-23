@@ -33,7 +33,10 @@ from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.utils.config import config
-from codegenx.ai_service.compact.thresholds import estimate_tokens
+from codegenx.ai_service.compact.thresholds import (
+    estimate_tokens,
+    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+)
 from codegenx.ai_service.compact.prompt import (
     BASE_COMPACT_PROMPT,
     format_compact_summary,
@@ -128,7 +131,8 @@ def _keep_last_n_messages(
 
 
 def _session_memory_compact(
-    messages: list[dict], session_summary: str, *, watermark: int = 0
+    messages: list[dict], session_summary: str, *, watermark: int = 0,
+    tail_budget: int | None = None,
 ) -> CompactResult:
     """
     Fast-path compaction using an already-extracted session summary.
@@ -151,11 +155,15 @@ def _session_memory_compact(
         ),
     }
     synthetic_tokens = estimate_tokens([user_context, assistant_ack])
-    tail_budget = max(MIN_TOKENS_AFTER, MAX_TOKENS_AFTER - synthetic_tokens)
+    # tail 预算优先用统一预算器传入的消息预算（封顶 MAX_TOKENS_AFTER），
+    # 保证压缩结果 ≤ 调用方预算，避免「越压越大」被判无效
+    target = MAX_TOKENS_AFTER if not tail_budget else max(
+        MIN_TOKENS_AFTER, min(int(tail_budget), MAX_TOKENS_AFTER))
+    tail_max = max(MIN_TOKENS_AFTER, target - synthetic_tokens)
     # 水位失效防御：超出列表长度按 0 处理（全量）
     if watermark >= len(messages):
         watermark = 0
-    kept = _keep_last_n_messages(messages[watermark:], max_tokens=tail_budget)
+    kept = _keep_last_n_messages(messages[watermark:], max_tokens=tail_max)
     # 最多保留 N-2 条消息，避免压缩后消息数反而增加
     max_tail = max(MIN_TEXT_MESSAGES, len(messages) - 2)
     if len(kept) > max_tail:
@@ -189,11 +197,18 @@ async def _call_llm_for_summary(messages: list[dict], chain: list[str]) -> str:
         if not isinstance(content, str):
             msg["content"] = str(content)
 
-    raw = await resilient_invoke(compact_messages, chain=chain, label="compact")
+    # 摘要输出上限：不设限的摘要可能比原文还长（本测试曾出现 3178 token 摘要，
+    # 压缩结果 +20% 被判无效），限幅后压缩结果才能进预算
+    raw = await resilient_invoke(
+        compact_messages, chain=chain, label="compact",
+        max_tokens=MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+    )
     return format_compact_summary(raw.get("content",""))
 
 
-async def _llm_compact(messages: list[dict], chain: list[str]) -> CompactResult | None:
+async def _llm_compact(
+    messages: list[dict], chain: list[str], *, tail_budget: int | None = None,
+) -> CompactResult | None:
     """
     Path B: ask the LLM to summarise the conversation, then rebuild messages.
     同模型重试/链上降级/熔断跳过已由韧性层（resilient_invoke）负责，此处不再
@@ -227,11 +242,15 @@ async def _llm_compact(messages: list[dict], chain: list[str]) -> CompactResult 
     }
 
     # 保留最后 N 条非系统消息，避免摘要丢失最近的细节上下文
+    # tail 预算优先用统一预算器传入的消息预算（封顶 MAX_TOKENS_AFTER），
+    # 保证压缩结果 ≤ 调用方预算，避免「越压越大」被判无效
     synthetic_tokens = estimate_tokens([user_context, assistant_ack])
-    tail_budget = max(MIN_TOKENS_AFTER, MAX_TOKENS_AFTER - synthetic_tokens)
+    target = MAX_TOKENS_AFTER if not tail_budget else max(
+        MIN_TOKENS_AFTER, min(int(tail_budget), MAX_TOKENS_AFTER))
+    tail_max = max(MIN_TOKENS_AFTER, target - synthetic_tokens)
     # 最多保留 N-2 条消息，避免压缩后消息数反而增加
     max_tail = max(MIN_TEXT_MESSAGES, len(messages) - 2)
-    kept_tail = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=tail_budget)
+    kept_tail = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=tail_max)
     if len(kept_tail) > max_tail:
         kept_tail = kept_tail[-max_tail:]
     new_messages = [user_context, assistant_ack]
@@ -267,6 +286,9 @@ class CompactionService(BaseComponent):
         # 初始化即解析压缩模型（compact.model_name，空则默认模型）
         model = (config.compact.model_name or "").strip() or config.get_default_model()
         self._model_chain: list[str] = [model]
+        # system 日志缓存（按 agent）：全量只打一次，之后分区内容变化才打印对应分区
+        self._prompt_logged: set[str] = set()
+        self._section_log_cache: dict[str, dict[str, str]] = {}
 
     def init_app(self, system_app) -> None:
         self.system_app = system_app
@@ -299,22 +321,24 @@ class CompactionService(BaseComponent):
         超限按驱逐级联处理，每级执行前判断超限，达标即停：
           1. 处理历史消息：micro_compact 工具结果压缩 → 仍超则 compact 消息摘要
              （context.compact：leader Path A 水位 / 子 agent Path B）
-          2. 历史消息驱逐（enforce_budget_inplace：工具结果 → 中段历史占位降级，
-             保护最近 N 条工具结果）
-          3. system 分区驱逐（skill → memory → resource → expand → board → examples
-             → tool_schema，逐个驱逐、逐个复量；skill/memory 可用工具捞回；
-             tool_schema 只截描述不删工具——agent 靠调用工具完成任务，不到必要不降级）
-          4. 保尾硬截断
+          2. 历史消息驱逐（enforce_budget_inplace：工具结果 → 中段 assistant 文本
+             占位降级；user 提问承载任务上下文永不驱逐；保护最近 N 条工具结果）
+          3. 保尾硬截断（仅截 payload 视图，不动真相源）
+          4. system 分区驱逐（skill → memory → resource → expand → board → examples
+             → tool_schema，逐个驱逐、逐个复量；空态分区（占位≥原文）跳过；
+             skill/memory 可用工具捞回；tool_schema 只截描述不删工具——agent 靠
+             调用工具完成任务，不到必要不降级）
 
         真相源策略（摘要闭环）：
           - 第 1/2 级就地修改 context.chat_messages（占位替换不改列表长度，
             摘要水位 extract_msg_idx 保持有效；compact 重建时水位重置 Path A=2 / Path B=0）；
-          - 第 4 级只截 payload 视图、不动真相源——被截内容仍可被 turn 末摘要提取，闭环不破；
-          - system 分区只影响 system_prompt、tool_schema 只影响 tools 目录，
-            摘要不覆盖二者，天然无冲突。
-          - 当前任务（最后一条 user）永不驱逐。
+          - 第 3 级只截 payload 视图、不动真相源——被截内容仍可被 turn 末摘要提取，闭环不破；
+          - 历史占位消息对模型无信息量，组装 payload 时剔除（真相源保留以对齐水位）；
+          - system 分区驱逐只影响当次 system_prompt（不写回 profile，下次超限会再次驱逐），
+            tool_schema 只影响 tools 目录，摘要不覆盖二者，天然无冲突。
         """
         from codegenx.ai_service.compact.budget import (
+            HISTORY_PLACEHOLDER,
             SECTION_EVICTION_ORDER,
             SectionReport,
             compress_tool_catalog,
@@ -419,14 +443,23 @@ class CompactionService(BaseComponent):
                     log.info("【预算】{} tool_schema 瘦身: {}→{} tokens（budget={}）",
                                 agent_name, section_before[name], tools_after, tool_budget)
                     continue
-                # 清空分区但原位留占位提示，让模型感知信息被临时移出、可尝试工具捞回
-                resolved[name] = section_evicted_placeholder(name)
+                # 清空分区但原位留占位提示，让模型感知信息被临时移出、可尝试工具捞回；
+                # 空态分区（如「暂无相关记忆」）占位比原文还大，驱逐无收益，跳过
+                placeholder = section_evicted_placeholder(name)
+                if estimate_tokens([{"content": placeholder}]) >= section_before[name]:
+                    continue
+                resolved[name] = placeholder
                 system_prompt = profile.render(resolved)
                 system_tokens = estimate_tokens([{"role": "system", "content": system_prompt}])
                 log.info("【预算】{} 分区驱逐: {}（{} tokens → 占位提示）",
                             agent_name, name, section_before[name])
 
-        
+
+        # 历史占位消息对模型无信息量（原文无法经工具回捞），payload 视图直接剔除；
+        # 真相源保留占位以维持摘要水位 extract_msg_idx 对齐
+        payload_messages = [
+            m for m in payload_messages if m.get("content") != HISTORY_PLACEHOLDER
+        ]
         msg_tokens_after = estimate_tokens(payload_messages)
         messages = ([{"role": "system", "content": system_prompt}] + list(payload_messages)
                     if system_prompt else list(payload_messages))
@@ -461,7 +494,25 @@ class CompactionService(BaseComponent):
                 for r in section_reports
             ),
         )
-        log.debug("【预算】{} system_prompt:\n{}", agent_name, system_prompt)
+        # system 日志（变化才打印）：首次打印全量；之后仅分区内容变化时打印该分区，
+        # 固定区（含时间戳）不重复打印
+        if agent_name not in self._prompt_logged:
+            self._prompt_logged.add(agent_name)
+            self._section_log_cache[agent_name] = {
+                name: str(resolved.get(name) or "")
+                for name in SECTION_EVICTION_ORDER if name != "tool_schema"
+            }
+            log.debug("【预算】{} system_prompt:\n{}", agent_name, system_prompt)
+        else:
+            cached = self._section_log_cache.setdefault(agent_name, {})
+            for name in SECTION_EVICTION_ORDER:
+                if name == "tool_schema":
+                    continue
+                val = resolved.get(name)
+                val = val if isinstance(val, str) else ""
+                if cached.get(name) != val:
+                    cached[name] = val
+                    log.debug("【预算】{} 分区[{}] 变化:\n{}", agent_name, name, val or "（空）")
 
         return ContextBudgetResult(
             system_prompt=system_prompt,
@@ -502,7 +553,17 @@ class CompactionService(BaseComponent):
             return messages, None
 
         tokens_before = estimate_tokens(messages)
-        result = await self._run_compaction(messages, summary_loader=summary_loader, summary_watermark=summary_watermark)
+        # 短对话直接跳过：摘要合成对 + 尾部保留的成本高于原文，压缩注定无效，
+        # 交给预算级联的历史驱逐/硬截断处理，避免每 step 空耗一次摘要调用
+        if tokens_before <= MAX_TOKENS_AFTER:
+            log.info("【压缩】消息量较小（{}≤{} tokens），跳过摘要，交由预算级联驱逐/截断处理",
+                     tokens_before, MAX_TOKENS_AFTER)
+            return messages, None
+
+        result = await self._run_compaction(
+            messages, summary_loader=summary_loader, summary_watermark=summary_watermark,
+            tail_budget=threshold,
+        )
         if result is None or result.tokens_after >= result.tokens_before:
             # 统一失败出口：调用失败/空摘要（result=None）与压缩无效同等对待，
             # 保守截断兜底（压缩无效是业务结果，不属模型故障、不计熔断）
@@ -512,11 +573,16 @@ class CompactionService(BaseComponent):
                     result.tokens_before, result.tokens_after,
                     (result.tokens_after - result.tokens_before) / max(1, result.tokens_before) * 100,
                 )
-            # Conservative truncation: keep last messages that fit within the effective
-            # context window to prevent API errors from overly large context.
+            # Conservative truncation: keep last messages that fit within the
+            # caller's message budget (falls back to the global effective window
+            # for legacy callers without a threshold) so the result actually frees
+            # context instead of returning the input unchanged.
 
             from codegenx.ai_service.compact.thresholds import EFFECTIVE_CONTEXT_WINDOW
-            truncated = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=EFFECTIVE_CONTEXT_WINDOW)
+            fallback_budget = (
+                max(MIN_TOKENS_AFTER, int(threshold)) if threshold else EFFECTIVE_CONTEXT_WINDOW
+            )
+            truncated = _keep_last_n_messages(messages, min_keep=MIN_TEXT_MESSAGES, max_tokens=fallback_budget)
             log.warning(
                 "All compaction paths failed; falling back to conservative truncation: {}→{} messages.",
                 len(messages), len(truncated),
@@ -547,6 +613,7 @@ class CompactionService(BaseComponent):
         *,
         summary_loader: Any = None,
         summary_watermark: int = 0,
+        tail_budget: int | None = None,
     ) -> CompactResult | None:
         # Path A — session memory fast path（不经 LLM；读取失败仅降级尝试 Path B）
         if summary_loader is not None:
@@ -554,12 +621,13 @@ class CompactionService(BaseComponent):
                 summary = summary_loader()
                 if summary and summary.strip():
                     log.info("Compaction: using session-memory fast-path.")
-                    return _session_memory_compact(messages, summary, watermark=summary_watermark)
+                    return _session_memory_compact(
+                        messages, summary, watermark=summary_watermark, tail_budget=tail_budget)
             except Exception as exc:
                 log.warning("Session-memory fast-path failed: {}; trying LLM.", exc)
 
         # Path B — LLM summarization（模型级熔断/重试/降级在韧性层内）
-        result = await _llm_compact(messages, self._model_chain)
+        result = await _llm_compact(messages, self._model_chain, tail_budget=tail_budget)
         if result is not None:
             return result
 

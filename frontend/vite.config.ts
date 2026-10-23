@@ -11,6 +11,11 @@ export default defineConfig({
     vue(),
     vueDevTools(),
   ],
+  optimizeDeps: {
+    // 强制将 ant-design-vue 与 icons 锁进同一份预构建产物，
+    // 防止浏览器加载到两个 icons-vue 实例导致 inject(prefixCls) 为 undefined
+    include: ['ant-design-vue', '@ant-design/icons-vue'],
+  },
   build: {
     chunkSizeWarningLimit: 1600,
     rollupOptions: {

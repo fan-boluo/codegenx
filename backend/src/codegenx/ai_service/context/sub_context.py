@@ -11,12 +11,13 @@ class SubContext(CommonContext):
     """
 
     def init_chat_messages(self,user_msg:str) -> None:
-        """初始化本轮对话工作列表：清空 + 追加当前任务。
+        """初始化本轮对话工作列表：仅清空。
 
-        子智能体的 SubContext 为一次性工作区，仅承载本轮任务。
+        任务文本由 base_react_agent.run() 统一追加（agent_message.task）。
+        此处不能再 append：_prepare_agent 传入的是 session_state.request.message
+        （用户原始请求），追加会把与子任务无关的用户消息泄漏进子智能体工作区。
         """
         self.chat_messages.clear()
-        self.chat_messages.append({"role": "user", "content": user_msg})
 
     async def compact(self, token_budget: int | None = None) -> AsyncGenerator[dict[str, Any], None]:
         """step 级压缩（默认 Path B：LLM 摘要，无会话水位）；未触发时不产出事件。"""

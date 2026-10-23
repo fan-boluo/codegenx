@@ -17,7 +17,7 @@ from shared import log
 from codegenx.ai_service.agent.agents.agent import Agent, AgentMessage
 from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.context.sub_context import SubContext
-
+from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.agent.action import Action, ActOutput
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 
@@ -145,6 +145,10 @@ class BaseReActAgent(Agent):
         """
         # 工具目录与执行器：config.json agents[].tools 白名单非空才启用 function calling
         self.tools = self._resolve_tool_catalog()
+        # 压缩源保持原始目录：token_budget 的 tools 瘦身仅当次 payload 生效
+        # （self.tools 会被写回瘦身结果供本次 LLM 调用），下 step 从原始目录重算，
+        # 避免描述截断跨 step 累积、预算恢复后也无法还原
+        self._tools_source = self.tools
         self.tool_executor = None
         if self.tools:
             # 配置了工具的 agent 必须拿到执行器，失败直接暴露（fail fast，不静默吞掉）
@@ -326,7 +330,7 @@ class BaseReActAgent(Agent):
             payload = await get_app().compaction.token_budget(
                 profile=self.profile,
                 prompt_params=self._prompt_params,
-                tools=self.tools,
+                tools=self._tools_source,
                 context=self._context,
                 context_max_tokens=int(self.agent_config.context_max_tokens or 8000),
             )
@@ -423,52 +427,52 @@ class BaseReActAgent(Agent):
 
         return observation
 
-        # ------------------------------------------------------------------ message I/O
+    # ------------------------------------------------------------------ message I/O
+    
+    async def receive(self, msg: AgentMessage, session_state: RuntimeSessionState) -> AgentMessage | None:
+        """接收来自其他 agent 或外部的消息，执行 run() 并转发下一跳。
 
-        async def receive(self, msg: AgentMessage, session_state: RuntimeSessionState) -> AgentMessage | None:
-            """接收来自其他 agent 或外部的消息，执行 run() 并转发下一跳。
+        注意：全局消息路由已收归 AutoPlanManager，此处仅为独立测试或手动调用保留。
+        """
+        log.info(
+            "agent 消息接收: {} <- {} | request_id={}",
+            self.agent_name, msg.sender, msg.request_id,
+        )
+        reply = await self.run(msg, session_state)
+        if reply:
+            if reply.recipient == "user":
+                get_app().message_bus.publish_runtime_event(
+                    session_state.publish_context,
+                    event_type=AgentEventType.REQUEST_COMPLETED,
+                    data={"content": reply.result},
+                    state=AgentState.COMPLETED,
+                )
+            else:
+                await self.send(reply, session_state)
+        return msg
 
-            注意：全局消息路由已收归 AutoPlanManager，此处仅为独立测试或手动调用保留。
-            """
-            log.info(
-                "agent 消息接收: {} <- {} | request_id={}",
-                self.agent_name, msg.sender, msg.request_id,
-            )
-            reply = await self.run(msg, session_state)
-            if reply:
-                if reply.recipient == "user":
-                    get_app().message_bus.publish_runtime_event(
-                        session_state.publish_context,
-                        event_type=AgentEventType.REQUEST_COMPLETED,
-                        data={"content": reply.result},
-                        state=AgentState.COMPLETED,
-                    )
-                else:
-                    await self.send(reply, session_state)
-            return msg
+    async def send(
+            self,
+            msg: AgentMessage,
+            session_state: RuntimeSessionState,
+            **kwargs,
+    ) -> bool:
+        """向指定 name 的 agent 发送消息并触发其 receive → run 链路。
 
-        async def send(
-                self,
-                msg: AgentMessage,
-                session_state: RuntimeSessionState,
-                **kwargs,
-        ) -> bool:
-            """向指定 name 的 agent 发送消息并触发其 receive → run 链路。
+        从 AgentRegistry 取 AgentSpec.cls() 实例化目标 agent，再调 receive。
+        """
+        receiver = msg.recipient
+        if not receiver:
+            raise ValueError(f"未设置接收方：{msg}")
 
-            从 AgentRegistry 取 AgentSpec.cls() 实例化目标 agent，再调 receive。
-            """
-            receiver = msg.recipient
-            if not receiver:
-                raise ValueError(f"未设置接收方：{msg}")
+        spec = get_app().agents.get(receiver)
+        if spec is None or spec.cls is None:
+            raise ValueError(f"目标 agent 未注册或无 cls: {receiver}")
 
-            spec = get_app().agents.get(receiver)
-            if spec is None or spec.cls is None:
-                raise ValueError(f"目标 agent 未注册或无 cls: {receiver}")
-
-            target_agent = spec.cls()
-            await target_agent.receive(msg, session_state, **kwargs)
-            log.info(
-                "agent 消息发送: {} -> {} | request_id={}",
-                msg.sender, msg.recipient, msg.request_id,
-            )
-            return True
+        target_agent = spec.cls()
+        await target_agent.receive(msg, session_state, **kwargs)
+        log.info(
+            "agent 消息发送: {} -> {} | request_id={}",
+            msg.sender, msg.recipient, msg.request_id,
+        )
+        return True
