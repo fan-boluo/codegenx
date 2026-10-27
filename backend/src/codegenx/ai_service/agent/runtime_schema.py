@@ -105,6 +105,11 @@ class RuntimeSessionState:
         return getattr(self.request, "db_name", None)
 
     @property
+    def available_schemas(self) -> list[str]:
+        """当前会话可问答的公共数据源列表（agent 仅基于这些公共库作答）。"""
+        return list(getattr(self.request, "available_schemas", None) or [])
+
+    @property
     def user_id(self) -> str:
         return str(getattr(self.request, "user_id", "") or "")
 

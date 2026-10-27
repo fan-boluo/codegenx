@@ -19,16 +19,11 @@ if TYPE_CHECKING:
     from codegenx.ai_service.system_app import SystemApp
 
 DATA_ANALYSIS_TOOL_NAMES = {
-    "list_tables",
-    "describe_table",
-    "sample_rows",
-    "describe_table_stats",
     "describe_csv",
     "sample_csv_rows",
     "describe_csv_stats",
     "guess_analysis_task",
-    "get_table_relationships",
-    "execute_sql",
+    "execute_postgresql",
 }
 
 
@@ -263,9 +258,13 @@ class ToolExecutor(BaseComponent):
             tool_input.setdefault("request_id", turn_id)
 
         if tool_name in DATA_ANALYSIS_TOOL_NAMES:
-            db_name = getattr(session_state, "db_name", None) if session_state is not None else None
-            if db_name:
-                tool_input.setdefault("db_name", db_name)
+            # agent 仅基于公共数据源作答：db_name 注入公共库的 database 部分
+            # available_schemas 元素格式为 "datasource.schema"（如 business.dvdrental）
+            available_schemas = getattr(session_state, "available_schemas", []) if session_state is not None else []
+            available_schemas = list(available_schemas or [])
+            if available_schemas:
+                tool_input.setdefault("db_name", available_schemas[0].split(".")[0])
+                tool_input.setdefault("available_schemas", available_schemas)
             tool_input.setdefault("app_id", app_id)
 
         # BEFORE_TOOL_CALL 钩子（参数注入后触发，让守卫看到完整参数；不修改调用方原 tool_call）

@@ -65,3 +65,11 @@ TELEMETRY_OPEN = False
 PYTHON_ENV = {
     "model":r"D:\CondaEnvs\model\python.exe"
 }
+
+# ----------------------数据源与库绑定--------------------
+# 所有用户项目共用同一个 PG 数据库，每个项目一个 schema
+ANALYSIS_DB = "analysis"
+# 公共数据集（所有用户可见），agent 仅基于这些公共库做问答
+# datasource 名需与 config.json databases 段及语义层 meta_datasource.name 一致
+PUBLIC_DATASOURCES = ["business"]
+PUBLIC_SCHEMAS = ["business.dvdrental"]

@@ -2,7 +2,7 @@
 通用数据分析辅助工具
 
 - guess_analysis_task: 根据数据结构推断分析方向
-- get_table_relationships: 表间关系发现
+- get_table_relationships: 表间关系发现(适用于mysql数据库,已不再注册使用)
 """
 
 import asyncio
@@ -300,7 +300,7 @@ def _similar(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-class GetTableRelationshipsTool(BaseTool):
+class GetTableRelationshipsTool:
 
     @property
     def name(self) -> str:

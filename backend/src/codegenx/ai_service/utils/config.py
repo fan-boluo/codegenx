@@ -170,6 +170,19 @@ class ToolsConfig(Base):
     # mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class SemanticConfig(Base):
+    """语义层检索参数（元数据卡片召回 + JOIN 路径 + 指标）。"""
+    enabled: bool = True
+    recall_top_k: int = 8          # 表卡召回条数（注入 prompt 的上限）
+    metric_top_k: int = 5          # 指标卡召回条数
+    verified_query_top_k: int = 3  # few-shot 示例条数
+    hybrid_vector_weight: float = 0.7  # 混合检索向量权重，其余给关键词
+    min_score: float = 0.25        # 召回分数下限（低于则丢弃）
+    max_join_hops: int = 3         # JOIN 路径最大跳数
+    context_max_chars: int = 6000  # 语义上下文注入 prompt 的字符预算
+    embed_timeout_seconds: float = 30.0  # 查询向量化超时，超时降级为关键词召回
+
+
 # memory ----------------------------------
 class MemorySearchConfig(Base):
     """记忆检索配置：混合召回（向量+关键词）+ 三因子重排（语义/时间/类型）"""
@@ -451,6 +464,7 @@ class Config(BaseSettings):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    semantic: SemanticConfig = Field(default_factory=SemanticConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     monitor:MonitorConfig = Field(default_factory=MonitorConfig)
     compact: CompactConfig = Field(default_factory=CompactConfig)

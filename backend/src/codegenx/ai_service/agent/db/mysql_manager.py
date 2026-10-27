@@ -1,4 +1,4 @@
-"""
+﻿"""
 MysqlManager — MySQL 只读连接管理
 
 职责：
@@ -26,18 +26,6 @@ except ImportError:
     aiomysql = None  # type: ignore
     _HAS_MYSQL = False
 
-
-# 禁止的 SQL 关键字（写操作/DDL/DCL）
-_FORBIDDEN_SQL = re.compile(
-    r'\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|RENAME|'
-    r'REPLACE|LOAD|GRANT|REVOKE|SET\s+@|LOCK|UNLOCK|FLUSH|'
-    r'CALL|EXECUTE|EXEC|PREPARE)\b',
-    re.IGNORECASE,
-)
-
-# 白名单 SQL 前缀
-_ALLOWED_PREFIXES = ("SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "WITH")
-
 # 默认超时（秒）
 DEFAULT_QUERY_TIMEOUT = 30
 
@@ -64,18 +52,6 @@ class MysqlConfig:
     connect_timeout: int = 10
 
 
-def _check_sql_safety(sql: str) -> None:
-    """检查 SQL 是否安全（只读），不安全则抛出 ValueError。"""
-    stripped = sql.strip().rstrip(";")
-    upper = stripped.upper()
-
-    # 检查是否以白名单前缀开头
-    if not any(upper.startswith(p) for p in _ALLOWED_PREFIXES):
-        raise ValueError(f"SQL 不允许执行，仅支持: {', '.join(_ALLOWED_PREFIXES)}")
-
-    # 检查是否包含禁止关键字
-    if _FORBIDDEN_SQL.search(stripped):
-        raise ValueError("SQL 包含禁止的写操作/DDL 关键字")
 
 
 def resolve_sample_ratio(est_rows: int) -> tuple[float, str]:
@@ -127,7 +103,8 @@ class MysqlManager:
         自动检查 SQL 安全性、数据库白名单、超时。
         """
         # 安全检查
-        _check_sql_safety(sql)
+        from codegenx.ai_service.utils.dbutils import check_sql_safety
+        check_sql_safety(sql)
 
         # 数据库白名单
         if self.config.databases and db_name not in self.config.databases:

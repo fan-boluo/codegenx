@@ -117,7 +117,7 @@ class LeaderAgent(BaseReActAgent):
 
         return {
             "available_file_path":get_code_dir(request.user_id,request.app_id),
-            "available_db":request.db_name,
+            "available_db": ", ".join(getattr(request, "available_schemas", None) or []),
             "agents_list_desc": self.agents_list_desc(),
             "board_desc": self._context.get_task_bord(),
             "memory_prompt": _memory_prompt or "（暂无相关记忆）",

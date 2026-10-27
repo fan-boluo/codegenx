@@ -1,5 +1,9 @@
-"""
-MySQL 数据分析工具
+﻿"""
+MySQL 数据分析工具（已废弃：问答链路已全面切换到 PostgreSQL 公共库，见 data_postgres.py）。
+
+以下类不再继承 BaseTool，故不会被工具注册表收录；代码仅作历史参考保留。
+PG 时代的表结构/关系探查由 semantic.py 的语义层工具承担（describe_table_card / find_join_path），
+采样与统计直接通过 execute_postgresql 写 SQL 完成。
 
 - list_tables: 列出库下所有表
 - describe_table: 单表结构信息
@@ -9,10 +13,10 @@ MySQL 数据分析工具
 
 import asyncio
 from typing import Any
-
-from codegenx.ai_service.tools.base import BaseTool, ToolResult
+from codegenx.ai_service.utils.dbutils import format_rows
+from codegenx.ai_service.tools.base import ToolResult
 from codegenx.ai_service.agent.db.mysql_manager import (
-    get_mysql_manager, resolve_sample_ratio, _check_sql_safety,
+    get_mysql_manager, resolve_sample_ratio,
 )
 from codegenx.ai_service.data_analysis.stats_engine import (
     compute_numeric_stats, compute_categorical_stats,
@@ -33,37 +37,6 @@ COL_STATS_TIMEOUT = 30
 # 连接配置来自 config.json tools.mysql（原先各模块自建实例只会用默认 readonly/空密码）
 
 
-# ── 格式化辅助 ────────────────────────────────────────────
-
-def _format_rows(rows: list[dict], max_cell_len: int = 200) -> str:
-    """将查询结果格式化为对齐文本表格。"""
-    if not rows:
-        return "(无数据)"
-    columns = list(rows[0].keys())
-    # 计算列宽
-    widths = [len(c) for c in columns]
-    for row in rows:
-        for i, col in enumerate(columns):
-            val = str(row.get(col, ""))
-            widths[i] = max(widths[i], min(len(val), max_cell_len))
-    # 表头
-    header = " | ".join(c.ljust(w) for c, w in zip(columns, widths))
-    sep = "-+-".join("-" * w for w in widths)
-    lines = [header, sep]
-    # 数据行
-    for row in rows[:50]:  # 最多 50 行
-        cells = []
-        for i, col in enumerate(columns):
-            val = str(row.get(col, ""))
-            if len(val) > max_cell_len:
-                val = val[:max_cell_len] + "..."
-            cells.append(val.ljust(widths[i]))
-        lines.append(" | ".join(cells))
-    if len(rows) > 50:
-        lines.append(f"... 还有 {len(rows) - 50} 行")
-    return "\n".join(lines)
-
-
 # ═══════════════════════════════════════════════════════════
 # 1. list_tables
 # ═══════════════════════════════════════════════════════════
@@ -76,7 +49,7 @@ _LIST_TABLES_SQL = (
 )
 
 
-class ListTablesTool(BaseTool):
+class ListTablesTool:
 
     @property
     def name(self) -> str:
@@ -136,7 +109,7 @@ class ListTablesTool(BaseTool):
                 r["estimated_rows"] = "未知"
 
         output = f"数据库 {db_name} 共有 {len(rows)} 张表:\n"
-        output += _format_rows(rows)
+        output += format_rows(rows)
         return ToolResult(success=True, data=output, render=f"数据库 {db_name}: {len(rows)} 张表")
 
 
@@ -168,7 +141,7 @@ _INDEX_SQL = (
 )
 
 
-class DescribeTableTool(BaseTool):
+class DescribeTableTool:
 
     @property
     def name(self) -> str:
@@ -244,13 +217,13 @@ class DescribeTableTool(BaseTool):
 
         # 列信息
         lines.append("── 列信息 ──")
-        lines.append(_format_rows(columns))
+        lines.append(format_rows(columns))
 
         # 索引
         if indexes:
             lines.append("")
             lines.append("── 索引 ──")
-            lines.append(_format_rows(indexes))
+            lines.append(format_rows(indexes))
 
         return ToolResult(success=True, data="\n".join(lines), render=f"表结构: {db_name}.{table_name} ({n_cols} 列)")
 
@@ -259,7 +232,7 @@ class DescribeTableTool(BaseTool):
 # 3. sample_rows
 # ═══════════════════════════════════════════════════════════
 
-class SampleRowsTool(BaseTool):
+class SampleRowsTool:
 
     @property
     def name(self) -> str:
@@ -338,7 +311,7 @@ class SampleRowsTool(BaseTool):
         rows = await mgr.query(db_name, sql)
 
         output = f"表 {db_name}.{table_name} 采样 {len(rows)} 行:\n"
-        output += _format_rows(rows)
+        output += format_rows(rows)
         return ToolResult(success=True, data=output, render=f"采样: {db_name}.{table_name} ({len(rows)} 行)")
 
 
@@ -367,7 +340,7 @@ def _rank_column_priority(data_type: str) -> int:
     return 4
 
 
-class DescribeTableStatsTool(BaseTool):
+class DescribeTableStatsTool:
 
     @property
     def name(self) -> str:
@@ -581,88 +554,3 @@ def mask_nan_matrix(matrix: np.ndarray) -> np.ndarray:
     """去除含 NaN 的行，返回无 NaN 的矩阵。"""
     valid = ~np.any(np.isnan(matrix), axis=0)
     return matrix[:, valid]
-
-
-# ═══════════════════════════════════════════════════════════
-# 8. execute_sql
-# ═══════════════════════════════════════════════════════════
-
-class ExecuteSqlTool(BaseTool):
-    """任意只读 SQL 执行（data_explore 智能体的核心工具）。
-
-    db_name 由 ToolExecutor 从 session_state 注入（app 绑定库），
-    SQL 经 _check_sql_safety 只读守卫后执行，结果格式化为文本表格（最多展示 50 行）。
-    """
-
-    @property
-    def name(self) -> str:
-        return "execute_sql"
-
-    @property
-    def label(self) -> str:
-        return "data_analysis"
-
-    @property
-    def description(self) -> str:
-        return (
-            "在指定数据库上执行一条任意只读 SQL 查询，返回结果表格（最多展示前 50 行）。"
-            "仅允许 SELECT/SHOW/DESC 语句，禁止写操作与 DDL。"
-            "表结构已在任务上下文中提供，直接编写 SQL 即可。"
-        )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "sql": {
-                    "type": "string",
-                    "description": "完整可执行的只读 SQL 语句（MySQL 语法）",
-                },
-            },
-            "required": ["sql"],
-        }
-
-    async def execute(
-        self, params: dict, signal: asyncio.Event | None = None,
-    ) -> ToolResult:
-        try:
-            return await self._do_execute(params)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log.warning("execute_sql 执行异常: {}", exc)
-            return ToolResult(success=False, message=f"SQL 执行失败: {exc}")
-
-    async def _do_execute(self, params: dict) -> ToolResult:
-        sql = str(params.get("sql") or "").strip()
-        if not sql:
-            return ToolResult(success=False, message="SQL 为空，无法执行")
-        db_name = str(params.get("db_name") or "").strip()
-        if not db_name:
-            return ToolResult(success=False, message="当前应用未绑定数据库（db_name 未注入），无法执行 SQL")
-
-        # ── 统一只读守卫（复用 MysqlManager 安全检查） ──
-        _check_sql_safety(sql)
-
-        # ── 按环境分支执行：dev 走 MysqlManager 连接池，非 dev 走 docker 容器内 mysql 客户端 ──
-        from shared import settings
-        if settings.env == "dev":
-            rows = await get_mysql_manager().query(db_name, sql)
-        else:
-            from codegenx.ai_service.agent.db.docker_exec import execute_sql_in_docker
-            rows = await execute_sql_in_docker(
-                container=settings.sql_exec_docker_container,
-                db_name=db_name,
-                sql=sql,
-                mysql_user=settings.userdb_mysql_user,
-                mysql_password=settings.userdb_mysql_password,
-                mysql_host=settings.userdb_mysql_host,
-                mysql_port=settings.userdb_mysql_port,
-            )
-        row_count = len(rows)
-
-        output = f"查询结果（共 {row_count} 行）:\n" + _format_rows(rows)
-        # extras.rows_preview 供分析链路 hook 提取展示（前 10 行原始 dict，不进 LLM 上下文）
-        extras = {"rows_preview": rows[:10]} if rows else {}
-        return ToolResult(success=True, data=output, render=f"SQL 执行成功（{row_count} 行）", extras=extras)

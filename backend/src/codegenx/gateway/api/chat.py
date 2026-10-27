@@ -23,6 +23,7 @@ from codegenx.gateway.services.rate_limit_service import RateLimitService
 from db.mysql.session import get_db_session
 from db.redis.redis_client import get_redis_client
 from codegenx.ai_service.schema.ai_schema import UserAIRequest, AiServiceStopRequest
+from shared.constants import PUBLIC_SCHEMAS
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -48,6 +49,8 @@ async def chat_to_gen_code_post(
 
     # dbName 后端以项目记录为准，覆盖前端传值（前端传值仅参考，防伪造查任意库）
     payload["dbName"] = app.db_name
+    # 可用公共数据源：agent 仅基于这些公共库做问答（用户自己的库不在问答范围）
+    payload["availableSchemas"] = list(PUBLIC_SCHEMAS)
 
     request = UserAIRequest.model_validate(payload)
     return await generate_code_stream(request)

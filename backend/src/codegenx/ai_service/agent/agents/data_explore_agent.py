@@ -9,42 +9,15 @@ from codegenx.ai_service.agent.agents.base_react_agent import BaseReActAgent
 from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.prompt.prompt_manager import PromptConfig
 from codegenx.ai_service.schema.ai_schema import UserAIRequest
-from shared import log
-
-
-# prompt 中注入的表数量上限，防止大库塞爆上下文
-MAX_TABLES_IN_PROMPT = 50
-
-_TABLES_META_SQL = (
-    "SELECT TABLE_NAME AS table_name, TABLE_COMMENT AS table_comment "
-    "FROM information_schema.TABLES "
-    "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE' "
-    "ORDER BY TABLE_NAME "
-    f"LIMIT {MAX_TABLES_IN_PROMPT}"
-)
-
-_COLUMNS_META_SQL = (
-    "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
-    "COLUMN_TYPE AS column_type, COLUMN_COMMENT AS column_comment, "
-    "COLUMN_KEY AS column_key "
-    "FROM information_schema.COLUMNS "
-    "WHERE TABLE_SCHEMA = %s "
-    "ORDER BY TABLE_NAME, ORDINAL_POSITION"
-)
-
-_FK_META_SQL = (
-    "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, "
-    "REFERENCED_TABLE_NAME AS ref_table, REFERENCED_COLUMN_NAME AS ref_column "
-    "FROM information_schema.KEY_COLUMN_USAGE "
-    "WHERE TABLE_SCHEMA = %s AND REFERENCED_TABLE_NAME IS NOT NULL"
-)
+from codegenx.ai_service.semantic.retrieval import hybrid
+from shared import log, settings
 
 
 class DateExploreAgent(BaseReActAgent):
-    """数据探索（工具化 agent：自主调用 execute_sql 完成查询并作答）
+    """数据探索（工具化 agent：自主调用 execute_postgresql 完成查询并作答）
 
     执行循环由 BaseReActAgent 的原生 tool_calls 循环承担：
-    think →（LLM 发起 execute_sql）→ 工具结果回填 → 继续 think → … → 无工具调用时自由文本作答。
+    think →（LLM 发起 execute_postgresql）→ 工具结果回填 → 继续 think → … → 无工具调用时自由文本作答。
     简单查询一轮即可自总结答复，复杂任务多轮迭代。
     """
 
@@ -53,13 +26,13 @@ class DateExploreAgent(BaseReActAgent):
     profile: PromptConfig = PromptConfig(
         role="Data Analyst",
         name="data_explore",  # 和config里面的对应
-        goal="使用 execute_sql 工具查询 {{type}} 数据库，基于真实查询结果回答任务并给出结论",
+        goal="使用 execute_postgresql 工具查询 {{type}} 数据库，基于真实查询结果回答任务并给出结论",
         desc="根据数据库资源进行sql数据分析",
         is_retry_chat=False,
         retry_goal="",
         retry_constraints=[],
         constraints=[
-            "可用工具：execute_sql（执行只读 SQL）。数据库及表结构已在下方提供，直接编写 SQL 即可，无需再查询元信息。",
+            "可用工具：execute_postgresql（执行只读 SQL）；表或字段不确定时用 search_tables / describe_table_card 查语义层；涉及多表关联先用 find_join_path 确认连接键；涉及业务口径先用 search_metrics。",
             "严格按表结构编写 SQL，禁止使用不存在的字段；注意区分不同表的字段，支持多表关联查询，留意表间外键关系。",
             "仅允许只读语句（SELECT/SHOW/DESC），禁止 INSERT/UPDATE/DELETE/DDL 等写操作。",
             "禁止自行编造数据作为查询条件，仅能使用任务中提供的数据值作为查询条件。",
@@ -77,99 +50,24 @@ class DateExploreAgent(BaseReActAgent):
         super().__init__(context=context)
 
     async def _prepare_prompt_params(self,request: UserAIRequest) -> dict:
+        """把语义层召回的候选表卡注入 prompt（agent 仅基于公共数据源作答）。
+
+        available_schemas 元素格式为 "datasource.schema"（如 business.dvdrental）；
+        datasource 取其 datasource 部分，方言固定取 settings.public_db_dialect。
+        """
+        available = list(getattr(request, "available_schemas", None) or [])
+        public_ds = available[0].split(".")[0] if available else None
         return {
-            "type": "mysql",
-            "database_info": await self._query_available_db_info(request)
+            "type": settings.public_db_dialect,
+            "database_info": await hybrid.build_context(
+                request.message, datasource=public_ds,
+            ),
         }
 
     async def _prepare_agent(self, request: UserAIRequest):
         """ 准备agent所需的记忆，工具，skill，prompt 上下文等 """
         # db 元信息查询是 async，须在 super() 之前完成
         await super()._prepare_agent(request)
-
-    @staticmethod
-    async def _query_available_db_info(request: UserAIRequest) -> str:
-        """
-        测试阶段为方便直接给结果
-        """
-        return """
-database:prj_ec
-
-tables 建表语句:
-
-CREATE TABLE orders (
-    order_id int,
-    user_id int,
-    product_id int,
-    quantity int COMMENT '数量',
-    order_date date COMMENT '订单日期',
-    PRIMARY KEY (order_id),
-    FOREIGN KEY (user_id) REFERENCES users(user_id),
-    FOREIGN KEY (product_id) REFERENCES products(product_id)
-) COMMENT '订单信息表';
-
-CREATE TABLE products (
-    product_id int,
-    product_name varchar(100) COMMENT '商品名称',
-    product_price float COMMENT '商品价格',
-    PRIMARY KEY (product_id)
-) COMMENT '商品信息表';
-
-CREATE TABLE users (
-    user_id int,
-    user_name varchar(100) COMMENT '用户名',
-    user_email varchar(100) COMMENT '用户邮箱',
-    registration_date date COMMENT '注册日期',
-    user_country varchar(100) COMMENT '用户国家',
-    PRIMARY KEY (user_id)
-) COMMENT '用户信息表';
-        """
-    @staticmethod
-    async def _query_available_db_info_bak(request: UserAIRequest) -> str:
-        """按 app 绑定的数据库实时查询 information_schema，拼出 database + 各表建表语句文本。
-
-        绑定关系来源：app 表 dbName → gateway 注入请求 → session_state.db_name。
-        元信息不冗余存储，以 information_schema 为单一事实源（与工具层同一查询通道）。
-        """
-        # TODO 这种查询所有信息的太冗余了，只给出一些表来先，后续换成根据提示词从向量数据库查询可能涉及的表
-        db_name = request.db_name
-        if not db_name:
-            return "（当前应用未绑定数据库，无法执行 SQL 分析）"
-
-        from codegenx.ai_service.agent.db.mysql_manager import get_mysql_manager
-        mgr = get_mysql_manager()
-        tables, columns, fks = await asyncio.gather(
-            mgr.query(db_name, _TABLES_META_SQL, (db_name,)),
-            mgr.query(db_name, _COLUMNS_META_SQL, (db_name,)),
-            mgr.query(db_name, _FK_META_SQL, (db_name,)),
-        )
-        if not tables:
-            return f"database:{db_name}\n（库中暂无数据表）"
-
-        cols_by_table: dict[str, list[dict]] = {}
-        for c in columns:
-            cols_by_table.setdefault(c["table_name"], []).append(c)
-        fks_by_table: dict[str, list[dict]] = {}
-        for f in fks:
-            fks_by_table.setdefault(f["table_name"], []).append(f)
-
-        parts = [f"database:{db_name}", "tables 建表语句:"]
-        for t in tables:
-            name = t["table_name"]
-            col_defs = []
-            pk_cols = []
-            for c in cols_by_table.get(name, []):
-                comment = f" COMMENT '{c['column_comment']}'" if c.get("column_comment") else ""
-                col_defs.append(f"    {c['column_name']} {c['column_type']}{comment}")
-                if c.get("column_key") == "PRI":
-                    pk_cols.append(c["column_name"])
-            if pk_cols:
-                col_defs.append(f"    PRIMARY KEY ({', '.join(pk_cols)})")
-            for f in fks_by_table.get(name, []):
-                col_defs.append(f"    FOREIGN KEY ({f['column_name']}) REFERENCES {f['ref_table']}({f['ref_column']})")
-            table_comment = f" COMMENT '{t['table_comment']}'" if t.get("table_comment") else ""
-            parts.append(f"CREATE TABLE {name} (\n" + ",\n".join(col_defs) + f"\n){table_comment};")
-        return "\n\n".join(parts)
 
     async def observation(self, msg: AgentMessage, act_output: ActOutput, llm_response: dict[Any, Any]) -> AgentMessage:
         """观察最终答复：工具化循环结束后 LLM 的自由文本即结论，直接回传调用方。

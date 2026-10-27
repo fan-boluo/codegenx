@@ -32,6 +32,7 @@ from codegenx.ai_service.schema.ai_schema import (
     AiServiceStopRequest,
     AiServiceStopResponse,
 )
+from shared.constants import PUBLIC_SCHEMAS
 from codegenx.ai_service.monitor.schema.monitor import (
     MonitorAlertQueryRequest,
     MonitorSessionQueryRequest,
@@ -59,6 +60,8 @@ async def generate_code_stream(
 ):
     # 身份一律取 JWT 登录态，请求体 userId 不可信（防会话/工作区挂错用户）
     request.user_id = str(login_user.user_id)
+    # 可用公共数据源以后端为准（覆盖前端传值，防伪造圈定任意库；后续权限管控后按用户圈定）
+    request.available_schemas = list(PUBLIC_SCHEMAS)
     trace_id, request_id, session_id = _validate_call_context(request)
     ctx = HookContext(event=HookEvent.ON_USER_INPUT,data={"user_input":request.message})
     res = await hook_manager.emit(HookEvent.ON_USER_INPUT,ctx)

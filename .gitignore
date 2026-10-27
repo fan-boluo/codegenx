@@ -12,3 +12,4 @@ config.json
 /.vite/
 /backend/.claude/
 /logs/
+/.trae/

@@ -1,4 +1,4 @@
-"""
+﻿"""
 向量同步与双数据源对账（P1-4/P1-5，设计方案 v2.1 §4.7/§7）。
 
 分层职责：
@@ -21,7 +21,7 @@ from sqlalchemy import text
 from db.mysql.session import session_maker
 from shared import log
 from codegenx.ai_service.memory import metrics
-from codegenx.ai_service.memory.embedding import get_embedding_client
+from codegenx.ai_service.llm.embedding import get_embedding_client
 from codegenx.ai_service.memory.memory_store import (
     scan_pending_vector_sync,
     mark_vector_synced,

@@ -1,4 +1,4 @@
-"""
+﻿"""
 记忆写入器 —— 提炼候选 → 准入校验 → 分层落库（设计方案 v2.1 §4）。
 
 写入语义（相对 v1 的关键简化，§4.4/§4.5）：
@@ -31,7 +31,7 @@ from codegenx.ai_service.memory.memory_store import (
     upsert_hot_slot,
     mark_vector_synced,
 )
-from codegenx.ai_service.memory.embedding import get_embedding_client
+from codegenx.ai_service.llm.embedding import get_embedding_client
 from codegenx.ai_service.memory.vector_store import upsert_points
 
 # LLM 调用签名：v2 写入链路不再使用 LLM（判重已移除），参数保留以对齐

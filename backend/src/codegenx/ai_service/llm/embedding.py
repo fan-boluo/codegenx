@@ -21,7 +21,7 @@ BATCH_SIZE = 10
 RETRY_TIMES = 2
 
 
-class MemoryEmbeddingClient:
+class EmbeddingClient:
     """embedding 客户端（进程内单例，见 get_embedding_client）。"""
 
     def __init__(self) -> None:
@@ -86,5 +86,5 @@ class MemoryEmbeddingClient:
 
 
 @lru_cache(maxsize=1)
-def get_embedding_client() -> MemoryEmbeddingClient:
-    return MemoryEmbeddingClient()
+def get_embedding_client() -> EmbeddingClient:
+    return EmbeddingClient()

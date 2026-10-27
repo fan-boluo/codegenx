@@ -37,7 +37,7 @@ from codegenx.app_service.services.access import (
 )
 from codegenx.gateway.middleware.jwt_auth import JWTUser
 from codegenx.user_service.models.user import User
-from db.db_manager import create_project_database, list_database_tables
+from codegenx.app_service.services.db_manager import create_project_database, list_database_tables
 
 
 class AppService:
@@ -73,7 +73,7 @@ class AppService:
 
         if db_name:
             try:
-                create_project_database(db_name)
+                await create_project_database(db_name)
                 log.info("app-service create app db created traceId={} appId={} dbName={}", trace_id, app.id, db_name)
             except Exception as exc:
                 log.warning("app-service create app db failed traceId={} appId={} dbName={} error={}", trace_id, app.id, db_name, exc)
@@ -381,7 +381,7 @@ class AppService:
         if not app.db_name:
             return []
         try:
-            return list_database_tables(app.db_name)
+            return await list_database_tables(app.db_name)
         except Exception as exc:
             log.warning("get_db_tables failed appId={} dbName={} error={}", app_id, app.db_name, exc)
             return []

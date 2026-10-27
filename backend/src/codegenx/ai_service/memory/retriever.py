@@ -1,4 +1,4 @@
-"""
+﻿"""
 warm 层检索器 —— 向量召回 → 应用层重排 → 回表（设计方案 v2.1 §5.1/§5.2）。
 
 链路（P0-8 瘦 payload 后的重排必须在应用层做）：
@@ -26,7 +26,7 @@ from shared import log
 from codegenx.ai_service.utils.config import config
 from codegenx.ai_service.memory import metrics
 from codegenx.ai_service.memory.models import MemoryEntry, estimate_text_tokens, half_life_of
-from codegenx.ai_service.memory.embedding import get_embedding_client
+from codegenx.ai_service.llm.embedding import get_embedding_client
 from codegenx.ai_service.memory.memory_store import (
     get_active_by_ids,
     search_summary_keyword,

@@ -17,6 +17,8 @@ class UserAIRequest(CamelBaseModel):
     request_id: str = Field(default="", alias="requestId")
     client_version: str = Field(default="ai-service", alias="clientVersion")
     db_name: str | None = Field(default=None, alias="dbName")
+    # 当前用户可问答的公共数据源列表（由 chat 路由层注入，agent 仅基于这些公共库作答）
+    available_schemas: list[str] = Field(default_factory=list, alias="availableSchemas")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

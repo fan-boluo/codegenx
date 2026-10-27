@@ -31,11 +31,17 @@ class Settings(BaseSettings):
     app_port: int = 8456
     app_base_path: str = "/api"
 
+    # 应用 PostgreSQL：语义层元数据真源（semantic schema）+ pgvector
+    public_db_dialect:str = "postgres"
     postgres_host: str = "127.0.0.1"
     postgres_port: int = 5432
+    postgres_user: str = "postgres"
     postgres_password: str = "password"
+    postgres_db: str = "postgres"
+    postgres_pool_min: int = 1
+    postgres_pool_max: int = 5
 
-
+    # 系统数据
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_user: str = "root"
@@ -43,11 +49,12 @@ class Settings(BaseSettings):
     mysql_db: str = "codegenx"
     mysql_charset: str = "utf8mb4"
 
-    # 用户项目数据库连接
-    userdb_mysql_host: str = "127.0.0.1"
-    userdb_mysql_port: int = 3306
-    userdb_mysql_user: str = "root"
-    userdb_mysql_password: str = ""
+    # 用户项目数据库连接 postgres
+    userdb_type: str = "postgres"
+    userdb_host: str = "127.0.0.1"
+    userdb_port: int = 3306
+    userdb_user: str = "root"
+    userdb_password: str = ""
 
     # Docker 执行容器（非 dev 环境使用）
     # 容器内预装 mysql 客户端与 python 环境，供 SQL / Python 代码执行使用
