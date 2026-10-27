@@ -119,7 +119,7 @@ class MemoryScheduler(BaseComponent):
             with contextlib.suppress(Exception):
                 get_llm(model)
                 get_breaker(model)
-                log.info("[memory_scheduler] 提炼模型客户端已预热: {}", model)
+                log.info("[memory_scheduler] 记忆提炼模型客户端已预热: {}", model)
         with contextlib.suppress(Exception):
             await self.startup()
 
