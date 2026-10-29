@@ -120,14 +120,6 @@ class MemoryFacade(BaseComponent):
         if parts:
             parts.append(MEMORY_USAGE_RULES)
 
-        # 监控埋点：本轮记忆命中条数
-        if warm_entries:
-            try:
-                from codegenx.ai_service.monitor.monitor_pipeline import get_monitor_pipeline
-                get_monitor_pipeline().on_memory_recall(session_id, len(warm_entries))
-            except Exception:  # noqa: BLE001 — 埋点失败静默
-                pass
-
         return "\n\n".join(parts)
 
     @on(HookEvent.SESSION_END, name="memory_session_end", priority=20)

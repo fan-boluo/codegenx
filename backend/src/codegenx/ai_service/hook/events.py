@@ -1,6 +1,6 @@
 """Hook 事件定义：事件常量 + 每类事件的默认分发模式 / 可短路性 / 异常策略声明。
 
-设计文档：docs/Hook设计.md §3（10 类业务事件 + internal/* 内部事件）。
+设计文档：docs/Hook设计.md §3（业务事件 + internal/* 内部事件）。
 """
 
 from __future__ import annotations
@@ -17,16 +17,16 @@ class DispatchMode:
 
 
 class HookEvent:
-    """10 类业务事件 + 内部事件名常量（snake_case）。"""
+    """业务事件名常量（snake_case）。
+    """
+
     ON_USER_INPUT = "on_user_input"
     SESSION_START = "on_session_start"
     TURN_START = "on_turn_start"
-    BEFORE_BUILD = "before_build"
     BEFORE_LLM_INVOKE = "before_llm_invoke"
     AFTER_LLM_INVOKE = "after_llm_invoke"
     BEFORE_TOOL_CALL = "before_tool_call"
     AFTER_TOOL_CALL = "after_tool_call"
-    ON_COMPLETE = "on_complete"
     TURN_END = "on_turn_end"
     SESSION_END = "on_session_end"
 
@@ -64,17 +64,13 @@ EVENT_DEFINITIONS: dict[str, EventDefinition] = {
         HookEvent.TURN_START, DispatchMode.SERIAL, False, ErrorPolicy.SWALLOW,
         ("session", "turn"), "单轮请求开始",
     ),
-    HookEvent.BEFORE_BUILD: EventDefinition(
-        HookEvent.BEFORE_BUILD, DispatchMode.WATERFALL, True, ErrorPolicy.SKIP,
-        ("session", "turn"), "上下文组装前：洋葱包裹 assemble，可改输入/短路产出",
-    ),
     HookEvent.BEFORE_LLM_INVOKE: EventDefinition(
         HookEvent.BEFORE_LLM_INVOKE, DispatchMode.SERIAL, True, ErrorPolicy.BLOCKED,
-        ("session", "turn", "messages", "prompt_tokens"), "LLM 调用前：token 上报、限流，可 blocked",
+        ("session", "turn", "messages"), "LLM 调用前：输入护轨、限流，可 blocked",
     ),
     HookEvent.AFTER_LLM_INVOKE: EventDefinition(
         HookEvent.AFTER_LLM_INVOKE, DispatchMode.PARALLEL, False, ErrorPolicy.SWALLOW,
-        ("session", "turn", "response", "usage"), "LLM 返回后：usage 上报、审计，相互独立并行",
+        ("session", "turn", "response", "agent_name"), "LLM 返回后：输出护轨、审计，并行",
     ),
     HookEvent.BEFORE_TOOL_CALL: EventDefinition(
         HookEvent.BEFORE_TOOL_CALL, DispatchMode.SERIAL, True, ErrorPolicy.BLOCKED,
@@ -82,15 +78,11 @@ EVENT_DEFINITIONS: dict[str, EventDefinition] = {
     ),
     HookEvent.AFTER_TOOL_CALL: EventDefinition(
         HookEvent.AFTER_TOOL_CALL, DispatchMode.PARALLEL, False, ErrorPolicy.SWALLOW,
-        ("session", "turn", "tool_call", "result"), "工具返回后：落盘、上报、记忆信号，并行",
-    ),
-    HookEvent.ON_COMPLETE: EventDefinition(
-        HookEvent.ON_COMPLETE, DispatchMode.SERIAL, True, ErrorPolicy.BLOCKED,
-        ("session", "turn", "final_output"), "turn 最终回复产生后：输出安全校验，可 blocked 替换回复",
+        ("session", "turn", "tool_call", "result"), "工具返回后：落盘、记忆信号、下线检测，并行",
     ),
     HookEvent.TURN_END: EventDefinition(
         HookEvent.TURN_END, DispatchMode.SERIAL, False, ErrorPolicy.SWALLOW,
-        ("session", "turn"), "单轮结束（finally，含异常路径）：快照、记忆漏斗、上报",
+        ("session", "turn"), "单轮结束（finally，含异常路径）：快照、记忆漏斗",
     ),
     HookEvent.SESSION_END: EventDefinition(
         HookEvent.SESSION_END, DispatchMode.SERIAL, False, ErrorPolicy.RAISE,
@@ -104,5 +96,5 @@ EVENT_DEFINITIONS: dict[str, EventDefinition] = {
 
 
 def is_valid_event(name: str) -> bool:
-    """事件名合法性：10 类业务事件，或 internal/* 内部事件。"""
+    """事件名合法性：业务事件，或 internal/* 内部事件。"""
     return name in EVENT_DEFINITIONS or str(name).startswith("internal/")

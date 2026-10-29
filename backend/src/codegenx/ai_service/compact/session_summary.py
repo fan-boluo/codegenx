@@ -286,7 +286,13 @@ class SessionSummaryService(BaseComponent):
                 return
             fed = messages_snapshot[start_idx:consumed_idx]
             current_notes = self._load_from_path(path)
-            summary = await self._summarize(fed, current_notes, str(path))
+            # 后台提取独立 root trace：llm span/token 归因真实 app（docs/链路追踪设计.md §5）
+            from codegenx.ai_service.trace import background_trace
+            async with background_trace(
+                "session_summary", session_id=session_id, app_id=app_id, user_id=user_id,
+                note=f"摘要提取 {len(fed)} 条消息",
+            ):
+                summary = await self._summarize(fed, current_notes, str(path))
             if summary is None:
                 # 校验闸：空输出 = 无效结果，旧摘要与水位均保留，等下次阈值触发
                 return

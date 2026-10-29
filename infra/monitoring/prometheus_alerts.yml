@@ -36,22 +36,7 @@ groups:
             most recent LLM call took {{ $value }}s, exceeding the 60s threshold.
 
       # -----------------------------------------------------------------------
-      # 3. LLM 连续 recovery ≥ 3 次
-      # -----------------------------------------------------------------------
-      - alert: LLMConsecutiveRecovery
-        expr: codegenx_llm_recovery_streak >= 3
-        for: 15s
-        labels:
-          severity: critical
-        annotations:
-          summary: "LLM recovery streak at {{ $value }}"
-          description: >
-            App {{ $labels.app_id }} model {{ $labels.model }}:
-            LLM has required recovery {{ $value }} times in a row.
-            The underlying model or prompt configuration may be broken.
-
-      # -----------------------------------------------------------------------
-      # 4. 工具连续失败 ≥ 3 次
+      # 3. 工具连续失败 ≥ 3 次
       # -----------------------------------------------------------------------
       - alert: ToolConsecutiveFailures
         expr: codegenx_tool_failure_streak >= 3
@@ -66,7 +51,7 @@ groups:
             Check tool service health and connectivity.
 
       # -----------------------------------------------------------------------
-      # 5. 上下文连续超阈值未压缩 ≥ 3 次
+      # 4. 上下文连续超阈值未压缩 ≥ 3 次
       # -----------------------------------------------------------------------
       - alert: ContextThresholdBreach
         expr: codegenx_context_breach_streak >= 3

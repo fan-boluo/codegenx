@@ -252,7 +252,6 @@
           <a-descriptions-item label="Completion Tokens">{{ selectedTurnDetail.completionTokens }}</a-descriptions-item>
           <a-descriptions-item label="Context Tokens">{{ selectedTurnDetail.contextTokens }}</a-descriptions-item>
           <a-descriptions-item label="Context Usage">{{ selectedTurnDetail.contextTokenUsage }}</a-descriptions-item>
-          <a-descriptions-item label="Memory Hits">{{ selectedTurnDetail.memoryHits }}</a-descriptions-item>
           <a-descriptions-item label="Memory Latency">{{ formatMs(selectedTurnDetail.memoryRetrievalMs) }}</a-descriptions-item>
         </a-descriptions>
         <a-divider>Tool 调用明细</a-divider>
@@ -302,7 +301,6 @@ const sessionColumns = [
   { title: '轮次', dataIndex: 'totalTurns', width: 90 },
   { title: '平均 LLM 延迟', dataIndex: 'avgLlmLatencyMs', width: 140 },
   { title: 'Tool 调用', dataIndex: 'totalToolCalls', width: 110 },
-  { title: 'Memory Hits', dataIndex: 'totalMemoryHits', width: 110 },
   { title: '开始时间', dataIndex: 'startedAt', width: 180 },
   { title: '总时长', dataIndex: 'durationMs', width: 120 },
   { title: '操作', key: 'action', width: 120, fixed: 'right' },
@@ -324,7 +322,6 @@ const turnColumns = [
   { title: '状态', dataIndex: 'status', width: 100 },
   { title: 'LLM 延迟', dataIndex: 'llmLatencyMs', width: 120 },
   { title: 'Tool 调用', dataIndex: 'toolCallsCount', width: 100 },
-  { title: 'Memory Hits', dataIndex: 'memoryHits', width: 100 },
   { title: '开始时间', dataIndex: 'startedAt', width: 180 },
   { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ]
@@ -407,7 +404,6 @@ const summaryCards = computed(() => {
     { label: 'Token 使用总数', value: overview.value?.totalTokens ?? 0 },
     { label: '平均 LLM 耗时', value: overview.value?.avgLlmLatencyMs ?? 0, suffix: 'ms' },
     { label: 'Tool 调用总数', value: overview.value?.totalToolCalls ?? 0 },
-    { label: 'Memory Hits 总数', value: overview.value?.totalMemoryHits ?? 0 },
   ]
 })
 

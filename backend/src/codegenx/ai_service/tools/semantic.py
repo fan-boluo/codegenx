@@ -29,6 +29,14 @@ from codegenx.ai_service.utils.config import config
 from shared import log
 
 
+class SemanticTool(BaseTool):
+    """语义层检索工具基类：观测类别 retrieval（trace 区分召回质量与工具执行）。"""
+
+    @property
+    def obs_category(self) -> str:
+        return "retrieval"
+
+
 def _datasource(params: dict, session_state: Any) -> str | None:
     """数据源优先级：显式参数 > 会话可用公共库 > 全局唯一数据源（store 内部兜底）。
 
@@ -73,7 +81,7 @@ async def _failure(exc: Exception) -> ToolResult:
     return ToolResult(success=False, message=message)
 
 
-class SearchTablesTool(BaseTool):
+class SearchTablesTool(SemanticTool):
 
     @property
     def name(self) -> str:
@@ -125,10 +133,17 @@ class SearchTablesTool(BaseTool):
                 render="未召回相关表",
             )
         text = "\n".join(fmt_table_card(r, r.get("score")) for r in rows)
-        return ToolResult(success=True, data=text, render=f"召回 {len(rows)} 张表")
+        # extras.tables：结构化表名（trace recalled_tables → 评测归因"SQL 错因召回缺表"）
+        return ToolResult(
+            success=True, data=text, render=f"召回 {len(rows)} 张表",
+            extras={"tables": [
+                f"{r.get('datasource', '')}.{r.get('schema_name', '')}.{r.get('name', '')}"
+                for r in rows
+            ]},
+        )
 
 
-class DescribeTableCardTool(BaseTool):
+class DescribeTableCardTool(SemanticTool):
 
     @property
     def name(self) -> str:
@@ -195,7 +210,7 @@ class DescribeTableCardTool(BaseTool):
         return ToolResult(success=True, data=text, render=f"{card['schema_name']}.{card['name']}")
 
 
-class FindJoinPathTool(BaseTool):
+class FindJoinPathTool(SemanticTool):
 
     @property
     def name(self) -> str:
@@ -249,7 +264,7 @@ class FindJoinPathTool(BaseTool):
         )
 
 
-class SearchMetricsTool(BaseTool):
+class SearchMetricsTool(SemanticTool):
 
     @property
     def name(self) -> str:
@@ -297,7 +312,7 @@ class SearchMetricsTool(BaseTool):
         return ToolResult(success=True, data=text, render=f"召回 {len(rows)} 个指标")
 
 
-class FindVerifiedQueriesTool(BaseTool):
+class FindVerifiedQueriesTool(SemanticTool):
 
     @property
     def name(self) -> str:

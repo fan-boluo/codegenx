@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from shared.constants import get_code_dir
 from shared.utils.log_util import log
 
@@ -35,3 +37,46 @@ async def collect_info(user_id:str,app_id:str,suffix:str=None,show_limit:int=20)
             log.warning("文件元信息失败 {}: {}", fp.name, exc)
             parts.append(f"### 文件: {fp.name}（大小获取失败: {exc}）")
     return "\n\n".join(parts)
+
+
+
+def build_directory_skeleton(root: Path, *, max_entries: int = 40, max_depth: int = 2) -> str:
+    """当前项目目录结构"""
+    if not root.exists():
+        return ""
+
+    _IGNORED_DIRS = {
+        ".git", "node_modules", "__pycache__", ".data",
+        "dist", "build", ".next", ".nuxt",
+        "venv", ".venv", "env", ".env", ".tox",
+        ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    }
+
+    lines: list[str] = []
+    prefix_map = {0: "", 1: "  ", 2: "    "}
+
+    def walk(current: Path, depth: int) -> None:
+        if depth > max_depth or len(lines) >= max_entries:
+            return
+        try:
+            children = sorted(
+                current.iterdir(),
+                key=lambda item: (item.is_file(), item.name.lower()),
+            )
+        except OSError as exc:
+            log.warning("Failed to read project skeleton for {}: {}", current, exc)
+            return
+
+        indent = prefix_map.get(depth, "    " * depth)
+        for child in children:
+            if child.is_dir() and child.name in _IGNORED_DIRS:
+                continue
+            prefix = indent + ("- " if depth > 0 else "")
+            lines.append(prefix + child.name + ("/" if child.is_dir() else ""))
+            if child.is_dir() and depth < max_depth:
+                walk(child, depth + 1)
+            if len(lines) >= max_entries:
+                break
+
+    walk(root, 0)
+    return "\n".join(lines)

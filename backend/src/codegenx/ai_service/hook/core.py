@@ -382,7 +382,7 @@ class HookManager:
     @asynccontextmanager
     async def span(self, name: str, ctx: HookContext):
         """洋葱 span：自动记录用时/状态/trace 路径，sink(kind, ctx, span) 可选上报。
-        已经在监控中设计了用时，这里就不用了
+        前端展示用
         """
         sp = Span(name=name, parent=ctx.current_span)
         ctx._span_stack.append(sp)

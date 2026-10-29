@@ -25,6 +25,7 @@ from shared import log
 
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
+from codegenx.ai_service.trace import current_app_id, get_current_agent, start_span
 from codegenx.ai_service.utils.config import config
 
 
@@ -35,7 +36,7 @@ class LLMNoModelAvailableError(RuntimeError):
 # ── 指标埋点（守卫式：埋点绝不阻断业务）────────────────────────────────────
 
 def _metrics():
-    from codegenx.ai_service.monitor import prometheus_metrics as m
+    from codegenx.ai_service.trace import metrics as m
     return m
 
 
@@ -51,6 +52,70 @@ def _set_gauge(name: str, value: float, **labels) -> None:
         getattr(_metrics(), name).labels(**labels).set(value)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _record_usage(model: str, usage: Any) -> None:
+    """LLM token 用量唯一喂入点（守卫式，绝不阻断调用）：结构化日志 + Prometheus 计数。
+
+    韧性层是全部 LLM 调用的统一出口（在线 think 流式/非流式、compact/summary/memory），
+    在此采集天然全覆盖且不重复；app_id 从 trace turn 上下文归因
+    （在线轮次=真实 app，后台任务=system）。
+    """
+    if not usage:
+        return
+    if isinstance(usage, dict):
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+    else:
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+    if not prompt and not completion:
+        return
+    log.debug(
+        "[llm_usage] model={} prompt_tokens={} completion_tokens={}",
+        model, prompt, completion,
+    )
+    try:
+        from codegenx.ai_service.trace import current_app_id
+        m = _metrics()
+        app_id = current_app_id()
+        if prompt:
+            m.llm_prompt_tokens_total.labels(app_id=app_id, model=model).inc(prompt)
+        if completion:
+            m.llm_completion_tokens_total.labels(app_id=app_id, model=model).inc(completion)
+    except Exception:  # noqa: BLE001 — 埋点失败静默
+        pass
+
+
+def _usage_ints(usage: Any) -> tuple[int, int]:
+    """usage（dict/对象双兼容）→ (prompt_tokens, completion_tokens)。"""
+    if not usage:
+        return 0, 0
+    if isinstance(usage, dict):
+        return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+    return int(getattr(usage, "prompt_tokens", 0) or 0), int(getattr(usage, "completion_tokens", 0) or 0)
+
+
+def _record_call(trigger: str, model: str, cls: Optional[LLMErrorClass],
+                 total_ms: float = 0.0, first_token_ms: float = 0.0) -> None:
+    """LLM 调用 attempt 唯一喂入（守卫式）：计数含失败分类，trigger=触发来源。
+
+    每次 attempt（成功+失败）喂一次；app_id 按 turn 上下文归因
+    （在线=真实 app，后台任务=system）；延迟/首 token 仅成功（cls=None）时 observe。
+    """
+    try:
+        _metrics().feed_llm_attempt(
+            app_id=current_app_id(), model=model, trigger=trigger,
+            outcome="ok" if cls is None else f"error_{cls.value}",
+            total_ms=total_ms, first_token_ms=first_token_ms,
+        )
+    except Exception:  # noqa: BLE001 — 埋点失败静默
+        pass
+
+
+def _llm_span(model: str, messages: List[Dict[str, Any]]):
+    """llm span（观测直埋）：name/agent 取当前 agent 域；无 turn 绑定时 no-op。"""
+    return start_span("llm", get_current_agent() or "llm", input_data={"messages": messages})
 
 
 # ── 三态熔断器 ──────────────────────────────────────────────────────────────
@@ -202,12 +267,6 @@ def _log_call(label: str, model: str, attempt: int, latency_s: float,
     )
 
 
-def _record_outcome(label: str, model: str, cls: Optional[LLMErrorClass]) -> None:
-    outcome = "ok" if cls is None else f"error_{cls.value}"
-    # 指标沿用 scenario 标签键（看板连续性），值传组件 label
-    _inc("llm_scenario_calls_total", scenario=label, model=model, outcome=outcome)
-
-
 def _exec_kwargs(tools=None, max_tokens=None, temperature=None) -> Dict[str, Any]:
     """只透传显式给出的参数，其余交给 AsyncLLMClient 的默认值。"""
     kwargs: Dict[str, Any] = {}
@@ -255,16 +314,30 @@ async def resilient_invoke(
         for attempt in range(max_attempts + 1):
             try:
                 t0 = time.monotonic()
-                llm_response = await get_llm(model).invoke(messages, **kwargs)
+                # llm span 直埋（观测）：每次实际 API 调用一个 span，失败自动置 error
+                async with _llm_span(model, messages) as span:
+                    llm_response, usage = await get_llm(model).invoke(messages, **kwargs)
+                    prompt, completion = _usage_ints(usage)
+                    span.add_attributes({
+                        "model": model,
+                        "finish_reason": str(llm_response.get("finish_reason") or ""),
+                        "prompt_tokens": prompt,
+                        "completion_tokens": completion,
+                    })
+                    span.set_output({
+                        "content": llm_response.get("content") or "",
+                        "tool_calls": llm_response.get("tool_calls") or [],
+                    })
                 await breaker.record_success()
-                _record_outcome(label, model, None)
+                _record_usage(model, usage)
+                _record_call(label, model, None, (time.monotonic() - t0) * 1000, 0.0)
                 _log_call(label, model, attempt, time.monotonic() - t0, "ok", fallback_used)
                 return llm_response
             except asyncio.CancelledError:
                 raise  # 停止请求/任务取消：绝不重试
             except Exception as exc:
                 cls = classify_llm_error(exc)
-                _record_outcome(label, model, cls)
+                _record_call(label, model, cls)
                 _log_call(label, model, attempt, time.monotonic() - t0,
                           f"error_{cls.value}", fallback_used)
                 last_exc = exc
@@ -327,19 +400,44 @@ async def resilient_invoke_stream(
         first_chunk_seen = False
         for attempt in range(max_attempts + 1):
             t0 = time.monotonic()
+            first_token_ms = 0.0
+            usage = None
             try:
-                async for item in get_llm(model).invoke_stream(messages, **kwargs):
-                    first_chunk_seen = True
-                    yield item
+                # llm span 直埋（观测）：首 token 时点与 usage 随流补写
+                content_parts: list[str] = []
+                tool_calls_meta: list[Any] = []
+                async with _llm_span(model, messages) as span:
+                    async for item in get_llm(model).invoke_stream(messages, **kwargs):
+                        if not first_chunk_seen:
+                            first_chunk_seen = True
+                            first_token_ms = (time.monotonic() - t0) * 1000
+                        if item.get("type") == "content":
+                            content_parts.append(str(item.get("data") or ""))
+                        elif item.get("type") == "tool_calls":
+                            tool_calls_meta = item.get("data") or []
+                        if item.get("type") == "response_info":
+                            # 末尾 response_info 携带 usage：token 计数唯一喂入点
+                            info = item.get("data") or {}
+                            usage = info.get("usage")
+                            _record_usage(model, usage)
+                            prompt, completion = _usage_ints(usage)
+                            span.add_attributes({
+                                "model": str(info.get("model") or model),
+                                "finish_reason": str(info.get("finish_reason") or ""),
+                                "prompt_tokens": prompt,
+                                "completion_tokens": completion,
+                            })
+                        yield item
+                    span.set_output({"content": "".join(content_parts), "tool_calls": tool_calls_meta})
                 await breaker.record_success()
-                _record_outcome(label, model, None)
+                _record_call(label, model, None, (time.monotonic() - t0) * 1000, first_token_ms)
                 _log_call(label, model, attempt, time.monotonic() - t0, "ok", fallback_used)
                 return
             except asyncio.CancelledError:
                 raise  # 用户停止/客户端断开：绝不重试、不计失败
             except Exception as exc:
                 cls = classify_llm_error(exc)
-                _record_outcome(label, model, cls)
+                _record_call(label, model, cls)
                 _log_call(label, model, attempt, time.monotonic() - t0,
                           f"error_{cls.value}", fallback_used)
                 last_exc = exc

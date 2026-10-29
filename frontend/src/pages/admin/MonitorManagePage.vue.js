@@ -9,7 +9,6 @@ const sessionColumns = [
     { title: '轮次', dataIndex: 'totalTurns', width: 90 },
     { title: '平均 LLM 延迟', dataIndex: 'avgLlmLatencyMs', width: 140 },
     { title: 'Tool 调用', dataIndex: 'totalToolCalls', width: 110 },
-    { title: 'Memory Hits', dataIndex: 'totalMemoryHits', width: 110 },
     { title: '开始时间', dataIndex: 'startedAt', width: 180 },
     { title: '总时长', dataIndex: 'durationMs', width: 120 },
     { title: '操作', key: 'action', width: 120, fixed: 'right' },
@@ -29,7 +28,6 @@ const turnColumns = [
     { title: '状态', dataIndex: 'status', width: 100 },
     { title: 'LLM 延迟', dataIndex: 'llmLatencyMs', width: 120 },
     { title: 'Tool 调用', dataIndex: 'toolCallsCount', width: 100 },
-    { title: 'Memory Hits', dataIndex: 'memoryHits', width: 100 },
     { title: '开始时间', dataIndex: 'startedAt', width: 180 },
     { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ];
@@ -103,7 +101,6 @@ const summaryCards = computed(() => {
         { label: 'Token 使用总数', value: overview.value?.totalTokens ?? 0 },
         { label: '平均 LLM 耗时', value: overview.value?.avgLlmLatencyMs ?? 0, suffix: 'ms' },
         { label: 'Tool 调用总数', value: overview.value?.totalToolCalls ?? 0 },
-        { label: 'Memory Hits 总数', value: overview.value?.totalMemoryHits ?? 0 },
     ];
 });
 const sessionPagination = computed(() => ({
@@ -1863,15 +1860,12 @@ if (__VLS_ctx.selectedTurnDetail) {
     aDescriptionsItem;
     // @ts-ignore
     const __VLS_556 = __VLS_asFunctionalComponent1(__VLS_555, new __VLS_555({
-        label: "Memory Hits",
+        label: "Memory Latency",
     }));
     const __VLS_557 = __VLS_556({
-        label: "Memory Hits",
+        label: "Memory Latency",
     }, ...__VLS_functionalComponentArgsRest(__VLS_556));
     const { default: __VLS_560 } = __VLS_558.slots;
-    (__VLS_ctx.selectedTurnDetail.memoryHits);
-    // @ts-ignore
-    [selectedTurnDetail,];
     var __VLS_558;
     let __VLS_561;
     /** @ts-ignore @type { | typeof __VLS_components.aDescriptionsItem | typeof __VLS_components.ADescriptionsItem | typeof __VLS_components['a-descriptions-item'] | typeof __VLS_components.aDescriptionsItem | typeof __VLS_components.ADescriptionsItem | typeof __VLS_components['a-descriptions-item']} */

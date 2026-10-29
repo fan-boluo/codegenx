@@ -51,15 +51,17 @@ class CommonContext(ABC):
     async def normalize_messages(self):
         self.chat_messages = self.drop_orphan_tool_pairs(self.normalize_history(self.chat_messages))
 
-    async def assemble(self) -> list[dict[str, Any]]:
+    async def assemble(self, payload_messages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """
-        通用：组合system_prompt 和规范后的历史对话
+        组装 LLM 调用消息（payload 组装的唯一入口）：system 前置 + 规范化 + tool 配对清理。
+        payload_messages：预算器产出的消息视图（硬截断/占位剔除后）；缺省用真相源。
+        仅构建新列表，不改真相源。
         """
+        source = self.chat_messages if payload_messages is None else payload_messages
         messages: list[dict[str, Any]] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
-        # 先做标准化，然后进行tool配对检查
-        messages.extend(self.chat_messages)
+        messages.extend(self.drop_orphan_tool_pairs(self.normalize_history(source)))
         return messages
 
     @staticmethod

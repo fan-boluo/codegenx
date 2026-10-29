@@ -81,7 +81,8 @@ class ToolRegistry(BaseComponent):
                     label=label,
                     description=description,
                     parameters=parameters,
-                    executor=tool_instance.execute
+                    executor=tool_instance.execute,
+                    obs_category=str(getattr(tool_instance, "obs_category", "tool") or "tool"),
                 )
                 existing_tool = next((t for t in self.tools if t.name == name), None)
                 if existing_tool is None:

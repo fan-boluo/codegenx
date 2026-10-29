@@ -28,10 +28,10 @@ class TestSerialDispatch(unittest.IsolatedAsyncioTestCase):
     async def test_order_and_none_passthrough(self):
         m = HookManager()
         order = []
-        m.register(HookEvent.TURN_START, lambda c: order.append(1), name="a", priority=20)
-        m.register(HookEvent.TURN_START, lambda c: order.append(2), name="b", priority=10)
+        m.register(HookEvent.TURN_END, lambda c: order.append(1), name="a", priority=20)
+        m.register(HookEvent.TURN_END, lambda c: order.append(2), name="b", priority=10)
         m.load_and_freeze()
-        await m.emit(HookEvent.TURN_START, _ctx(HookEvent.TURN_START))
+        await m.emit(HookEvent.TURN_END, _ctx(HookEvent.TURN_END))
         self.assertEqual(order, [2, 1])
 
     async def test_blocked_short_circuit(self):
@@ -102,10 +102,10 @@ class TestSerialDispatch(unittest.IsolatedAsyncioTestCase):
         def boom(c):
             raise RuntimeError("初始化失败")
 
-        m.register(HookEvent.SESSION_START, boom, name="boom")
+        m.register(HookEvent.SESSION_END, boom, name="boom")
         m.load_and_freeze()
         with self.assertRaisesRegex(RuntimeError, "初始化失败"):
-            await m.emit(HookEvent.SESSION_START, _ctx(HookEvent.SESSION_START))
+            await m.emit(HookEvent.SESSION_END, _ctx(HookEvent.SESSION_END))
 
     async def test_error_policy_swallow_on_turn_end(self):
         """on_turn_end（finally 语义）异常吞掉，不掩盖原始异常。"""
@@ -140,6 +140,10 @@ class TestParallelDispatch(unittest.IsolatedAsyncioTestCase):
 
 
 class TestWaterfallDispatch(unittest.IsolatedAsyncioTestCase):
+    """waterfall 机制测试：用 internal/* 事件名验证洋葱分发（机制通用，与具体业务事件解耦）。"""
+
+    EVENT = "internal/waterfall_test"
+
     async def test_onion_order(self):
         """洋葱：前序处理 → 内层 → 后序处理。"""
         m = HookManager()
@@ -151,9 +155,9 @@ class TestWaterfallDispatch(unittest.IsolatedAsyncioTestCase):
             order.append("outer_post")
             return result
 
-        m.register(HookEvent.BEFORE_BUILD, outer, name="outer")
+        m.register(self.EVENT, outer, name="outer", mode="waterfall")
         m.load_and_freeze()
-        result = await m.waterfall(HookEvent.BEFORE_BUILD, _ctx(HookEvent.BEFORE_BUILD),
+        result = await m.waterfall(self.EVENT, _ctx(self.EVENT),
                                    inner=lambda: "CORE")
         self.assertEqual(result, "CORE")
         self.assertEqual(order, ["outer_pre", "outer_post"])
@@ -166,10 +170,10 @@ class TestWaterfallDispatch(unittest.IsolatedAsyncioTestCase):
         async def short(ctx, call_next):
             return "SHORT"
 
-        m.register(HookEvent.BEFORE_BUILD, short, name="short")
+        m.register(self.EVENT, short, name="short", mode="waterfall")
         m.load_and_freeze()
         result = await m.waterfall(
-            HookEvent.BEFORE_BUILD, _ctx(HookEvent.BEFORE_BUILD),
+            self.EVENT, _ctx(self.EVENT),
             inner=lambda: inner_ran.append(1) or "CORE",
         )
         self.assertEqual(result, "SHORT")
@@ -185,27 +189,31 @@ class TestWaterfallDispatch(unittest.IsolatedAsyncioTestCase):
         async def ok(ctx, call_next):
             return (await call_next()) + "+ok"
 
-        m.register(HookEvent.BEFORE_BUILD, boom, name="boom", priority=10)
-        m.register(HookEvent.BEFORE_BUILD, ok, name="ok", priority=20)
+        m.register(self.EVENT, boom, name="boom", priority=10, mode="waterfall")
+        m.register(self.EVENT, ok, name="ok", priority=20, mode="waterfall")
         m.load_and_freeze()
-        ctx = _ctx(HookEvent.BEFORE_BUILD)
-        result = await m.waterfall(HookEvent.BEFORE_BUILD, ctx, inner=lambda: "CORE")
+        ctx = _ctx(self.EVENT)
+        result = await m.waterfall(self.EVENT, ctx, inner=lambda: "CORE")
         self.assertEqual(result, "CORE+ok")
         self.assertTrue(ctx.errors)
 
     async def test_pre_step_short_circuit_skips_onion(self):
-        """事件上注册的 serial 型 hook 作为前置步骤，其 blocked 短路整个洋葱。"""
+        """事件上注册的 serial 型 hook 作为前置步骤，其 blocked 短路整个洋葱。
+
+        用真实可短路事件（before_tool_call）验证：internal/* 事件不可短路，
+        blocked 前置步骤只记录不拦截。
+        """
         m = HookManager()
 
         def guard(c):
             return {"action": "blocked", "message": "组装被拦截"}
 
-        m.register(HookEvent.BEFORE_BUILD, guard, name="guard", mode="serial")
+        m.register(HookEvent.BEFORE_TOOL_CALL, guard, name="guard", mode="serial")
         m.load_and_freeze()
         inner_ran = []
-        ctx = _ctx(HookEvent.BEFORE_BUILD)
+        ctx = _ctx(HookEvent.BEFORE_TOOL_CALL)
         result = await m.waterfall(
-            HookEvent.BEFORE_BUILD, ctx,
+            HookEvent.BEFORE_TOOL_CALL, ctx,
             inner=lambda: inner_ran.append(1) or "CORE",
         )
         self.assertIsNone(result)

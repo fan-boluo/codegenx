@@ -71,7 +71,7 @@ class ContextBudgetResult:
 
     system_prompt: str
     tools: list[dict]
-    messages: list[dict]            # 已含 system 的最终 payload
+    payload_messages: list[dict]    # 预算后的消息视图（不含 system；组装由 context.assemble 负责）
     total_budget: int = 0
     tools_tokens_before: int = 0
     tools_tokens_after: int = 0
@@ -84,6 +84,47 @@ class ContextBudgetResult:
     sections: list = field(default_factory=list)   # list[SectionReport]
     compact_path: str = ""
     truncated: bool = False
+    micro_compacted: bool = False   # 工具结果微压缩实际生效
+
+    @property
+    def context_usage(self) -> float:
+        """压缩后上下文占用率（payload 总 token / 总预算）。"""
+        if not self.total_budget:
+            return 0.0
+        return round(
+            (self.tools_tokens_after + self.system_tokens + self.tokens_after)
+            / self.total_budget, 4,
+        )
+
+    @property
+    def compacted(self) -> bool:
+        """本次是否发生实际压缩（微压缩/摘要/驱逐/截断/分区驱逐/tools 瘦身）。"""
+        return bool(
+            self.micro_compacted
+            or self.compact_path
+            or self.evicted_tools
+            or self.evicted_histories
+            or self.truncated
+            or self.tools_tokens_after < self.tools_tokens_before
+            or any(getattr(s, "evicted", False) for s in self.sections)
+        )
+
+    def get_record(self) -> dict:
+        """预算结果摘要（trace span attributes / 日志消费）。"""
+        return {
+            "total_budget": self.total_budget,
+            "tools_tokens_before": self.tools_tokens_before,
+            "tools_tokens_after": self.tools_tokens_after,
+            "system_tokens": self.system_tokens,
+            "tokens_before": self.tokens_before,
+            "tokens_after": self.tokens_after,
+            "evicted_tools": self.evicted_tools,
+            "evicted_histories": self.evicted_histories,
+            "compact_path": self.compact_path or "",
+            "truncated": self.truncated,
+            "sections": {r.name: [r.before, r.after] for r in self.sections},
+            "context_usage": self.context_usage,
+        }
 
 
 # ── Path A — session-memory fast path ─────────────────────────────────────────
@@ -333,9 +374,12 @@ class CompactionService(BaseComponent):
           - 第 1/2 级就地修改 context.chat_messages（占位替换不改列表长度，
             摘要水位 extract_msg_idx 保持有效；compact 重建时水位重置 Path A=2 / Path B=0）；
           - 第 3 级只截 payload 视图、不动真相源——被截内容仍可被 turn 末摘要提取，闭环不破；
-          - 历史占位消息对模型无信息量，组装 payload 时剔除（真相源保留以对齐水位）；
+          - 历史占位消息对模型无信息量，payload 视图剔除（真相源保留以对齐水位）；
           - system 分区驱逐只影响当次 system_prompt（不写回 profile，下次超限会再次驱逐），
             tool_schema 只影响 tools 目录，摘要不覆盖二者，天然无冲突。
+
+        职责边界：本方法只做各部分 token 管理（预算计算/驱逐级联/视图截断），
+        不组装 payload——[system] + messages 由 context.assemble() 组装。
         """
         from codegenx.ai_service.compact.budget import (
             HISTORY_PLACEHOLDER,
@@ -386,6 +430,7 @@ class CompactionService(BaseComponent):
         evicted_histories = 0
         compact_path = ""
         truncated = False
+        micro_compacted = False
 
         def _enforce(protect_last_n: int) -> None:
             nonlocal evicted_tools, evicted_histories
@@ -398,16 +443,20 @@ class CompactionService(BaseComponent):
             evicted_histories += rep.evicted_histories
 
         # ── 驱逐级联：先处理历史消息，仍超依次历史驱逐、分区驱逐，最后硬截断 ──
-        payload_messages = context.chat_messages
         if _exceeded():
             # 1. 处理历史消息：先压缩工具结果，仍超再做消息摘要（重建真相源并重置水位）
+            _pre_micro = estimate_tokens(context.chat_messages)
             await context.micro_compact()
+            micro_compacted = estimate_tokens(context.chat_messages) < _pre_micro
         if _exceeded() and _msg_budget() >= MIN_TOKENS_AFTER:
             async for data in context.compact(token_budget=_msg_budget()):
                 compact_path = str((data or {}).get("path_used") or "compact")
                 log.info("【预算】{} 触发上下文压缩 path={} {}→{}",
                             agent_name, compact_path,
                             (data or {}).get("tokens_before"), (data or {}).get("tokens_after"))
+
+        # 视图绑定真相源：micro_compact/compact 会重建 chat_messages，组装前统一取最新列表
+        payload_messages = context.chat_messages
 
         # 2. 仍超：历史消息驱逐（真相源占位降级；原文可经重新调用/快照回捞）
         if _exceeded():
@@ -461,8 +510,6 @@ class CompactionService(BaseComponent):
             m for m in payload_messages if m.get("content") != HISTORY_PLACEHOLDER
         ]
         msg_tokens_after = estimate_tokens(payload_messages)
-        messages = ([{"role": "system", "content": system_prompt}] + list(payload_messages)
-                    if system_prompt else list(payload_messages))
 
         # ── 日志：总账 + 逐分区结果（用户可见，每 step 一条）──────────────
         section_reports: list[SectionReport] = []
@@ -517,7 +564,7 @@ class CompactionService(BaseComponent):
         return ContextBudgetResult(
             system_prompt=system_prompt,
             tools=compressed_tools,
-            messages=messages,
+            payload_messages=payload_messages,
             total_budget=total_budget,
             tools_tokens_before=tools_before,
             tools_tokens_after=tools_after,
@@ -530,6 +577,7 @@ class CompactionService(BaseComponent):
             sections=section_reports,
             compact_path=compact_path,
             truncated=truncated,
+            micro_compacted=micro_compacted,
         )
 
 # ------------------------压缩------------------------------------------

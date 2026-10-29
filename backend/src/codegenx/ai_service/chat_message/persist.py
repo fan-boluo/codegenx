@@ -63,9 +63,6 @@ class SessionPersistence(BaseComponent):
     def _tool_log_file(self, user_id: str, app_id: str, session_id: str) -> Path:
         return self._session_dir(user_id, app_id, session_id) / f"tool_log_{session_id}.jsonl"
 
-    def _memory_log_file(self, user_id: str, app_id: str, session_id: str) -> Path:
-        return self._session_dir(user_id, app_id, session_id) / f"memory_log_{session_id}.jsonl"
-
     async def save_turn_chat_message_snapshot(
         self, turn_chat_message: list[dict[str, Any]], *, user_id: str, app_id: str, session_id: str
     ) -> str:
@@ -104,15 +101,6 @@ class SessionPersistence(BaseComponent):
         serialized = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
         async with self._lock(user_id, app_id, session_id):
             with open(self._tool_log_file(user_id, app_id, session_id), "a", encoding="utf-8") as f:
-                f.write(serialized)
-
-    async def append_memory_log(
-        self, entry: dict[str, Any], *, user_id: str, app_id: str, session_id: str
-    ) -> None:
-        """追加一条记忆检索/写入记录到 memory_log_{session_id}.jsonl。"""
-        serialized = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
-        async with self._lock(user_id, app_id, session_id):
-            with open(self._memory_log_file(user_id, app_id, session_id), "a", encoding="utf-8") as f:
                 f.write(serialized)
 
     async def save_turn_snapshot(

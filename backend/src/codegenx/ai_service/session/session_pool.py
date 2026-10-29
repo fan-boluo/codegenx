@@ -84,7 +84,7 @@ class SessionPool(BaseComponent):
             self._sessions.clear()
         log.info("SessionPool stopped")
 
-    # ── 容器生命周期钩子：start_app/stop_app 广播接管（原由 AgentRuntime.start/stop 代管）──
+    # ── 容器生命周期钩子：start_app/stop_app 广播接管 ──
 
     async def async_before_start(self) -> None:
         await self.start()
@@ -445,6 +445,5 @@ class SessionPool(BaseComponent):
 
 
 def initialize_session_pool(system_app) -> SessionPool:
-    """注册会话池组件（system_app.initialize_components 调用；须先于 AgentRuntime，
-    关闭逆序保证 runtime 先停、会话池最后收尾）。"""
+    """注册会话池组件（system_app.initialize_components 调用；关闭逆序保证会话池最后收尾）。"""
     return system_app.register(SessionPool)

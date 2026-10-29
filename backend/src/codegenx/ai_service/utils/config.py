@@ -366,6 +366,31 @@ class MonitorConfig(Base):
     alerts: MonitorAlertRulesConfig = Field(default_factory=MonitorAlertRulesConfig)
 
 
+class TraceConfig(Base):
+    """全链路追踪配置（telemetry schema，docs/链路追踪设计.md §9）。"""
+    enabled: bool = True                 # 总开关（关闭则监听器全部空转）
+    payload_max_chars: int = Field(
+        default=32768,
+        validation_alias=AliasChoices("payloadMaxChars", "payload_max_chars"),
+    )  # 单字段字符上限（messages/sql/result 等），超长截断并标 truncated
+    rows_preview_limit: int = Field(
+        default=20,
+        validation_alias=AliasChoices("rowsPreviewLimit", "rows_preview_limit"),
+    )  # execute_postgresql rows_preview 最大行数
+    flush_batch_size: int = Field(
+        default=200,
+        validation_alias=AliasChoices("flushBatchSize", "flush_batch_size"),
+    )  # 落库攒批大小
+    retention_days: int = Field(
+        default=90,
+        validation_alias=AliasChoices("retentionDays", "retention_days"),
+    )  # 数据保留天数（T2 清理任务消费）
+    capture_content: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("captureContent", "capture_content"),
+    )  # 是否记录输入输出内容（false 只留元数据）
+
+
 class CompactConfig(Base):
     max_tool_result_tokens: int = Field(
         default=3000,
@@ -467,6 +492,7 @@ class Config(BaseSettings):
     semantic: SemanticConfig = Field(default_factory=SemanticConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     monitor:MonitorConfig = Field(default_factory=MonitorConfig)
+    trace: TraceConfig = Field(default_factory=TraceConfig)
     compact: CompactConfig = Field(default_factory=CompactConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     multi_agents: MultiAgentsConfig = Field(default_factory=MultiAgentsConfig)

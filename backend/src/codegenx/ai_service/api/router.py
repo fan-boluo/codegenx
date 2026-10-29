@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from codegenx.ai_service.hook import hook_manager, HookEvent, HookContext, HookAction
 from codegenx.ai_service.system_app import get_app
 from codegenx.ai_service.chat_message import get_chat_message_store
-from codegenx.ai_service.monitor.monitor_query_service import get_monitor_query_service
-from codegenx.ai_service.monitor.maintenance_service import get_monitor_maintenance_service
+from codegenx.ai_service.trace.maintenance import get_monitor_maintenance_service
+from codegenx.ai_service.trace.query_service import get_monitor_query_service
 from codegenx.app_service.services.access import require_participant_by_id
 from codegenx.gateway.middleware.auth import require_login, require_role
 from codegenx.gateway.middleware.jwt_auth import JWTUser
@@ -33,7 +33,7 @@ from codegenx.ai_service.schema.ai_schema import (
     AiServiceStopResponse,
 )
 from shared.constants import PUBLIC_SCHEMAS
-from codegenx.ai_service.monitor.schema.monitor import (
+from codegenx.ai_service.trace.schema.admin import (
     MonitorAlertQueryRequest,
     MonitorSessionQueryRequest,
     TokenUsageQueryRequest,
@@ -247,6 +247,15 @@ async def internal_get_monitor_turn_detail(session_id: str, turn_id: str):
     if detail is None:
         raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "turn not found")
     return success(detail)
+
+
+@monitor_router.get("/monitor/sessions/{session_id}/turns/{turn_id}/spans")
+async def internal_get_monitor_turn_spans(session_id: str, turn_id: str):
+    """turn 的 span 树（扁平列表 + offsetMs，前端组树画瀑布）。"""
+    tree = await get_monitor_query_service().get_turn_spans(session_id, turn_id)
+    if tree is None:
+        raise BusinessException(ErrorCode.NOT_FOUND_ERROR, "turn not found")
+    return success(tree)
 
 
 @monitor_router.get("/monitor/config")

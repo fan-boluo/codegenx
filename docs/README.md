@@ -215,7 +215,7 @@ docs/ 下
 SystemApp架构设计.md
 上下文工程设计.md
 LLM调用设计方案.md
-Agent记忆系统设计方案v2.md(docs下其它的记忆设计方案为历史的)
+记忆系统设计.md
 SessionState管理.md
 用户项目权限与存储隔离方案.md
 数据分析工具技能设计.md

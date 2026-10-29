@@ -4,14 +4,10 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-
-from typing import TYPE_CHECKING, Any
-
-from pydantic import BaseModel, Field
+from typing import Any
 
 from codegenx.ai_service.agent.agent_schema import AgentState
 from codegenx.ai_service.context.session_context import SessionContext
-from codegenx.ai_service.monitor.telemetry_schema import SpanRecord
 from codegenx.ai_service.schema.ai_schema import UserAIRequest
 
 
@@ -22,25 +18,14 @@ class TurnStoppedError(Exception):
 class ActivateTurn:
     """turn 级请求执行状态机（基础设施层，单/多 agent 链路共用）。
 
-    单 agent 链路（AgentRuntime）已退役：其专属字段（requires_followup /
-    active_step_id / active_steps / last_step_compacted / tool_iterations /
-    last_tool_signature / consecutive_same_tool_calls / llm_recovery_count /
-    last_recovery_kind）已删除，runtime.py 保留作历史参照不再执行。
+    单 agent 链路（AgentRuntime）已退役；span 引用（active_span_refs）随
+    monitor 双轨采集一起删除，链路追踪统一走 telemetry（trace 模块）。
     """
     round_counter: int = 0  # 跨 agent 路由轮次（多 agent 链路的循环边界）
     state: AgentState = AgentState.IDLE  # 一次turn的状态
     started_at: float = 0.0
     finished_at: float = 0.0
-    active_span_refs:dict = field(default_factory=dict)
     error_text: str = ""
-
-    def add_turn_span_id(self, key: str, span_id: str) -> None:
-        """Register an active span id for the current turn (e.g. 'turn_span_id', 'llm_span_id')."""
-        self.active_span_refs[key] = span_id
-
-    def pop_turn_span(self, key: str) -> str | None:
-        """Remove and return a span id by key. Returns None if the key doesn't exist."""
-        return self.active_span_refs.pop(key, None)
 
 
 def raise_if_stop_signal(session_state: RuntimeSessionState) -> None:
@@ -61,12 +46,6 @@ class RuntimeSessionState:
     context_manager: SessionContext | None = None  # 整个会话的上下文管理（由 on_session_start hook 初始化）
     # P4 §10.3：会话归属智能体（请求 metadata.agent_name；空=默认智能体，现行为不变）
     agent_name: str = ""
-
-    # Monitoring (initialised by on_session_start hook)
-    session_record: SpanRecord | None = None
-    # span_collector: Any = None
-    root_span_id: str = ""
-    root_span_started_at: datetime | None = None
 
     # session 中的请求任务
     request_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # 获取请求任务锁

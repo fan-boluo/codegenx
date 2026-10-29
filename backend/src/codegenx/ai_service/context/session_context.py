@@ -14,6 +14,7 @@ from codegenx.ai_service.context.common_context import CommonContext
 from codegenx.ai_service.compact import microcompact_messages, estimate_tokens
 from codegenx.ai_service.compact.large_output import persist_large_output
 from codegenx.ai_service.tools.base import ToolResult
+from codegenx.ai_service.trace import start_span
 from codegenx.ai_service.utils.context_utils import rough_tokens, ensure_app_workdir
 from shared import log
 
@@ -328,18 +329,25 @@ class SessionContext(CommonContext):
 
         判定谓词在 SummaryState（会话级状态自查）；摘要输入按内存 chat_messages
         快照切片（extract_msg_idx 为内存 index 水位），不依赖 DB。
+        compaction span 在此记录（触发即记；提取本身在后台异步完成，
+        LLM 调用指标由 llm 客户端层喂入，不在此追踪）。
         """
         from codegenx.ai_service.system_app import get_app
 
         app = get_app()
         if self.summary_state.should_extract(self.chat_messages):
-            app.summary.fire_extract(
-                self.summary_state,
-                self.chat_messages,
-                user_id=self.user_id,
-                app_id=self.app_id,
-                session_id=self.session_id,
-            )
+            # 摘要触发 compaction span（root=True 挂 turn；未触发阈值不落 span）
+            async with start_span(
+                "compaction", "session_summary", root=True,
+                attributes={"session_id": self.session_id, "messages": len(self.chat_messages)},
+            ):
+                app.summary.fire_extract(
+                    self.summary_state,
+                    self.chat_messages,
+                    user_id=self.user_id,
+                    app_id=self.app_id,
+                    session_id=self.session_id,
+                )
             log.debug("session summary 后台提取已触发")
         else:
             log.debug("session summary 未触发提取阈值")

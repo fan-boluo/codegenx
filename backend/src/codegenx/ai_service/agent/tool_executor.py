@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import re
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,8 @@ from codegenx.ai_service.tools.base import ToolResult
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, TurnStoppedError
 from codegenx.ai_service.hook import HookContext, HookDecision, HookEvent, on, hook_manager
 from codegenx.ai_service.system_app import get_app
+from codegenx.ai_service.trace import  start_span
+from codegenx.ai_service.trace.metrics import feed_tool_call
 from codegenx.ai_service.utils.config import config
 from shared import log
 from shared.constants import get_code_dir
@@ -221,10 +224,13 @@ class ToolExecutor(BaseComponent):
         """
         统一执行工具的逻辑。
 
-        runtime 已废弃，BEFORE_TOOL_CALL / AFTER_TOOL_CALL 钩子由本方法直接分发：
+        BEFORE_TOOL_CALL / AFTER_TOOL_CALL 钩子由本方法直接分发：
         - BEFORE：serial + 可短路（safe_path_guard/file_tool_param_guard/sql_trace_start 等）；
           blocked 时直接返回 ToolResult(success=False)，不再查找/执行工具
-        - AFTER：parallel + 异常隔离（monitor/sql_trace_end 等），仅观测上报，不影响 result
+        - AFTER：parallel + 异常隔离（语义落表/persist/sql_trace_end 等），仅观测上报，不影响 result
+        - trace 观测直埋：工具执行 with start_span 包裹（op_type=注册表 obs_category）；
+          span 只记执行骨架（谁在何时调了什么、多久、成败），语义字段
+          （sql/recalled_tables 等）由 AFTER_TOOL_CALL 监听器落 telemetry.tool_semantics
         """
         tool_name = tool_call.get("name")
         tool_input = dict(tool_call.get("arguments", {}) or {})
@@ -283,7 +289,8 @@ class ToolExecutor(BaseComponent):
             log.error(f"Unknown tool called: {tool_name}")
             return ToolResult(success=False, message=f"未知工具：{tool_name}")
 
-        # 2. 工具执行 在工具执行内部已经做了异常处理了
+        # 2. 工具执行（trace 直埋：注册表 obs_category 决定 op_type——tool/retrieval；
+        #    with 块天然维护 parent 栈，工具内派发的子 agent/llm span 挂本 span 下）
         func = tool.executor
         call_kwargs = {"params": tool_input}
         if "signal" in inspect.signature(func).parameters:
@@ -292,15 +299,30 @@ class ToolExecutor(BaseComponent):
         # （如 dispatch_agent：需要停止信号、看板握手、结果入史等会话能力）
         if "session_state" in inspect.signature(func).parameters:
             call_kwargs["session_state"] = session_state
-        if inspect.iscoroutinefunction(func):
-            result = await func(**call_kwargs)
-        else:
-            result = func(**call_kwargs)
+        t0 = time.monotonic()
+        async with start_span(str(tool.obs_category or "tool"), str(tool_name),
+                              input_data=tool_input) as span:
+            if inspect.iscoroutinefunction(func):
+                result = await func(**call_kwargs)
+            else:
+                result = func(**call_kwargs)
+            # 骨架收尾：输出概要 + 成败（语义字段由 AFTER 监听器单独落表）
+            message = str(getattr(result, "message", "") or "")
+            span.set_output({
+                "success": bool(result.success),
+                "message": message,
+                "data": str(getattr(result, "data", "") or ""),
+            })
+            span.set_status(ok=bool(result.success), error=message or None)
+            span_id = span.span["span_id"] if span.span else None
+        feed_tool_call(app_id=session_state.app_id, session_id=session_state.session_id,tool_name=str(tool_name),
+                       is_error=not result.success, latency_ms=(time.monotonic() - t0) * 1000)
 
-        # AFTER_TOOL_CALL 钩子（parallel 容错分发，仅观测上报，不影响 result）
+        # AFTER_TOOL_CALL 钩子（parallel 容错分发：语义落表/落盘/记忆信号等）
         after_ctx = HookContext(event=HookEvent.AFTER_TOOL_CALL, session=session_state, turn=turn)
         after_ctx.data["tool_call"] = {**tool_call, "arguments": tool_input}
         after_ctx.data["result"] = result
+        after_ctx.data["span_id"] = span_id
         await hook_manager.dispatch(HookEvent.AFTER_TOOL_CALL, after_ctx)
 
         return result

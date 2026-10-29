@@ -311,6 +311,8 @@ class MemoryScheduler(BaseComponent):
         heartbeat = asyncio.create_task(self._heartbeat_loop(task_id))
         try:
             produced, result_payload = 0, None
+            # memory 不落 trace：任务表（心跳/mark_done/mark_failed）+ 专属指标已可监控，
+            # trace 只保留框架监测基线；后台 trace 通道仅留给 session_summary
             if task_type == TASK_WARM_EXTRACT:
                 produced, result_payload = await self._do_warm_extract(task)
             elif task_type == TASK_CONSOLIDATE:

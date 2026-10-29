@@ -11,7 +11,7 @@ from shared import log
 
 
 def _m():
-    from codegenx.ai_service.monitor import prometheus_metrics as m
+    from codegenx.ai_service.trace import metrics as m
     return m
 
 

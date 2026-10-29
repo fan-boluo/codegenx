@@ -5,9 +5,8 @@
 
 生命周期钩子执行约定（SystemApp 广播，仅 3 个钩子）：
 - 启动方向（on_init → async_before_start）：按组件**注册顺序**串行执行——
-  注册顺序即依赖顺序（如 ToolRegistry 必须先于 AgentRegistry 装载，
-  AgentRuntime 构造依赖前者）。on_init 在 init_app() 同步阶段广播；
-  async_before_start 在 start_app() 事件循环内广播（主启动钩子）。
+  注册顺序即依赖顺序（如 ToolRegistry 必须先于 AgentRegistry 装载）。
+  on_init 在 init_app() 同步阶段广播；async_before_start 在 start_app() 事件循环内广播（主启动钩子）。
 - 关闭方向（async_before_stop）：在 stop_app() 内按注册**逆序**执行，
   异常逐组件隔离并记录，保证全部组件都有机会收尾。
 """
@@ -43,7 +42,6 @@ class ComponentType(str, Enum):
     Tool_EXECUTOR = "tool_executor"
     SKILL_MANAGER = "skill_manager"
     AGENT_REGISTRY = "agent_registry"
-    CONTEXT_SERVICE = "context_service"
     SESSION_POOL = "session_pool"
     SESSION_PERSISTENCE = "session_persistence"
     TASK_BOARD = "task_board"
@@ -51,8 +49,7 @@ class ComponentType(str, Enum):
     SESSION_SUMMARY = "session_summary"
     COMPACTION = "compaction"
     CHAT_MESSAGE_STORE = "chat_message_store"
-    MONITOR_PIPELINE = "monitor_pipeline"
-    MONITOR_MAINTENANCE = "monitor_maintenance"
+    TRACE_MAINTENANCE = "trace_maintenance"
     MEMORY_SCHEDULER = "memory_scheduler"
     CHAT_SERVICE = "chat_service"
     MESSAGE_BUS = "message_bus"

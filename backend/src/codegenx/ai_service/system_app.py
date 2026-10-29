@@ -82,12 +82,6 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.AGENT_REGISTRY, AgentRegistry)
 
     @property
-    def context(self) -> "ContextService":
-        from codegenx.ai_service.context.context_service import ContextService
-
-        return self.get_component(ComponentType.CONTEXT_SERVICE, ContextService)
-
-    @property
     def session_pool(self) -> "SessionPool":
         from codegenx.ai_service.session.session_pool import SessionPool
 
@@ -136,16 +130,10 @@ class SystemApp(ComponentSystemApp):
         return self.get_component(ComponentType.MESSAGE_BUS, MessageBus)
 
     @property
-    def monitor(self) -> "MonitorPipeline":
-        from codegenx.ai_service.monitor.monitor_pipeline import MonitorPipeline
-
-        return self.get_component(ComponentType.MONITOR_PIPELINE, MonitorPipeline)
-
-    @property
     def monitor_maintenance(self) -> "MonitorMaintenanceService":
-        from codegenx.ai_service.monitor.maintenance_service import MonitorMaintenanceService
+        from codegenx.ai_service.trace.maintenance import MonitorMaintenanceService
 
-        return self.get_component(ComponentType.MONITOR_MAINTENANCE, MonitorMaintenanceService)
+        return self.get_component(ComponentType.TRACE_MAINTENANCE, MonitorMaintenanceService)
 
     @property
     def memory_scheduler(self) -> "MemoryScheduler":
@@ -180,9 +168,8 @@ def initialize_components(app: SystemApp) -> None:
     每个组件模块提供 initialize_xxx(system_app) 完成构造+注册（DB-GPT 风格），
     构造知识留在组件模块内。注册顺序 = 启动广播顺序：
       llm → tools → tool_executor → skills → agents → context → session_io → tasks
-      → memory → summary → compaction → chat_messages → monitor
-      → monitor_maintenance → memory_scheduler → session_pool → runtime
-    其中 AgentRuntime 构造即取 ToolRegistry/SessionPool，故必须排在 tools、session_pool 之后。
+      → memory → summary → compaction → chat_messages
+      → monitor_maintenance → memory_scheduler → session_pool → chat_service
     """
     if app._components_ready:
         return
@@ -201,11 +188,6 @@ def initialize_components(app: SystemApp) -> None:
 
     from codegenx.ai_service.agent.agent_registry import initialize_agents
     initialize_agents(app)
-
-    from codegenx.ai_service.agent.agent_instances import initialize_agent_instances
-
-    from codegenx.ai_service.context.context_service import initialize_context
-    initialize_context(app)
 
     from codegenx.ai_service.chat_message.persist import initialize_session_io
     initialize_session_io(app)
@@ -228,11 +210,8 @@ def initialize_components(app: SystemApp) -> None:
     from codegenx.ai_service.bus.queue import initialize_message_bus
     initialize_message_bus(app)
 
-    from codegenx.ai_service.monitor.monitor_pipeline import initialize_monitor
-    initialize_monitor(app)
-
-    from codegenx.ai_service.monitor.maintenance_service import initialize_monitor_maintenance
-    initialize_monitor_maintenance(app)
+    from codegenx.ai_service.trace.maintenance import initialize_trace_maintenance
+    initialize_trace_maintenance(app)
 
     from codegenx.ai_service.schedule.memory import initialize_memory_scheduler
     initialize_memory_scheduler(app)
@@ -245,13 +224,17 @@ def initialize_components(app: SystemApp) -> None:
 
     # 智能体实例化与规格注册：所有组件已就绪（尤其 message_bus / tool_registry / skill_manager），
     # 各 Agent 在构造时读取自身 AgentConfig 并注册 AgentSpec 到 AgentRegistry。
+    from codegenx.ai_service.agent.agent_instances import initialize_agent_instances
     initialize_agent_instances(app)
 
     # hook 注册表冻结：@on 监听器随组件模块的 import 链（模块加载即注册）收集完毕，
     # 此处统一校验/拓扑排序/冻结（docs/Hook设计.md §6）。
     # 注意：新增监听器模块必须位于组件依赖图或应用 import 链上，否则收集不到。
-    # 显式加载分析链路追踪监听器（不在组件依赖图内，需主动 import 触发 @on 注册）
+    # 显式加载 SQL 分析链路监听器（不在组件依赖图内，需主动 import 触发 @on 注册）
     from codegenx.ai_service.hook import analysis_trace  # noqa: F401
+    from codegenx.ai_service.hook import tool_semantics  # noqa: F401  工具语义落表监听器
+    # trace 生命周期（turn/session 直调函数 + store 初始化），观测不挂 hook
+    from codegenx.ai_service.trace import recorder  # noqa: F401
     from codegenx.ai_service.hook import hook_manager
 
     hook_manager.load_and_freeze()

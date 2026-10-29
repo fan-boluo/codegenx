@@ -80,30 +80,6 @@ async def _stream_chunk_generator(agen, timeout_seconds: float):
                 await pump_task
         raise
 
-def _record_usage(model_name: str, usage: Any) -> None:
-    """P1 用量采集：结构化日志 + prometheus 计数（守卫式，绝不阻断调用）。
-
-    覆盖韧性层各场景（compact/summary/memory 等）的 token 用量；
-    agent 在线链路另有 record_llm_call 按 telemetry 记账。
-    """
-    if not usage:
-        return
-    prompt = getattr(usage, "prompt_tokens", 0) or 0
-    completion = getattr(usage, "completion_tokens", 0) or 0
-    log.debug(
-        "[llm_usage] model={} prompt_tokens={} completion_tokens={}",
-        model_name, prompt, completion,
-    )
-    try:
-        from codegenx.ai_service.monitor import prometheus_metrics as m
-        if prompt:
-            m.llm_prompt_tokens_total.labels(app_id="", model=model_name).inc(prompt)
-        if completion:
-            m.llm_completion_tokens_total.labels(app_id="", model=model_name).inc(completion)
-    except Exception:  # noqa: BLE001 — 埋点失败静默
-        pass
-
-
 class AsyncLLMClient:
     """Async LLM Client wrapping OpenAI's Async interface."""
     def __init__(self, model_name: Optional[str] = None):
@@ -124,7 +100,12 @@ class AsyncLLMClient:
         tools: Optional[List[Dict]] = None,
         max_tokens: int = 2048,
         temperature: float = 0.0,
-    ) -> dict[Any, Any]:
+    ) -> tuple[dict[Any, Any], Any]:
+        """非流式调用（纯传输）：返回 (message_dict, usage)。
+
+        usage 为 provider 用量对象或 None；token 计数不在客户端采集——
+        韧性层（resilient_invoke）是全部 LLM 调用的统一出口，在那里统一喂入。
+        """
         kwargs = {
             "model": self.model_name,
             "messages": messages,
@@ -137,14 +118,14 @@ class AsyncLLMClient:
 
         try:
             completion = await self.client.chat.completions.create(**kwargs)
-            _record_usage(self.model_name, getattr(completion, "usage", None))
+            usage = getattr(completion, "usage", None)
             if not completion.choices:
                 # 空 choices：与"模型返回空串"无法区分会掩盖内容过滤/上游异常，至少留痕
                 log.warning("[llm] model={} 返回空 choices", self.model_name)
-                return {}
+                return {}, usage
 
             message = completion.choices[0].message
-            return message.to_dict() or {}
+            return message.to_dict() or {}, usage
         except Exception as e:
             log.error(f"LLM Invoke Error: {e}")
             raise e
@@ -241,17 +222,13 @@ class AsyncLLMClient:
                     yield {"type": "response_info", "data": _response_info()}
                 raise
 
-            # 流正常结束：记录采集到的 usage（若有）
-            _record_usage(self.model_name, captured_usage)
-
-            # Yield accumulated tools at the end of stream
+            # 流正常结束：yield 累积 tool_calls 与 response_info（usage 由韧性层采集）
             if tool_calls_buffer:
                 tool_calls_list = _safe_build_tool_calls(tool_calls_buffer)
                 if tool_calls_list:
                     yield {"type": "tool_calls", "data": tool_calls_list}
 
-            if finish_reason:
-                yield {"type": "response_info", "data": _response_info()}
+            yield {"type": "response_info", "data": _response_info()}
 
         except Exception as e:
             log.error(f"LLM Stream Error: {e}")

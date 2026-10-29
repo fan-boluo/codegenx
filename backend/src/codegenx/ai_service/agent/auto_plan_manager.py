@@ -4,8 +4,12 @@ from codegenx.ai_service.agent.agent_schema import AgentState, AgentEventType
 from codegenx.ai_service.agent.agents.agent import AgentMessage
 import traceback
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, TurnStoppedError, raise_if_stop_signal
-from codegenx.ai_service.hook import HookEvent, hook_manager, HookContext, HookAction
+from codegenx.ai_service.hook import HookEvent, hook_manager, HookContext
 from codegenx.ai_service.system_app import get_app
+from codegenx.ai_service.trace import session_end as trace_session_end
+from codegenx.ai_service.trace import turn_end as trace_turn_end
+from codegenx.ai_service.trace import turn_error as trace_turn_error
+from codegenx.ai_service.trace import turn_start as trace_turn_start
 from shared import log
 
 
@@ -35,11 +39,8 @@ class AutoPlanManager:
         activate_turn.state = AgentState.RUNNING
         activate_turn.started_at = time.time()
 
-        hook_ctx = HookContext(
-            event=HookEvent.TURN_START, session=session_state, turn=activate_turn,
-            action=HookAction.CONTINUE, message="",
-        )
-        await hook_manager.emit(HookEvent.TURN_START, hook_ctx)
+        # trace turn 生命周期直调（观测直埋，不寄生 hook 通道）
+        trace_turn_start(session_state, activate_turn)
 
         try:
             raise_if_stop_signal(session_state)
@@ -127,8 +128,7 @@ class AutoPlanManager:
             log.opt(exception=True).error("_execute_request failed: {}", exc)
             activate_turn.error_text = str(exc)
             activate_turn.state = AgentState.FAILED
-            hook_ctx.error = [str(exc)]
-            await hook_manager.emit(HookEvent.INTERNAL_ON_ERROR, hook_ctx)
+            trace_turn_error(session_state, str(exc))
             await _message_bus().publish_runtime_event(
                 session_state.publish_context, event_type="Error", data=str(exc), state=AgentState.FAILED,
             )
@@ -149,7 +149,12 @@ class AutoPlanManager:
                 app_id=session_state.app_id,
                 session_id=session_state.session_id,
             )
-            await hook_manager.emit(HookEvent.TURN_END, hook_ctx)
+            await hook_manager.emit(
+                HookEvent.TURN_END,
+                HookContext(event=HookEvent.TURN_END, session=session_state, turn=activate_turn),
+            )
+            # trace turn 收口直调（emit 后：等记忆信号等监听器完成再 flush，等价原 priority=90）
+            trace_turn_end(session_state, activate_turn)
             log.info("═══════════════ TURN END ═══════════════ | request={} final_state={} total_rounds={}",
                      request_id, activate_turn.state.value, activate_turn.round_counter)
             log.debug("OnTurnEnd {},{}", request_id, activate_turn.round_counter)

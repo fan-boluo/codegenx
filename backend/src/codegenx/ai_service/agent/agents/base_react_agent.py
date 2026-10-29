@@ -6,12 +6,14 @@ from contextlib import suppress
 from typing import Any, List
 from codegenx.ai_service.agent.agent_schema import AgentState,AgentEventType
 from codegenx.ai_service.agent.runtime_schema import RuntimeSessionState, raise_if_stop_signal
+from codegenx.ai_service.hook import HookAction, HookContext, HookEvent, hook_manager
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.llm_recovery import invoke_stream_with_revovery
 from codegenx.ai_service.llm.resilience import get_breaker, resilient_invoke
 from codegenx.ai_service.schema.ai_schema import UserAIRequest
 from codegenx.ai_service.utils.config import AgentConfig
 from codegenx.ai_service.system_app import get_app
+from codegenx.ai_service.trace import report_context_usage, start_span
 from codegenx.ai_service.agent.tool_handler import get_tool_registry
 from shared import log
 from codegenx.ai_service.agent.agents.agent import Agent, AgentMessage
@@ -176,7 +178,7 @@ class BaseReActAgent(Agent):
             llm_response = await resilient_invoke(
                 messages=messages,
                 chain = [self.model_name],
-                label="agent",
+                label=self.agent_name,
                 tools=self.tools or None,
                 temperature=self.agent_config.temperature,
                 max_tokens=self.agent_config.max_tokens,
@@ -290,12 +292,38 @@ class BaseReActAgent(Agent):
         """ReAct 方式执行：think → act 循环 → verify。
 
         核心流程仅保留消息收发、LLM 推理与工具执行，全部过程记录到日志；
-        监控、中间消息 publish、hook、记忆、存储、上下文管理等后续接入。
+        agent 边界 span 记录链路树（parent=外层 span 域：turn 或 dispatch_agent）。
 
         参数:
             session_state: 运行时会话状态，携带 stop_signal/publish_context 等运行时控制
                           （对话上下文已由 __init__ 绑定到 self._context）。
         """
+        attributes = {
+            "request_id": (agent_message.request_id if agent_message else "") or session_state.request_id,
+            "dispatched_by": str(agent_message.sender or "user") if agent_message else "user",
+            "task_id": getattr(agent_message, "task_id", None) or None,
+            "step_id": getattr(agent_message, "step_id", None) or None,
+        }
+        task_text = str(agent_message.task or "") if agent_message else ""
+        async with start_span(
+            "agent", self.agent_name, attributes=attributes, input_data=task_text,
+        ) as span:
+            observation = await self._run_impl(agent_message, session_state, is_stream, span)
+            result_text = str(observation.result or "")
+            span.set_output({
+                "success": bool(observation.success),
+                "result_chars": len(result_text),
+            })
+            if not observation.success:
+                span.set_status(ok=False, error=result_text or "agent 执行失败")
+            return observation
+
+    async def _run_impl(self, agent_message:AgentMessage,
+                        session_state: RuntimeSessionState,
+                        is_stream:bool,
+                        span,
+                        ) -> AgentMessage:
+        """run 主体（span 由 run 包裹后传入，循环步数经 span 上报）。"""
         # 1. 准备 tools / prompt 备料 / init_chat_message（system 由预算器每 step 渲染）
         await self._prepare_agent(session_state.request)
         log.debug("+++++++++++++++++++【{}】 STATR +++++++++++++++++++ ",self.agent_name)
@@ -327,20 +355,51 @@ class BaseReActAgent(Agent):
             # 压缩走 context 多态：leader=SessionContext（Path A 带摘要水位），
             # 子智能体=SubContext（Path B LLM 摘要，只压自己不碰会话真相源）
             self._refresh_step_params(request_id)
-            payload = await get_app().compaction.token_budget(
-                profile=self.profile,
-                prompt_params=self._prompt_params,
-                tools=self._tools_source,
-                context=self._context,
-                context_max_tokens=int(self.agent_config.context_max_tokens or 8000),
-            )
+            async with start_span("compaction", "token_budget", attributes={"agent": self.agent_name}) as span:
+                payload = await get_app().compaction.token_budget(
+                    profile=self.profile,
+                    prompt_params=self._prompt_params,
+                    tools=self._tools_source,
+                    context=self._context,
+                    context_max_tokens=int(self.agent_config.context_max_tokens or 8000),
+                )
+                # 仅实际压缩（微压缩/摘要/驱逐/截断/瘦身）保留 span，纯预算分配不落库
+                if payload.compacted:
+                    span.add_attributes(payload.get_record())
+                else:
+                    span.discard()
+            # 上下文占用每 step 上报（与 span 解耦）：turn 聚合 + 连续超限 streak
+            report_context_usage(payload.context_usage, compressed=bool(payload.compact_path))
             self.tools = payload.tools
             self._context.system_prompt = payload.system_prompt
+            # 组装职责归 context：system 前置 + 规范化 + tool 配对清理（预算器只管 token）
+            messages = await self._context.assemble(payload.payload_messages)
             step += 1
             log.info("【{} Think】:  step {}/{} START", self.agent_name, step, self.max_steps)
             log.debug("{} 传入llm的chat_message,system_prompt除外：\n{}",self.agent_name,
-                    "\n".join([str(msg) for msg in payload.messages if msg.get("role") != "system"]))
-            response = await self.think(payload.messages,is_stream,session_state)
+                    "\n".join([str(msg) for msg in messages if msg.get("role") != "system"]))
+            # LLM 调用前后 hook 分发（纯决策通道：输入输出护轨/限流挂载点；
+            # 观测已直埋韧性层——llm span/token/指标不经 hook）
+            before_ctx = HookContext(
+                event=HookEvent.BEFORE_LLM_INVOKE,
+                session=session_state, turn=session_state.activate_turn,
+            )
+            # before_ctx.data["messages"] = messages
+            await hook_manager.dispatch(HookEvent.BEFORE_LLM_INVOKE, before_ctx)
+            if before_ctx.action == HookAction.BLOCKED:
+                # blocked：以拦截消息作为本轮回复并结束本 agent 循环（限流/预算控制场景）
+                blocked_text = before_ctx.message or "LLM 调用被 hook 拦截"
+                self._context.chat_messages.append({"role": "assistant", "content": blocked_text})
+                observation = self._reply(agent_message, "user", blocked_text)
+                break
+            response = await self.think(messages,is_stream,session_state)
+            after_ctx = HookContext(
+                event=HookEvent.AFTER_LLM_INVOKE,
+                session=session_state, turn=session_state.activate_turn,
+            )
+            after_ctx.data["response"] = response
+            after_ctx.data["agent_name"] = self.agent_name
+            await hook_manager.dispatch(HookEvent.AFTER_LLM_INVOKE, after_ctx)
             if not response:  # TODO reasoning_content 的解析
                 self._context.chat_messages.append({"role": "assistant", "content": self.profile.retry_goal})
                 continue
@@ -402,6 +461,7 @@ class BaseReActAgent(Agent):
             log.warning("【{} 】: 达到 max_steps={}，强制结束", self.agent_name, self.max_steps)
 
         # 5. verify：observation 是否产出有效下一跳
+        span.add_attributes({"steps": step})
         ok, reason = await self.verify(observation)
         # 6. 返回下一跳消息：observation 已把入参消息改造为下一跳，直接返回；
         #    verify 失败（max_steps 耗尽/无效跳）时按调用方分流兜底：

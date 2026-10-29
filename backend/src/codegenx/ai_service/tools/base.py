@@ -14,6 +14,7 @@ class Tool(BaseModel):
     description: str
     parameters: dict[str, Any]  # 工具执行的参数
     executor: Callable  # 调用的函数
+    obs_category: str = "tool"  # 观测类别（tool/retrieval）：trace span 的 op_type
 
 
 class ToolResult(BaseModel):
@@ -38,6 +39,11 @@ class BaseTool(ABC):
     @abstractmethod
     def name(self) -> str:
         ...
+
+    @property
+    def obs_category(self) -> str:
+        """观测类别：语义层检索工具覆盖为 "retrieval"（trace 区分召回质量与工具执行）。"""
+        return "tool"
 
     @property
     @abstractmethod

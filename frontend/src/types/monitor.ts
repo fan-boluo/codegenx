@@ -33,8 +33,6 @@ export interface MonitorSessionSummary {
   totalErrors: number
   recoveryCount: number
   lastRecoveryKind: string
-  avgMemoryHits: number
-  totalMemoryHits: number
   endReason: string
   startedAt?: string
   endedAt?: string
@@ -56,7 +54,6 @@ export interface MonitorTurnSummary {
   llmRecoveryKind: string
   toolCallsCount: number
   toolCallsDetail: MonitorToolCallDetail[]
-  memoryHits: number
   memoryRetrievalMs: number
   contextTokens: number
   contextTokenUsage: number
@@ -95,7 +92,6 @@ export interface MonitorOverviewStats {
   avgContextTokens: number
   avgContextTokenUsage: number
   totalToolCalls: number
-  totalMemoryHits: number
   totalTokens: number
   openAlerts: number
 }

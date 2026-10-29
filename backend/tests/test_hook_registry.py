@@ -89,7 +89,7 @@ class TestHookRegistry(unittest.IsolatedAsyncioTestCase):
             m.register(HookEvent.TURN_END, lambda c: None, name="late")
 
     async def test_event_name_validation(self):
-        self.assertTrue(is_valid_event(HookEvent.SESSION_START))
+        self.assertTrue(is_valid_event(HookEvent.SESSION_END))
         self.assertTrue(is_valid_event("internal/on_error"))
         self.assertFalse(is_valid_event("on_unknown"))
 
@@ -97,11 +97,11 @@ class TestHookRegistry(unittest.IsolatedAsyncioTestCase):
         """@on 装饰到全局单例：重复注册同名由冻结校验拦截（幂等导入由模块缓存保证）。"""
         from codegenx.ai_service.hook import hook_manager
 
-        @on(HookEvent.SESSION_START, name="singleton_probe_hook")
+        @on(HookEvent.SESSION_END, name="singleton_probe_hook")
         async def probe(ctx):
             pass
 
-        labels = [r.name for r in hook_manager.listeners(HookEvent.SESSION_START)]
+        labels = [r.name for r in hook_manager.listeners(HookEvent.SESSION_END)]
         # 全局单例在其它测试模块可能已冻结（真实注册表），此处仅验证收集行为之一：
         # 未冻结时进 pending，冻结后不可再注册
         if hook_manager._frozen:

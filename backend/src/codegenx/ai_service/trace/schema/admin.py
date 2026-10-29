@@ -1,3 +1,8 @@
+"""admin 监控 API 响应契约（前端零改动：字段与 camelCase 序列化沿用原 monitor schema）。
+
+数据源已切换为 PG telemetry 派生（trace/query_service.py）；新增 turn span 树
+（waterfall 前端组树用）。
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -49,8 +54,6 @@ class MonitorSessionSummary(CamelBaseModel):
     total_errors: int = Field(default=0, alias="totalErrors")
     recovery_count: int = Field(default=0, alias="recoveryCount")
     last_recovery_kind: str = Field(default="", alias="lastRecoveryKind")
-    avg_memory_hits: float = Field(default=0, alias="avgMemoryHits")
-    total_memory_hits: int = Field(default=0, alias="totalMemoryHits")
     end_reason: str = Field(default="", alias="endReason")
     started_at: datetime | None = Field(default=None, alias="startedAt")
     ended_at: datetime | None = Field(default=None, alias="endedAt")
@@ -73,7 +76,6 @@ class MonitorTurnSummary(CamelBaseModel):
     llm_recovery_kind: str = Field(default="", alias="llmRecoveryKind")
     tool_calls_count: int = Field(default=0, alias="toolCallsCount")
     tool_calls_detail: list[MonitorToolCallDetail] = Field(default_factory=list, alias="toolCallsDetail")
-    memory_hits: int = Field(default=0, alias="memoryHits")
     memory_retrieval_ms: int = Field(default=0, alias="memoryRetrievalMs")
     context_tokens: int = Field(default=0, alias="contextTokens")
     context_token_usage: int = Field(default=0, alias="contextTokenUsage")
@@ -100,8 +102,6 @@ class MonitorAlertRecordVO(CamelBaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-
-
 class MonitorOverviewStats(CamelBaseModel):
     total_sessions: int = Field(default=0, alias="totalSessions")
     running_sessions: int = Field(default=0, alias="runningSessions")
@@ -114,7 +114,6 @@ class MonitorOverviewStats(CamelBaseModel):
     avg_context_tokens: float = Field(default=0, alias="avgContextTokens")
     avg_context_token_usage: float = Field(default=0, alias="avgContextTokenUsage")
     total_tool_calls: int = Field(default=0, alias="totalToolCalls")
-    total_memory_hits: int = Field(default=0, alias="totalMemoryHits")
     total_tokens: int = Field(default=0, alias="totalTokens")
     open_alerts: int = Field(default=0, alias="openAlerts")
 
@@ -155,3 +154,32 @@ class TokenUsageItem(CamelBaseModel):
     total_completion_tokens: int = Field(default=0, alias="totalCompletionTokens")
     total_tokens: int = Field(default=0, alias="totalTokens")
     ended_at: datetime | None = Field(default=None, alias="endedAt")
+
+
+# ── 新增：turn span 树（waterfall） ─────────────────────────────────────────
+
+class TurnSpanNode(CamelBaseModel):
+    span_id: str = Field(alias="spanId")
+    parent_span_id: str = Field(default="", alias="parentSpanId")
+    op_type: str = Field(default="", alias="opType")
+    name: str = ""
+    agent: str = ""
+    seq: int = 0
+    status: str = "ok"
+    error: str | None = None
+    started_at: datetime | None = Field(default=None, alias="startedAt")
+    duration_ms: float = Field(default=0, alias="durationMs")
+    offset_ms: float = Field(default=0, alias="offsetMs")
+    input: Any = None
+    output: Any = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class TurnSpanTree(CamelBaseModel):
+    trace_id: str = Field(alias="traceId")
+    session_id: str = Field(alias="sessionId")
+    turn_id: str = Field(default="", alias="turnId")
+    started_at: datetime | None = Field(default=None, alias="startedAt")
+    total_duration_ms: float = Field(default=0, alias="totalDurationMs")
+    span_count: int = Field(default=0, alias="spanCount")
+    spans: list[TurnSpanNode] = Field(default_factory=list)

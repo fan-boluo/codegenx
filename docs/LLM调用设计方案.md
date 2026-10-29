@@ -333,7 +333,7 @@ LLMRecovery 通过 `resilient_invoke_stream(chain=runtime.resolve_agent_chain(..
 
 | 指标 | 标签 | 含义 |
 |------|------|------|
-| `llm_scenario_calls_total` | scenario(=label), model, outcome | 调用计数；outcome 为 `ok` 或 `error_{类别}` |
+| `llm_calls_total` | app_id, model, trigger(=label), outcome | 调用计数（每次 attempt）；outcome 为 `ok` 或 `error_{类别}`，trigger 标识触发来源（agent 名/组件名） |
 | `llm_retry_total` | scenario, model | 同模型重试计数 |
 | `llm_fallback_total` | scenario, model | 降级到该模型的计数 |
 | `llm_breaker_opens_total` | circuit | 熔断打开计数 |

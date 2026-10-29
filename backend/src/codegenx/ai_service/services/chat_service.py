@@ -14,6 +14,8 @@ from codegenx.ai_service.agent.runtime_schema import (
 from codegenx.ai_service.component import BaseComponent, ComponentType
 from codegenx.ai_service.hook import HookContext, HookEvent, hook_manager
 from codegenx.ai_service.system_app import get_app
+from codegenx.ai_service.trace import session_end as trace_session_end
+from codegenx.ai_service.trace import session_start as trace_session_start
 from shared import log
 from codegenx.ai_service.schema.ai_schema import UserAIRequest
 
@@ -227,15 +229,13 @@ class ChatService(BaseComponent):
 
             # Get or create session using pool (no lock needed)
             session_state, is_new = await self.session_pool.get_or_create(request)
-            # 会话起点须在 SESSION_START 钩子前就绪：监控监听器以 started_at 构建 SpanRecord（必填 datetime）
+            # 会话起点须在 SESSION_START 钩子前就绪：trace 监听器以 started_at 计算会话时长
             session_state.state = AgentState.RUNNING
             session_state.started_at = datetime.utcnow()
             if is_new:
                 # self.session_pool.init_session_state(session_state)
-                await hook_manager.emit(
-                    HookEvent.SESSION_START,
-                    HookContext(event=HookEvent.SESSION_START, session=session_state),
-                )
+                # trace session 生命周期直调（观测直埋，不寄生 hook 通道）
+                trace_session_start(session_state)
                 log.debug(f"新建一个session_state:{request.session_id}")
 
             # P3 swap-out 恢复：闲置卸载过的会话按需从快照重载 chat_messages
@@ -391,6 +391,8 @@ class ChatService(BaseComponent):
                 data={"end_reason": end_reason},
             ),
         )
+        # trace session 收口直调（emit 后：等记忆监听器完成再兜底 flush，等价原 priority=90）
+        await trace_session_end(session_state)
 
         # Pool will automatically remove closed sessions during cleanup
         log.info("Session {} closed: end_reason={}", session_state.session_id, end_reason)

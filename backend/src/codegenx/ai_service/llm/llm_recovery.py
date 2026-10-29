@@ -63,7 +63,7 @@ async def invoke_stream_with_revovery(
             async for chunk in resilient_invoke_stream(
                 messages,
                 chain=agent_config.resolved_model_name_chain,
-                label="agent",
+                label=agent_config.name,
                 tools=tools,
                 timeout=agent_config.llm_stream_timeout_seconds,
                 temperature=agent_temperature,

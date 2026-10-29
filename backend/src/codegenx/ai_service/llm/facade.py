@@ -4,7 +4,7 @@
   - async_before_stop：统一释放 provider 级共享连接池（close_llm_clients）；
   - 观测聚合：全部熔断器状态快照（管理端点用）。
 
-模型客户端预热不在门面做：使用模型的组件（AgentRuntime/CompactionService/
+模型客户端预热不在门面做：使用模型的组件（BaseReactAgent/CompactionService/
 SessionSummaryService/MemoryScheduler）在各自 async_before_start 中预热
 自己需要的模型客户端与熔断器，随组件生命周期启停。
 """
