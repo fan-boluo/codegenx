@@ -347,6 +347,7 @@ class SessionContext(CommonContext):
                     user_id=self.user_id,
                     app_id=self.app_id,
                     session_id=self.session_id,
+                    trigger="turn_end",
                 )
             log.debug("session summary 后台提取已触发")
         else:
@@ -375,6 +376,7 @@ class SessionContext(CommonContext):
             user_id=self.user_id,
             app_id=self.app_id,
             session_id=self.session_id,
+            trigger="session_end",  # 卸载/回收边界触发，trace 根 span 记 session_end
         )
         log.info(
             "会话 {} 卸载前强制摘要已触发（列表 {} 条）",

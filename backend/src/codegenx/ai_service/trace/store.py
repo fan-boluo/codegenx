@@ -16,35 +16,34 @@ from db.postgres.postgres_client import get_postgres_pool
 
 # 行字段与列序一致（recorder 产出 dict，此处按序转 tuple）
 _TRACE_FIELDS = (
-    "trace_id", "session_id", "app_id", "user_id", "db_name", "agent",
-    "input", "output", "status", "error", "total_tokens", "model",
+    "trace_id", "session_id", "app_id", "user_id", "event",
+    "status", "error", "total_tokens", "model",
     "prompt_tokens", "completion_tokens", "duration_ms",
     "started_at", "ended_at", "tags",
 )
 _SPAN_FIELDS = (
     "span_id", "trace_id", "parent_span_id", "session_id", "turn_id",
-    "op_type", "name", "agent", "seq", "started_at", "duration_ms",
-    "status", "error", "input", "output", "attributes",
+    "op_type", "name", "agent", "seq", "started_at",
+    "duration_ms", "status", "error", "input", "output", "attributes",
 )
 _JSON_FIELDS_SPANS = {"input", "output", "attributes"}  # span 表 JSONB 列
-_JSON_FIELDS_TRACES = {"tags"}                          # trace 表仅 tags 为 JSONB（input/output 是 TEXT）
-_JSON_FIELDS_SEMANTICS = {"attributes"}                 # 工具语义表仅 attributes 为 JSONB
+_JSON_FIELDS_TRACES = {"tags"}                          # trace 表仅 tags 为 JSONB
+_JSON_FIELDS_SEMANTICS = {"tool_args", "tool_result"}   # 工具语义表 JSONB 列（入参/结果分列）
 
 # 工具语义行（hook/tool_semantics.py 监听器产出，评测消费，独立于 span 骨架）
 _SEMANTIC_FIELDS = (
-    "trace_id", "session_id", "turn_id", "span_id", "tool_name",
-    "success", "attributes", "created_at",
+    "tool_call_id", "trace_id", "span_id", "tool_name",
+    "success", "tool_args", "tool_result", "created_at",
 )
 
 _INSERT_TRACE_SQL = """
 INSERT INTO telemetry.traces
-  (trace_id, session_id, app_id, user_id, db_name, agent,
-   input, output, status, error, total_tokens, model,
+  (trace_id, session_id, app_id, user_id, event,
+   status, error, total_tokens, model,
    prompt_tokens, completion_tokens, duration_ms,
    started_at, ended_at, tags)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
 ON CONFLICT (trace_id) DO UPDATE SET
-  output = EXCLUDED.output,
   status = EXCLUDED.status,
   error = EXCLUDED.error,
   total_tokens = EXCLUDED.total_tokens,
@@ -67,8 +66,11 @@ ON CONFLICT (span_id) DO NOTHING
 
 _INSERT_SEMANTIC_SQL = """
 INSERT INTO telemetry.tool_semantics
-  (trace_id, session_id, turn_id, span_id, tool_name, success, attributes, created_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+  (tool_call_id, trace_id, span_id, tool_name, success, tool_args, tool_result, created_at)
+VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)
+ON CONFLICT (tool_call_id) DO UPDATE SET
+  span_id = EXCLUDED.span_id, success = EXCLUDED.success,
+  tool_args = EXCLUDED.tool_args, tool_result = EXCLUDED.tool_result
 """
 
 

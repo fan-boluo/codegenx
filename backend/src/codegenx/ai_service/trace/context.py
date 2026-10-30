@@ -21,6 +21,7 @@ class TurnBinding:
     trace_id: str
     turn_id: str
     turn_span_id: str
+    inline_input: bool = True  # llm span input 是否内联：在线问答 False（chat_messages 为真相源，存引用）；后台合成消息 True
 
 
 _turn_binding: ContextVar[TurnBinding | None] = ContextVar("trace_turn_binding", default=None)

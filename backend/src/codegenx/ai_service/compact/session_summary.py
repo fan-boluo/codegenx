@@ -222,12 +222,14 @@ class SessionSummaryService(BaseComponent):
         *,
         user_id: str,
         app_id: str,
-        session_id: str
+        session_id: str,
+        trigger: str = "turn_end",
     ) -> None:
         """调度非阻塞后台摘要任务。
 
         仅做记账（更新阈值基线）+ 起后台任务；should_extract 判定在会话层
-        （SummaryState）完成。messages 浅拷贝后传入后台任务，主对话可继续变更。
+        （SummaryState）完成。messages 浅拷贝后传入后台任务，主对话可继续变更；
+        trigger 传触发事件（turn_end/session_end），透传到 trace 根 span 的 op_type。
         """
         if state.extracting:
             return
@@ -237,7 +239,8 @@ class SessionSummaryService(BaseComponent):
         state.extract_task = asyncio.create_task(
             self._extract(
                 state, messages_snapshot,
-                user_id=user_id, app_id=app_id, session_id=session_id
+                user_id=user_id, app_id=app_id, session_id=session_id,
+                trigger=trigger,
             )
         )
 
@@ -251,6 +254,7 @@ class SessionSummaryService(BaseComponent):
         user_id: str,
         app_id: str,
         session_id: str,
+        trigger: str = "turn_end",
     ) -> None:
         """后台任务：按内存 index 水位切快照增量 → 覆盖写 SUMMARY.md → 推进水位；失败非致命。
 
@@ -290,7 +294,7 @@ class SessionSummaryService(BaseComponent):
             from codegenx.ai_service.trace import background_trace
             async with background_trace(
                 "session_summary", session_id=session_id, app_id=app_id, user_id=user_id,
-                note=f"摘要提取 {len(fed)} 条消息",
+                note=f"摘要提取 {len(fed)} 条消息", trigger_event=trigger,
             ):
                 summary = await self._summarize(fed, current_notes, str(path))
             if summary is None:

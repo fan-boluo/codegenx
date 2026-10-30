@@ -167,12 +167,12 @@ class ToolExecutor(BaseComponent):
         # 同批去重缓存：key → 执行结果（asyncio 单线程，闭包 dict 并发安全）
         cache: dict[str, ToolResult] = {}
 
-        async def _run_one(name: str, arguments: dict, key: str) -> ToolResult:
+        async def _run_one(name: str, arguments: dict, tc_id: str, key: str) -> ToolResult:
             if key in cache:
                 return cache[key]
             try:
                 result = await self.execute(
-                    {"name": name, "arguments": arguments, "id": ""}, session_state)
+                    {"name": name, "arguments": arguments, "id": tc_id}, session_state)
             except (TurnStoppedError, asyncio.CancelledError):
                 raise  # 停止信号传播终止请求
             except Exception as exc:
@@ -189,14 +189,14 @@ class ToolExecutor(BaseComponent):
 
             async def _one(item):
                 async with semaphore:
-                    return item[2], await _run_one(*item[:2], item[3])
+                    return item[2], await _run_one(*item)
 
             for tc_id, result in await asyncio.gather(*(_one(i) for i in parallel)):
                 results_by_id[tc_id] = result
         # 串行组：其余工具顺序执行
         for name, arguments, tc_id, key in normalized:
             if tc_id not in results_by_id:
-                results_by_id[tc_id] = await _run_one(name, arguments, key)
+                results_by_id[tc_id] = await _run_one(name, arguments, tc_id, key)
 
         # 统一转换为 tool 消息（按原 tool_calls 顺序）
         results: list[dict[str, Any]] = []
@@ -300,8 +300,10 @@ class ToolExecutor(BaseComponent):
         if "session_state" in inspect.signature(func).parameters:
             call_kwargs["session_state"] = session_state
         t0 = time.monotonic()
+        # tool span input 携带 LLM 调用 id（协议溯源，与 llm span output.tool_calls[].id 对账）
+        span_input = {"tool_call_id": str(tool_call.get("id") or ""), **tool_input}
         async with start_span(str(tool.obs_category or "tool"), str(tool_name),
-                              input_data=tool_input) as span:
+                              input_data=span_input) as span:
             if inspect.iscoroutinefunction(func):
                 result = await func(**call_kwargs)
             else:

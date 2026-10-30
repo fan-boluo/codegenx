@@ -102,7 +102,8 @@ async def start_span(
         "turn_id": buffer.turn_id,
         "op_type": op_type,
         "name": name,
-        "agent": name if op_type in ("agent", "llm") else "",
+        # agent 归属：统一继承当前 agent 域（tool/retrieval/compaction 也带），agent span 以自身名兜底
+        "agent": trace_context.get_current_agent() or (name if op_type == "agent" else ""),
         "seq": buffer.seq,
         "started_at": _utc(),
         "duration_ms": None,

@@ -16,17 +16,15 @@
 CREATE SCHEMA IF NOT EXISTS telemetry;
 
 -- ------------------------------------------------------------
--- 1. traces：一轮请求的根（trace_id = request.trace_id，缺省用 request_id）
+-- 1. traces：一次根事件（问答 turn / 后台摘要等）的骨架；载荷细节在 spans/tags
+--    trace_id = request.trace_id，缺省用 request_id
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS telemetry.traces (
   trace_id     TEXT PRIMARY KEY,
   session_id   TEXT        NOT NULL,
   app_id       TEXT        NOT NULL DEFAULT 'main',
   user_id      TEXT        NOT NULL DEFAULT '',
-  db_name      TEXT,                        -- 当前问答数据源（可空）
-  agent        TEXT        NOT NULL DEFAULT '',  -- 会话归属智能体
-  input        TEXT,                        -- 用户原始问题
-  output       TEXT,                        -- 最终回复
+  event        TEXT        NOT NULL DEFAULT 'qa',  -- 根事件类型：qa 问答 / session_summary 后台摘要
   status       TEXT        NOT NULL DEFAULT 'running',  -- running/completed/stopped/failed
   error        TEXT,
   total_tokens INTEGER     NOT NULL DEFAULT 0,
@@ -36,14 +34,15 @@ CREATE TABLE IF NOT EXISTS telemetry.traces (
   duration_ms  DOUBLE PRECISION,
   started_at   TIMESTAMPTZ,
   ended_at     TIMESTAMPTZ,
-  tags         JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- tool_calls/context_usage 及外部注入（eval_set 等）
+  tags         JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- tool_calls/context_usage/note 等汇总及外部注入（eval_set 等）
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE telemetry.traces IS '一轮请求的根：评测与用户使用分析的主入口';
+COMMENT ON TABLE telemetry.traces IS '一次根事件的骨架（问答/后台任务）：输入输出快照不做，细节看 trace_spans';
 
 -- ------------------------------------------------------------
 -- 2. trace_spans：span 树（评测数据主体）
---    op_type: turn（轮聚合）/ llm（messages 输入、completion 输出）
+--    op_type: 根 = turn（问答轮）/ turn_end / session_end（后台任务触发事件）
+--             子 = llm（messages 输入、completion 输出）
 --             / tool（SQL/文件等工具）/ retrieval（语义层检索 5 工具）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS telemetry.trace_spans (
@@ -60,7 +59,7 @@ CREATE TABLE IF NOT EXISTS telemetry.trace_spans (
   duration_ms    DOUBLE PRECISION,
   status         TEXT        NOT NULL DEFAULT 'ok',  -- ok / error
   error          TEXT,
-  input          JSONB,                          -- messages / arguments（截断后）
+  input          JSONB,                          -- messages_ref / arguments + tool_call_id（截断后）
   output         JSONB,                          -- content/tool_calls / result（截断后）
   attributes     JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- model/usage/sql/rows_preview 等
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -115,6 +114,10 @@ CREATE TABLE IF NOT EXISTS telemetry.eval_cases (
   grain       TEXT         NOT NULL DEFAULT '',   -- 结果粒度
   multi_hop   BOOLEAN      NOT NULL DEFAULT FALSE,
   status      TEXT         NOT NULL DEFAULT 'draft',  -- draft / verified
+  -- gold 结果缓存：gold_sql hash 一致时直接复用，免每次评分重执行（VES 用缓存耗时）
+  gold_rows     JSONB,       -- gold 执行结果行（Decimal/timedelta 归一后序列化）
+  gold_exec_ms  REAL,        -- gold 执行耗时（VES 计算）
+  gold_sql_hash TEXT,        -- gold_sql 压空白 md5（不一致则缓存失效重算）
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
@@ -125,20 +128,22 @@ CREATE INDEX IF NOT EXISTS idx_cases_dataset_status ON telemetry.eval_cases (dat
 -- ------------------------------------------------------------
 -- 5. tool_semantics：工具调用语义数据（评测/归因消费，与 span 骨架分家）
 --    采集：AFTER_TOOL_CALL 监听器（hook/tool_semantics.py）；
---    trace_spans 只记执行骨架（谁在何时调了什么、多久、成败），
---    语义字段（sql/recalled_tables 等）在此独立保留——不受 retention 清理
+--    关联：span_id 直连 trace_spans（主通道）；tool_call_id = LLM 调用 id
+--    （assistant.tool_calls[].id，同时记于 tool span input），协议层对账；
+--    trace_id 保留：span 受 retention 清理后仍可溯源，评测按 trace 过滤免 join；
+--    入参/结果语义分列（tool_args/tool_result）——只存提取后的结构化语义，
+--    不重复存 span.input/output 已有的全文 IO；不受 retention 清理
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS telemetry.tool_semantics (
-  id          BIGSERIAL   PRIMARY KEY,
-  trace_id    TEXT        NOT NULL,
-  session_id  TEXT        NOT NULL,
-  turn_id     TEXT,                        -- request_id
-  span_id     TEXT,                        -- 关联 trace_spans 执行骨架（可空）
-  tool_name   TEXT        NOT NULL,
-  success     BOOLEAN     NOT NULL DEFAULT TRUE,
-  attributes  JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- sql/datasource/row_count/rows_preview/recalled_tables
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  tool_call_id  TEXT        PRIMARY KEY,   -- LLM 调用 id（非 LLM 发起时 uuid 兜底）
+  trace_id      TEXT        NOT NULL,
+  span_id       TEXT,                      -- 执行骨架外联键（trace_spans.span_id）
+  tool_name     TEXT        NOT NULL,
+  success       BOOLEAN     NOT NULL DEFAULT TRUE,
+  tool_args     JSONB,                     -- 入参语义：execute_postgresql {sql, datasource}
+  tool_result   JSONB,                     -- 结果语义：{row_count, rows_preview} / {recalled_tables}
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE telemetry.tool_semantics IS '工具调用语义数据：评测归因（SQL 尝试时序、召回缺表）独立读取入口';
+COMMENT ON TABLE telemetry.tool_semantics IS '工具调用语义数据：入参/结果分列，经 tool_call_id 与 span 外联，评测归因独立读取入口';
 CREATE INDEX IF NOT EXISTS idx_tool_semantics_trace ON telemetry.tool_semantics (trace_id);
 CREATE INDEX IF NOT EXISTS idx_tool_semantics_tool  ON telemetry.tool_semantics (tool_name, created_at);

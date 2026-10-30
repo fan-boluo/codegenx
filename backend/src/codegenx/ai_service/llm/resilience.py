@@ -25,7 +25,7 @@ from shared import log
 
 from codegenx.ai_service.llm.async_client import get_llm
 from codegenx.ai_service.llm.errors import LLMErrorClass, classify_llm_error
-from codegenx.ai_service.trace import current_app_id, get_current_agent, start_span
+from codegenx.ai_service.trace import current_app_id, get_current_agent, get_turn_binding, start_span
 from codegenx.ai_service.utils.config import config
 
 
@@ -114,8 +114,22 @@ def _record_call(trigger: str, model: str, cls: Optional[LLMErrorClass],
 
 
 def _llm_span(model: str, messages: List[Dict[str, Any]]):
-    """llm span（观测直埋）：name/agent 取当前 agent 域；无 turn 绑定时 no-op。"""
-    return start_span("llm", get_current_agent() or "llm", input_data={"messages": messages})
+    """llm span（观测直埋）：name 取当前 agent 域；无 turn 绑定时 no-op。
+
+    input 防膨胀：在线问答（chat_messages 为真相源）存引用——messages_ref +
+    message_count；上下文 token 涨落由 attributes.prompt_tokens 序列体现
+    （服务端精确值），中间过程（think/tool_calls）在本 trace spans。
+    后台合成消息内联截断。
+    """
+    binding = get_turn_binding()
+    if binding is not None and not binding.inline_input:
+        input_data: Dict[str, Any] = {
+            "messages_ref": "chat_messages",
+            "message_count": len(messages),
+        }
+    else:
+        input_data = {"messages": messages}
+    return start_span("llm", get_current_agent() or "llm", input_data=input_data)
 
 
 # ── 三态熔断器 ──────────────────────────────────────────────────────────────

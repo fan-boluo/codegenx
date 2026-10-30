@@ -12,28 +12,30 @@
       "difficulty": "simple", "ops": "agg", "grain": "city", "multi_hop": false}]}
 
 运行（cwd 任意）：
-  backend/.venv/Scripts/python.exe data/evaluate/eval.py <subcommand> ...
+  backend/.venv/Scripts/python.exe eval/eval.py <subcommand> ...
 
- d:/Project/agent/CodeGenX/backend/.venv/Scripts/python.exe data/evaluate/eval.py replay --account boluo --password boluo123 --app-id app_0001 --ids 25,26,27,35,36,37,47,48,50
+ d:/Project/agent/CodeGenX/backend/.venv/Scripts/python.exe eval/eval.py replay --account boluo --password boluo123 --app-id app_0001 --ids 25,26,27,35,36,37,47,48,50
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote_plus
 
 import asyncpg
 import httpx
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "backend" / "src"))
 
 from db.postgres.postgres_client import postgres_business, postgres_dsn  # noqa: E402
@@ -93,15 +95,17 @@ def rows_match(pred_rows, gold_rows) -> bool:
     # 2. 列名：pred ⊆ gold
     if pset <= gset:
         return _sig(gold_rows, tuple(pkeys)) == _sig(pred_rows, tuple(pkeys))
-    # 3. 列位：gold 列数 == pred 列数直接比；pred 更宽时按组合投影
+    # 3. 列位兜底：gold 固定 sorted 键名序（JSONB 缓存不保 dict 序，键序不可靠），
+    #    pred 侧枚举列排列做位置对齐（覆盖全/部分别名场景如 movie_count vs film_count；
+    #    宽表排列爆炸时退回 sorted 对齐尽力而为）
+    from itertools import permutations, islice
     gcols, pcols = len(gkeys), len(pkeys)
     if gcols > pcols:
         return False
-    if gcols == pcols:
-        return _sig(gold_rows, tuple(gkeys)) == _sig(pred_rows, tuple(pkeys))
-    from itertools import combinations, islice
-    projections = islice(combinations(pkeys, gcols), 30)
-    gold_sig = _sig(gold_rows, tuple(gkeys))
+    gold_sig = _sig(gold_rows, tuple(sorted(gkeys)))
+    if pcols > 6:
+        return gold_sig == _sig(pred_rows, tuple(sorted(pkeys)))
+    projections = islice(permutations(sorted(pkeys), gcols), 30)
     return any(gold_sig == _sig(pred_rows, proj) for proj in projections)
 
 
@@ -273,26 +277,44 @@ async def cmd_replay(args) -> None:
 async def _load_sqls(conn: asyncpg.Connection, trace_id: str) -> list[dict]:
     """取一轮 trace 的全部 execute_postgresql 尝试（时序），含 db_name/sql/status。
 
-    语义数据自 tool_semantics 独立表读取（骨架/语义分离，docs/链路追踪设计.md）。
+    语义数据自 tool_semantics 独立表读取（tool_args 入参分列，span_id 关联 span）。
     """
     rows = await conn.fetch(
         """
-        SELECT attributes, success
+        SELECT tool_args, success
         FROM telemetry.tool_semantics
         WHERE trace_id=$1 AND tool_name='execute_postgresql'
         ORDER BY created_at
         """, trace_id)
     out = []
     for row in rows:
-        attrs = row["attributes"] if isinstance(row["attributes"], dict) else json.loads(row["attributes"] or "{}")
-        sql = str(attrs.get("sql") or "").strip()
+        args = row["tool_args"] if isinstance(row["tool_args"], dict) else json.loads(row["tool_args"] or "{}")
+        sql = str(args.get("sql") or "").strip()
         if sql:
             out.append({
                 "sql": sql,
-                "db_name": str(attrs.get("datasource") or attrs.get("db_name") or ""),
+                "db_name": str(args.get("datasource") or args.get("db_name") or ""),
                 "status": "ok" if row["success"] else "error",
             })
     return out
+
+
+def _json_default(v):
+    """gold 行 JSON 序列化兜底：Decimal/timedelta 转为与 _norm_value 同口径的数值。"""
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, timedelta):
+        return v.total_seconds() / 86400
+    return str(v)
+
+
+def _load_gold_cache(case, gold_hash: str) -> tuple[list | None, float]:
+    """读 gold 结果缓存（eval_cases）：hash 一致才有效 → (rows, gold 秒)；miss → (None, 0)。"""
+    if case["gold_sql_hash"] != gold_hash or case["gold_rows"] is None:
+        return None, 0.0
+    raw = case["gold_rows"]
+    rows = json.loads(raw) if isinstance(raw, str) else raw
+    return rows, (case["gold_exec_ms"] or 0.0) / 1000.0
 
 
 async def cmd_score(args) -> None:
@@ -365,14 +387,27 @@ async def _score_one(conn, cache: dict, trace_id: str, case) -> dict:
             await conn_biz.execute(f'SET search_path TO "{schema}", public')
         cache[db_name] = conn_biz
     conn_biz = cache[db_name]
-    # gold：金标准执行（金标准报错记为 gold_error，不入失败归类但需人工修题）
-    t0 = time.perf_counter()
-    try:
-        gold_rows = [dict(r) for r in await asyncio.wait_for(conn_biz.fetch(case["gold_sql"]), SQL_TIMEOUT_S)]
-        gold_time = time.perf_counter() - t0
+    # gold：优先用 eval_cases 缓存（gold_sql hash 一致），miss 才执行并回填（失败不回填，下次重试）
+    gold_hash = hashlib.md5(" ".join(case["gold_sql"].split()).encode()).hexdigest()
+    gold_rows, gold_time = _load_gold_cache(case, gold_hash)
+    if gold_rows is not None:
         gold_err = None
-    except Exception as exc:
-        gold_rows, gold_err, gold_time = [], str(exc), time.perf_counter() - t0
+    else:
+        t0 = time.perf_counter()
+        try:
+            gold_rows = [dict(r) for r in await asyncio.wait_for(conn_biz.fetch(case["gold_sql"]), SQL_TIMEOUT_S)]
+            gold_time = time.perf_counter() - t0
+            gold_err = None
+            await conn.execute(
+                """
+                UPDATE telemetry.eval_cases
+                SET gold_rows=$2, gold_exec_ms=$3, gold_sql_hash=$4
+                WHERE id=$1
+                """, case["id"],
+                json.dumps(gold_rows, ensure_ascii=False, default=_json_default),
+                gold_time * 1000, gold_hash)
+        except Exception as exc:
+            gold_rows, gold_err, gold_time = [], str(exc), time.perf_counter() - t0
     if gold_err:
         return {"ex": 0.0, "ves": 0.0, "valid": 1.0, "category": "gold_error", "detail": f"金标准 SQL 执行失败: {gold_err[:300]}"}
     gold_dep = _depaginate(case["gold_sql"])
@@ -396,12 +431,17 @@ async def _score_one(conn, cache: dict, trace_id: str, case) -> dict:
         if rows_match(pred_rows, gold_rows):
             ves = min(1.0, gold_time / pred_time) if pred_time > 0 else 0.0
             return {"ex": 1.0, "ves": ves, "valid": 1.0, "category": "ok", "detail": ""}
-        # top-N 并列：两侧去 LIMIT 后比全序（gold 带 LIMIT 且并列边界不稳定时才可能误判）
-        if gold_dep:
-            cand_dep = _depaginate(cand["sql"]) or cand["sql"]
+        # top-N 并列：任一侧带 LIMIT 都去 LIMIT 比全序——gold 带 LIMIT 时并列边界
+        # 不稳定；agent 带 LIMIT 时只是分页截断展示（如先 count 全量再分页取数）
+        cand_dep = _depaginate(cand["sql"])
+        if gold_dep or cand_dep:
+            cand_dep = cand_dep or cand["sql"]
             try:
                 pred2 = [dict(r) for r in await asyncio.wait_for(conn_biz.fetch(cand_dep), SQL_TIMEOUT_S)]
-                gold2 = [dict(r) for r in await asyncio.wait_for(conn_biz.fetch(gold_dep), SQL_TIMEOUT_S)]
+                if gold_dep:
+                    gold2 = [dict(r) for r in await asyncio.wait_for(conn_biz.fetch(gold_dep), SQL_TIMEOUT_S)]
+                else:
+                    gold2 = gold_rows  # gold 本就无 LIMIT，免重执行
                 if rows_match(pred2, gold2):
                     return {"ex": 1.0, "ves": min(1.0, gold_time / pred_time) if pred_time > 0 else 0.0,
                             "valid": 1.0, "category": "ok", "detail": "top-n tie（去 LIMIT 全序匹配）"}
@@ -431,8 +471,171 @@ async def _write_scores(conn: asyncpg.Connection, trace_id: str, case_id: int, r
 
 # ============================================================ 子命令：report
 
+def _norm_sql(sql: str) -> str:
+    """SQL 文本规范化（压空白、小写、去结尾分号），报告判断 agent SQL 与 gold 文本是否一致。"""
+    return " ".join((sql or "").split()).lower().rstrip(";")
+
+
+def _extract_tables(sql: str) -> list[str]:
+    """粗提 SQL 的 FROM/JOIN 表名（去引号/别名；子查询内的 FROM 由逐位置匹配覆盖，
+    仅用于报告展示级对比）。"""
+    tables: list[str] = []
+    for m in re.finditer(r"(?is)\b(?:from|join)\s+([\w\".]+(?:\s*,\s*[\w\".]+)*)", sql):
+        for tok in m.group(1).split(","):
+            tok = tok.strip().strip('"').lower()
+            tok = tok.split()[0] if tok else ""
+            if tok and tok != "select" and tok not in tables:
+                tables.append(tok)
+    return tables
+
+
+def _table_leaf(t: str) -> str:
+    """表名取末段（兼容 schema.table / db.schema.table 与召回裸名对比）。"""
+    return t.strip('"').split(".")[-1].lower()
+
+
+def _details(summary: str, body: str, indent: str = "") -> list[str]:
+    """Markdown 折叠块（think/回复等长文本用），body 按行缩进。"""
+    return [f"{indent}<details><summary>{summary}</summary>", "", body, "", f"{indent}</details>", ""]
+
+
+async def _render_case(conn: asyncpg.Connection, t: asyncpg.Record, ves, human: dict) -> str:
+    """单题渲染：头部指标 → 执行链路（think/tool 序列）→ 召回评估 → 分析/回复人工位。
+
+    链路自 trace_spans（时序骨架）+ tool_semantics（sql/recalled_tables 语义）拼出；
+    SQL 只写成败与行数，不写返回结果。
+    """
+    tid = t["trace_id"]
+    spans = await conn.fetch(
+        """
+        SELECT span_id, op_type, name, agent, status, duration_ms, output
+        FROM telemetry.trace_spans WHERE trace_id=$1 ORDER BY seq
+        """, tid)
+    sems = await conn.fetch(
+        """
+        SELECT tool_name, span_id, success, tool_args, tool_result
+        FROM telemetry.tool_semantics WHERE trace_id=$1 ORDER BY created_at
+        """, tid)
+    sem_by_span: dict = {}
+    sqls: list[dict] = []
+    recalled: list[str] = []
+    for r in sems:
+        args = r["tool_args"] if isinstance(r["tool_args"], dict) else json.loads(r["tool_args"] or "{}")
+        res = r["tool_result"] if isinstance(r["tool_result"], dict) else json.loads(r["tool_result"] or "{}")
+        if r["tool_name"] == "execute_postgresql":
+            sql = str(args.get("sql") or "").strip()
+            if sql:
+                sqls.append({"sql": sql, "ok": bool(r["success"]), "rows": res.get("row_count")})
+            if r["span_id"]:
+                sem_by_span[r["span_id"]] = {"sql": sql, "rows": res.get("row_count")}
+        tables = res.get("recalled_tables")
+        if tables:
+            if isinstance(tables, str):
+                try:
+                    tables = json.loads(tables)
+                except Exception:
+                    tables = [tables]
+            for tb in tables:
+                leaf = _table_leaf(str(tb))
+                if leaf and leaf not in recalled:
+                    recalled.append(leaf)
+
+    lines = [
+        f"### Case {t['case_id']}：{t['question']}",
+        "",
+        f"- 标签：{t['difficulty'] or '-'} / {t['ops'] or '-'} / {'多跳' if t['multi_hop'] else '单跳'}",
+        f"- EX：{t['ex']:.0%}（{t['category'] or '-'}）｜ VES：{f'{ves:.3f}' if ves is not None else '-'}"
+        f" ｜ 状态：{t['status']} ｜ trace：`{tid}`",
+        "",
+        "**执行链路**",
+        "",
+    ]
+    # 最终回答取链路末尾无 tool_calls 的 llm span（traces 不存输入输出快照）
+    final_sid = ""
+    for sp in reversed(spans):
+        if sp["op_type"] != "llm":
+            continue
+        out = sp["output"] if isinstance(sp["output"], dict) else json.loads(sp["output"] or "{}")
+        if out.get("tool_calls"):
+            continue
+        if str(out.get("content") or "").strip():
+            final_sid = sp["span_id"]
+            break
+
+    cur_agent, step = "", 0
+    for sp in spans:
+        if sp["op_type"] == "turn":
+            continue
+        if sp["agent"] and sp["agent"] != cur_agent:
+            cur_agent = sp["agent"]
+            lines += [f"> agent → {cur_agent}", ""]
+        step += 1
+        out = sp["output"] if isinstance(sp["output"], dict) else json.loads(sp["output"] or "{}")
+        ms = f"{sp['duration_ms']:.0f}ms" if sp["duration_ms"] is not None else ""
+        ok = "✓" if sp["status"] == "ok" else "✗"
+        if sp["op_type"] == "llm":
+            tcs = out.get("tool_calls") or []
+            content = str(out.get("content") or "").strip()
+            if tcs:  # 有 tool_calls 的 llm 输出即 Thought 步骤
+                names = "、".join(str(c.get("name") or (c.get("function") or {}).get("name") or "?") for c in tcs)
+                lines.append(f"{step}. **Thought** {ok}（{ms}）→ 调用 {names}")
+                if content:
+                    lines += [f"   {x}" for x in _details("思考内容", content)]
+            elif content:
+                title = "回答（最终）" if sp["span_id"] == final_sid else "中间回答"
+                lines.append(f"{step}. **{title}** {ok}（{ms}）")
+                lines += [f"   {x}" for x in _details("内容", content)]
+        elif sp["op_type"] == "tool" and sp["name"] == "execute_postgresql":
+            sem = sem_by_span.get(sp["span_id"] or "") or {}
+            rows = sem.get("rows")
+            lines.append(f"{step}. **SQL 执行** {ok}（{rows if rows is not None else '?'} 行{'，' + ms if ms else ''}）")
+            sql = sem.get("sql") or ""
+            if sql:
+                lines += [f"   ```sql"] + [f"   {ln}" for ln in sql.splitlines()] + ["   ```", ""]
+        else:
+            meta = f"（{ms}）" if ms else ""
+            lines.append(f"{step}. **{sp['op_type']}** {sp['name']} {ok}{meta}")
+            lines.append("")
+    if not final_sid:
+        lines.append("**最终回答**：（无）")
+    lines.append("")
+
+    # 召回评估：gold SQL 全文 + agent 各条 SQL（文本比对）+ 表召回对比
+    gold_sql = t["gold_sql"]
+    gnorm = _norm_sql(gold_sql)
+    lines += ["**召回评估**", "", "- gold_sql：", ""]
+    lines += [f"  {x}" for x in _details("SQL", gold_sql)]
+    if not sqls:
+        lines.append("- Agent SQL：无（no_sql）")
+    else:
+        lines.append(f"- Agent SQL（{len(sqls)} 条，✓=文本与 gold 一致）：")
+        lines.append("")
+        for i, s in enumerate(sqls, 1):
+            hit = "✓" if _norm_sql(s["sql"]) == gnorm else "✗"
+            meta = f"{'成功' if s['ok'] else '失败'}，{s['rows'] if s['rows'] is not None else '?'} 行"
+            lines.append(f"  {i}. {hit}（{meta}）")
+            lines += [f"     {x}" for x in _details("SQL", s["sql"])]
+    gold_tables = sorted({_table_leaf(x) for x in _extract_tables(gold_sql)})
+    missing = [x for x in gold_tables if x not in recalled]
+    lines.append(f"- 结果命中（EX）：{t['ex']:.0%}")
+    lines.append(f"- 表召回：gold {gold_tables or '∅'} ｜ 检索到 {recalled or '∅'} ｜ "
+                 + ("全部命中" if not missing else f"缺失 {missing}"))
+    if any("information_schema" in s["sql"].lower() for s in sqls):
+        lines.append("- 注：存在 information_schema 自探（绕过语义召回获取表结构）")
+    lines.append("")
+
+    # 分析/回复：预留人工评估（写 trace_scores evaluator='human', name='analysis'/'answer'）
+    lines += [
+        f"**分析评估**（人工）：{human.get('analysis') or '待人工评估'}",
+        "",
+        f"**回复评估**（人工）：{human.get('answer') or '待人工评估'}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 async def cmd_report(args) -> None:
-    """聚合 trace_scores → Markdown 报告（总览 + 失败归类 + 维度分组）。"""
+    """评测报告：汇总指标（EX/VES/Valid+失败归类+维度分组）+ 逐题渲染（链路/召回/人工位）。"""
     conn = await meta_conn()
     try:
         since = _since(args.since)
@@ -483,11 +686,41 @@ async def cmd_report(args) -> None:
         lines += [f"| {c['category'] or '-'} | {c['cnt']} |" for c in cats] or ["| 无 | 0 |"]
         lines += ["", "## 维度分组（EX）", "", "| difficulty | ops | multi_hop | EX | 数量 |", "|---|---|---|---|---|"]
         lines += [f"| {d['difficulty']} | {d['ops']} | {d['multi_hop']} | {d['ex']:.2%} | {d['cnt']} |" for d in dims]
-        report = "\n".join(lines) + "\n"
+        summary = "\n".join(lines)
+
+        # 逐题段：所有已评分 trace（EX 分数存在即入报告），按 case id 排序
+        rows = await conn.fetch(
+            """
+            SELECT t.trace_id, t.status,
+                   s.value AS ex, s.comment AS category, s.case_id,
+                   c.question, c.gold_sql, c.difficulty, c.ops, c.multi_hop
+            FROM telemetry.traces t
+            JOIN telemetry.trace_scores s
+              ON s.trace_id = t.trace_id AND s.name='EX' AND s.evaluator='eval_script'
+            JOIN telemetry.eval_cases c ON c.id = s.case_id
+            WHERE t.trace_id LIKE $1 AND t.started_at > $2
+            ORDER BY s.case_id, t.started_at
+            """, f"{EVAL_PREFIX}-%", since)
+        ves_map: dict = {}
+        human: dict = {}
+        if rows:
+            for r in await conn.fetch(
+                    "SELECT trace_id, name, value, comment, evaluator FROM telemetry.trace_scores WHERE trace_id = ANY($1)",
+                    [r["trace_id"] for r in rows]):
+                if r["name"] == "VES" and r["evaluator"] == "eval_script":
+                    ves_map[r["trace_id"]] = r["value"]
+                elif r["evaluator"] == "human":
+                    mark = "" if r["value"] is None else f"{r['value']:g} "
+                    human.setdefault(r["trace_id"], {})[r["name"]] = f"{mark}{r['comment'] or ''}".strip()
+        parts = [await _render_case(conn, r, ves_map.get(r["trace_id"]), human.get(r["trace_id"], {}))
+                 for r in rows]
+        per_case = "\n\n---\n\n".join(parts) if parts else "（无评测记录）"
+        report = f"{summary}\n\n---\n\n# 逐题评估\n\n{per_case}\n"
+
         out = Path(args.out)
         out.write_text(report, encoding="utf-8")
-        print(report)
-        print(f"[OK] 报告已写 {out}")
+        print(summary)
+        print(f"[OK] 报告已写 {out}（逐题 {len(parts)} 题）")
     finally:
         await conn.close()
 
@@ -525,7 +758,7 @@ def main() -> None:
 
     p = sub.add_parser("report", help="聚合输出 Markdown 报告")
     p.add_argument("--since", default="", help="聚合该 ISO 时刻之后")
-    p.add_argument("--out", default=str(_REPO / "data" / "evaluate" / "report.md"))
+    p.add_argument("--out", default=str(_REPO / "eval" / "report.md"))
     p.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
